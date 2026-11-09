@@ -24,33 +24,55 @@ public enum CommandBroker {
 
     // MARK: - resolve
 
-    /// Where `name` lives, as the user's login shell would find it (GUI apps don't inherit the
-    /// shell's PATH, so we ask the shell). Returns nil for invalid or refused names, and for anything
-    /// that isn't an absolute path to an executable regular file.
+    /// The first executable regular file named `name` on the user's login PATH. That is exactly
+    /// what `PluginProcess` will run: it execs the path directly, never through a shell, so shell
+    /// aliases, functions and builtins (zsh's `echo`) don't count. GUI apps don't inherit the
+    /// shell's PATH, so the login shell is asked for it. Returns nil for invalid or refused names
+    /// (checked before any shell runs), and when nothing suitable is found.
     public static func resolve(_ name: String, loginShell: String) -> String? {
         guard CommandPolicy.isValidName(name), !CommandPolicy.isRefused(name) else { return nil }
-        // The name is passed as the positional argument $1, never pasted into the script text,
-        // so it cannot inject shell syntax. "singularity-resolve" becomes $0.
-        let output = runShortProcess(
-            loginShell, ["-l", "-c", "command -v -- \"$1\"", "singularity-resolve", name], timeout: 5)
-        return output.flatMap(accept)
+        // A fixed script: nothing from the plugin goes into it. The marker line lets us skip
+        // whatever rc files print first; `printenv` (not `echo $PATH`) also works in fish.
+        let script = "echo \(pathMarker); /usr/bin/printenv PATH"
+        guard let output = runShortProcess(loginShell, ["-l", "-c", script], timeout: 5),
+              let path = loginPath(fromShellOutput: output) else { return nil }
+        return find(name, inPath: path)
     }
 
-    /// Picks the answer out of a login shell's stdout and vets it. Internal so tests can call it directly.
-    static func accept(_ output: String) -> String? {
-        // Login shells can print noise from rc files first; the answer is the last non-empty line.
-        guard let line = output.split(whereSeparator: \.isNewline)
-            .map({ $0.trimmingCharacters(in: .whitespaces) })
-            .last(where: { !$0.isEmpty }) else { return nil }
-        guard line.hasPrefix("/") else { return nil }   // rejects aliases, functions, builtins ("alias ls=...")
-        let real = URL(fileURLWithPath: line).resolvingSymlinksInPath().path
+    static let pathMarker = "__SINGULARITY_PATH__"
+
+    /// The line after the marker line in the login shell's output.
+    static func loginPath(fromShellOutput output: String) -> String? {
+        let lines = output.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let marker = lines.firstIndex(of: pathMarker), marker + 1 < lines.count else { return nil }
+        let path = lines[marker + 1]
+        return path.isEmpty ? nil : path
+    }
+
+    /// Walks `path` (a PATH value) in order and returns the first `<dir>/<name>` that passes `vet`.
+    /// Empty and relative entries are skipped (they would depend on the current directory).
+    public static func find(_ name: String, inPath path: String) -> String? {
+        guard CommandPolicy.isValidName(name), !CommandPolicy.isRefused(name) else { return nil }
+        for entry in path.split(separator: ":", omittingEmptySubsequences: true) where entry.hasPrefix("/") {
+            let directory = entry.hasSuffix("/") ? String(entry.dropLast()) : String(entry)
+            if let found = vet(directory + "/" + name) { return found }
+        }
+        return nil
+    }
+
+    /// `candidate` if it is (after following symlinks) an executable regular file whose name and
+    /// whose target's name are both allowed; else nil. Returned as given, not the symlink target:
+    /// the approval screen shows and pins this path.
+    static func vet(_ candidate: String) -> String? {
+        let real = URL(fileURLWithPath: candidate).resolvingSymlinksInPath().path
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: real, isDirectory: &isDirectory), !isDirectory.boolValue,
               FileManager.default.isExecutableFile(atPath: real) else { return nil }
         // A friendly name can point at an interpreter (foo -> python3): check both names.
-        if CommandPolicy.isRefused((line as NSString).lastPathComponent)
+        if CommandPolicy.isRefused((candidate as NSString).lastPathComponent)
             || CommandPolicy.isRefused((real as NSString).lastPathComponent) { return nil }
-        return line   // as printed, not the symlink target: the approval screen shows and pins this
+        return candidate
     }
 
     /// Runs a program with empty stdin, discards stderr, and returns stdout; nil on failure or

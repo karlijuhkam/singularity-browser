@@ -23,6 +23,10 @@ struct PluginSettings: View {
     var body: some View {
         Form {
             Section("Plugins") {
+                if let warning = state.plugins.stateWarning {
+                    Text(verbatim: warning)
+                        .foregroundStyle(.orange)
+                }
                 if state.plugins.plugins.isEmpty {
                     Text("No plugins yet. Add a plugin folder, or put one in ~/Singularity/plugins.")
                         .foregroundStyle(.secondary)
@@ -44,7 +48,7 @@ struct PluginSettings: View {
                     Spacer()
                 }
                 if let message {
-                    Text(verbatim: message.text)
+                    Text(verbatim: PluginText.line(message.text, max: 300))
                         .font(.caption)
                         .foregroundStyle(message.isError ? .red : .green)
                 }

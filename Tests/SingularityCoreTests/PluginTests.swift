@@ -574,8 +574,9 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
     // MARK: Command broker
 
     @Test func resolveFindsCommands() {
-        // `uptime` rather than `ls`: zsh users often alias `ls`, and `command -v` would print the alias.
         #expect(CommandBroker.resolve("uptime", loginShell: "/bin/zsh") == "/usr/bin/uptime")
+        // A zsh builtin, but PluginProcess execs files, so the file is what counts.
+        #expect(CommandBroker.resolve("echo", loginShell: "/bin/zsh") == "/bin/echo")
         #expect(CommandBroker.resolve("definitely-not-a-real-command-xyz", loginShell: "/bin/zsh") == nil)
     }
 
@@ -589,34 +590,52 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(CommandBroker.resolve("bash", loginShell: nope) == nil)
     }
 
-    @Test func acceptTakesLastLineAndChecksThePath() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("broker-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        func make(_ name: String, mode: Int) throws -> String {
-            let path = dir.appendingPathComponent(name).path
+    @Test func loginPathIsTheLineAfterTheMarker() {
+        #expect(CommandBroker.loginPath(fromShellOutput: "Welcome!\nnoise __SINGULARITY_PATH__\n__SINGULARITY_PATH__\n/a:/b\n") == "/a:/b")
+        #expect(CommandBroker.loginPath(fromShellOutput: "/a:/b\n") == nil)                     // no marker
+        #expect(CommandBroker.loginPath(fromShellOutput: "__SINGULARITY_PATH__\n") == nil)      // nothing after it
+        #expect(CommandBroker.loginPath(fromShellOutput: "__SINGULARITY_PATH__\n\n/a\n") == nil)
+    }
+
+    @Test func findWalksThePathInOrder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("broker-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        func dir(_ name: String) throws -> String {
+            let path = root.appendingPathComponent(name).path
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+            return path
+        }
+        func make(_ dir: String, _ name: String, mode: Int) -> String {
+            let path = dir + "/" + name
             FileManager.default.createFile(atPath: path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: mode])
             return path
         }
-        let tool = try make("mytool", mode: 0o755)
-        #expect(CommandBroker.accept("Welcome back!\nsome rc noise\n\(tool)\n\n") == tool)
-        #expect(CommandBroker.accept("") == nil)
-        #expect(CommandBroker.accept("mytool\n") == nil)                       // relative / alias text
-        #expect(CommandBroker.accept("\(try make("plain", mode: 0o644))\n") == nil)  // not executable
-        #expect(CommandBroker.accept("\(dir.path)\n") == nil)                  // directory
-        #expect(CommandBroker.accept("\(dir.path)/missing\n") == nil)
+        let a = try dir("a"), b = try dir("b"), c = try dir("c"), d = try dir("d")
+        _ = make(a, "mytool", mode: 0o644)                                   // not executable: skipped
+        try FileManager.default.createDirectory(atPath: b + "/mytool", withIntermediateDirectories: true) // folder: skipped
+        let inC = make(c, "mytool", mode: 0o755)
+        _ = make(d, "mytool", mode: 0o755)
+        // Empty and relative entries are skipped; order decides between c and d.
+        #expect(CommandBroker.find("mytool", inPath: "::relative:./x:\(a):\(b):\(c)/:\(d)") == inC)
+        #expect(CommandBroker.find("mytool", inPath: "\(d):\(c)") == d + "/mytool")
+        #expect(CommandBroker.find("mytool", inPath: "relative:\(a)") == nil)
+        #expect(CommandBroker.find("missing", inPath: "\(c):\(d)") == nil)
 
-        // A harmless-looking name that points at an interpreter is refused, by either name.
-        let link = dir.appendingPathComponent("foo").path
-        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "/usr/bin/python3")
-        #expect(CommandBroker.accept("\(link)\n") == nil)
-        let shLink = dir.appendingPathComponent("friendly").path
-        try FileManager.default.createSymbolicLink(atPath: shLink, withDestinationPath: "/bin/sh")
-        #expect(CommandBroker.accept("\(shLink)\n") == nil)
-        // A symlink to something harmless is fine and returned as printed.
-        let okLink = dir.appendingPathComponent("alias-ok").path
-        try FileManager.default.createSymbolicLink(atPath: okLink, withDestinationPath: tool)
-        #expect(CommandBroker.accept("\(okLink)\n") == okLink)
+        // A harmless-looking name that points at an interpreter is refused, by either name;
+        // the walk then goes on to the next entry.
+        let e = try dir("e")
+        try FileManager.default.createSymbolicLink(atPath: e + "/mytool", withDestinationPath: "/usr/bin/python3")
+        #expect(CommandBroker.find("mytool", inPath: "\(e)") == nil)
+        #expect(CommandBroker.find("mytool", inPath: "\(e):\(d)") == d + "/mytool")
+        let f = try dir("f")
+        try FileManager.default.createSymbolicLink(atPath: f + "/friendly", withDestinationPath: "/bin/sh")
+        #expect(CommandBroker.find("friendly", inPath: f) == nil)
+        // A symlink to something harmless is fine and returned as joined, not as its target.
+        try FileManager.default.createSymbolicLink(atPath: f + "/ok", withDestinationPath: inC)
+        #expect(CommandBroker.find("ok", inPath: f) == f + "/ok")
+        // Refused names never get looked up.
+        _ = make(c, "bash", mode: 0o755)
+        #expect(CommandBroker.find("bash", inPath: c) == nil)
     }
 
     @Test func runReturnsOutput() async {

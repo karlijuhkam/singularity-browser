@@ -71,7 +71,7 @@ struct PluginApprovalSheet: View {
         case .failed(let error):
             VStack(alignment: .leading, spacing: 8) {
                 Text(verbatim: PluginText.line(pluginID, max: 60)).font(.title2.bold())
-                Text(verbatim: "Problem: " + error.userMessage).foregroundStyle(.red)
+                Text(verbatim: "Problem: " + PluginText.line(error.userMessage, max: 300)).foregroundStyle(.red)
                 DisclosureGroup("Details") {
                     Text(verbatim: PluginText.block(error.detail, max: 4000))
                         .font(.caption.monospaced())

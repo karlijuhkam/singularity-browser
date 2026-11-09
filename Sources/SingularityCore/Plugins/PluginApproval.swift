@@ -158,9 +158,46 @@ public struct PluginStateStore: Sendable {
     public let file: URL
     public init(file: URL) { self.file = file }
 
+    /// What reading the state file found.
+    public enum Loaded: Equatable, Sendable {
+        case missing
+        case loaded([String: PluginApproval])
+        /// The file exists but can't be read or decoded.
+        case corrupt
+    }
+
     /// Empty for a missing, unreadable or corrupt file: plugins then show as new and are re-approved.
     public func load() -> [String: PluginApproval] {
-        guard let data = try? Data(contentsOf: file) else { return [:] }
+        if case .loaded(let approvals) = read() { return approvals }
+        return [:]
+    }
+
+    /// Like `load`, but tells a missing file from a corrupt one.
+    public func read() -> Loaded {
+        // attributesOfItem doesn't follow links; any kind of item at the path counts as "there".
+        guard (try? FileManager.default.attributesOfItem(atPath: file.path)) != nil else { return .missing }
+        guard let data = try? Data(contentsOf: file), let approvals = decode(data) else { return .corrupt }
+        return .loaded(approvals)
+    }
+
+    /// For app start: reads the file; a corrupt one is renamed to
+    /// `plugins-state.corrupt-<date>.json` next to it (kept for inspection, and so the next save
+    /// doesn't overwrite it). Returns the approvals (empty unless loaded) and whether a corrupt file
+    /// was found.
+    public func loadSettingAsideCorrupt(now: Date = Date()) -> (approvals: [String: PluginApproval], wasCorrupt: Bool) {
+        switch read() {
+        case .missing: return ([:], false)
+        case .loaded(let approvals): return (approvals, false)
+        case .corrupt:
+            // ISO 8601 date and time, with "-" instead of ":" so the name is friendly everywhere.
+            let stamp = StateDates.formatter().string(from: now).replacingOccurrences(of: ":", with: "-")
+            let aside = file.deletingLastPathComponent().appending(path: "plugins-state.corrupt-\(stamp).json")
+            try? FileManager.default.moveItem(at: file, to: aside)
+            return ([:], true)
+        }
+    }
+
+    private func decode(_ data: Data) -> [String: PluginApproval]? {
         let decoder = JSONDecoder()
         let formatter = StateDates.formatter()
         decoder.dateDecodingStrategy = .custom { d in
@@ -170,7 +207,7 @@ public struct PluginStateStore: Sendable {
             }
             return date
         }
-        return (try? decoder.decode([String: PluginApproval].self, from: data)) ?? [:]
+        return try? decoder.decode([String: PluginApproval].self, from: data)
     }
 
     public func save(_ approvals: [String: PluginApproval]) throws {

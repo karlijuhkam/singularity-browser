@@ -65,12 +65,16 @@ enum PluginManagerError: LocalizedError, Equatable {
 /// When a plugin runs: its status is `.approved`, it is on in at least one Space, and every
 /// command path pinned at approval is still an executable file (`PluginLaunch.decide`). That is
 /// checked again, with a fresh fingerprint, right before every launch, crash restarts included
-/// (inside the supervisor's `makeProcess`).
+/// (inside the supervisor's `makeProcess`). A file can still change between that scan and Bun
+/// reading it; that gap can't be closed from outside, and the file watcher catches the change
+/// and pauses (or, in development mode, restarts) the plugin right after.
 @MainActor
 @Observable
 final class PluginManager {
     /// Sorted by id.
     private(set) var plugins: [InstalledPlugin] = []
+    /// Shown at the top of Settings → Plugins when the saved approvals couldn't be read.
+    private(set) var stateWarning: String?
 
     /// How long `send` waits for a plugin's answer. Longer than a command's 60 s limit, because a
     /// page action may run `op`, which can wait for Touch ID.
@@ -95,10 +99,14 @@ final class PluginManager {
     @ObservationIgnored private var watcher: ArtifactWatcher?
     @ObservationIgnored private var pendingRequests: [Int: PendingRequest] = [:]
     @ObservationIgnored private var nextRequestID = 1
+    /// Set when the app quits: nothing is launched after that.
+    @ObservationIgnored private var terminated = false
 
     private struct PendingRequest {
         let pluginID: String
         let continuation: CheckedContinuation<JSONValue?, Never>
+        /// Answers nil after `requestTimeout`; cancelled when the request finishes first.
+        let timeout: Task<Void, Never>
     }
 
     /// - Parameters:
@@ -110,7 +118,11 @@ final class PluginManager {
         self.runtime = runtime
         self.host = host
         self.store = PluginStateStore(file: paths.pluginStateFile)
-        self.approvals = store.load()
+        let loaded = store.loadSettingAsideCorrupt()
+        self.approvals = loaded.approvals
+        if loaded.wasCorrupt {
+            stateWarning = "Saved approvals couldn't be read and were set aside; plugins need approving again."
+        }
         launchApprovals.set(approvals)
     }
 
@@ -137,6 +149,7 @@ final class PluginManager {
 
     /// For app termination: kills every plugin process at once.
     func terminateAll() {
+        terminated = true
         watcher?.stop()
         watcher = nil
         for supervisor in supervisors.values { supervisor.terminateNow() }
@@ -156,15 +169,14 @@ final class PluginManager {
         return type == .typeDirectory || type == .typeSymbolicLink
     }
 
-    /// FSEvents reported these paths (relative to the plugins folder). The first component is
-    /// the plugin id; each affected plugin is refreshed 300 ms after its last event.
+    /// FSEvents reported these paths (relative to the plugins folder; the first component is the
+    /// plugin id). An empty list means events were dropped or couldn't be mapped: every plugin is
+    /// looked at again (`PluginRefreshPlan`). Each affected plugin is refreshed 300 ms after its
+    /// last event.
     private func filesChanged(_ relativePaths: [String]) {
-        var ids = Set(relativePaths.compactMap { $0.split(separator: "/").first.map(String.init) })
-        // Folders moved in or out arrive as a single folder event at most: compare the listing too.
-        let onDisk = Set(folderIDs())
-        let known = Set(plugins.map(\.id))
-        ids.formUnion(onDisk.symmetricDifference(known))
-        for id in ids where !id.hasPrefix(".") {
+        let ids = PluginRefreshPlan.ids(changedPaths: relativePaths, onDisk: Set(folderIDs()),
+                                        known: Set(plugins.map(\.id)))
+        for id in ids {
             debounces[id]?.cancel()
             debounces[id] = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(300))
@@ -267,6 +279,7 @@ final class PluginManager {
     }
 
     private func launch(_ id: String) async {
+        guard !terminated else { return }
         let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
         let dataFolder = paths.pluginsDataDirectory(id)
         let runtime = runtime, host = host, approvals = launchApprovals
@@ -333,12 +346,13 @@ final class PluginManager {
         let requestID = nextRequestID
         nextRequestID += 1
         return await withCheckedContinuation { continuation in
-            pendingRequests[requestID] = PendingRequest(pluginID: pluginID, continuation: continuation)
-            supervisor.send(.pageMessage(requestID: requestID, tabID: tabID, frameHost: frameHost, payload: payload))
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: Self.requestTimeout)
+            let timeout = Task { @MainActor [weak self] in
+                // A cancelled sleep throws: then the request was already answered.
+                guard (try? await Task.sleep(for: Self.requestTimeout)) != nil else { return }
                 self?.finishRequest(requestID, pluginID: pluginID, nil)
             }
+            pendingRequests[requestID] = PendingRequest(pluginID: pluginID, continuation: continuation, timeout: timeout)
+            supervisor.send(.pageMessage(requestID: requestID, tabID: tabID, frameHost: frameHost, payload: payload))
         }
     }
 
@@ -346,6 +360,7 @@ final class PluginManager {
     private func finishRequest(_ requestID: Int, pluginID: String, _ value: JSONValue?) {
         guard let request = pendingRequests[requestID], request.pluginID == pluginID else { return }
         pendingRequests[requestID] = nil
+        request.timeout.cancel()
         request.continuation.resume(returning: value)
     }
 
@@ -430,15 +445,31 @@ final class PluginManager {
         reapply(id)
     }
 
-    /// Development mode: while on, edited files restart the plugin instead of pausing it. It can be
-    /// switched on only while the plugin is approved as it is now (`canSetDevelopmentMode`).
+    /// Development mode: while on, edited files restart the plugin instead of pausing it.
+    /// Switching it on happens in the plugin's queue after a fresh scan, and only if the plugin is
+    /// approved exactly as it is now (same fingerprint): otherwise it would run unreviewed changes.
     /// Switching it off pauses the plugin if its files differ from the approved ones.
     func setDevelopmentMode(_ id: String, _ on: Bool) {
-        guard var approval = approvals[id], let plugin = plugin(id),
-              PluginStatusText.canSetDevelopmentMode(to: on, status: plugin.status) else { return }
+        enqueue(id) { [weak self] in await self?.performSetDevelopmentMode(id, on) }
+    }
+
+    private func performSetDevelopmentMode(_ id: String, _ on: Bool) async {
+        guard var approval = approvals[id], approval.developmentMode != on else { return }
+        if on {
+            let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
+            let scan = await Task.detached { PluginScan.scan(folder: folder) }.value
+            guard let current = approvals[id], scan.status(approval: current) == .approved,
+                  scan.fingerprint == current.fingerprint else {
+                appendLog(id, "warn", "development mode not switched on: the plugin changed since you approved it")
+                await apply(scan, to: id, restart: false)
+                return
+            }
+            scans[id] = scan
+            approval = current
+        }
         approval.developmentMode = on
         saveQuietly(id, approval)
-        reapply(id)
+        if let scan = scans[id] { await apply(scan, to: id, restart: false) }
     }
 
     /// A Space was deleted: it can't be in any plugin's list any more.
@@ -512,11 +543,16 @@ final class PluginManager {
                 try FileManager.default.trashItem(at: url, resultingItemURL: nil)
             }.value
         }
-        do { try await trash(folder) } catch { throw PluginManagerError.removeFailed(error.localizedDescription) }
+        // Forget the approval first: if trashing fails half-way, nothing is left approved.
+        try setApproval(id, nil)
+        reviews[id] = nil
+        do { try await trash(folder) } catch {
+            // Still there, now unapproved: show it that way.
+            if let scan = scans[id] { await apply(scan, to: id, restart: false) }
+            throw PluginManagerError.removeFailed(error.localizedDescription)
+        }
         plugins.removeAll { $0.id == id }
         scans[id] = nil
-        reviews[id] = nil
-        try setApproval(id, nil)
         do { try await trash(dataFolder) } catch {
             throw PluginManagerError.removeFailed("the plugin is gone, but its data folder could not be moved: \(error.localizedDescription)")
         }

@@ -95,6 +95,25 @@ public enum PluginLaunch {
     }
 }
 
+// MARK: - Which plugins to look at again
+
+public enum PluginRefreshPlan {
+    /// Plugin ids to refresh after file events. `changedPaths` are relative to the plugins folder
+    /// (first component = plugin id); an empty list means "events arrived that couldn't be tied
+    /// to a plugin, or some were dropped" and refreshes every plugin on disk or known. Folders
+    /// that appeared or disappeared are always included. Names starting with "." are never plugins.
+    public static func ids(changedPaths: [String], onDisk: Set<String>, known: Set<String>) -> Set<String> {
+        var ids: Set<String>
+        if changedPaths.isEmpty {
+            ids = onDisk.union(known)
+        } else {
+            ids = Set(changedPaths.compactMap { $0.split(separator: "/").first.map(String.init) })
+            ids.formUnion(onDisk.symmetricDifference(known))
+        }
+        return ids.filter { !$0.hasPrefix(".") }
+    }
+}
+
 // MARK: - Status in plain words
 
 public enum PluginStatusText {

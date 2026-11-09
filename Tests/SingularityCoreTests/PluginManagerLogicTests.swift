@@ -77,6 +77,37 @@ import Testing
         #expect(store.load()["echo"]?.fileHashes == ["a.ts": "11", "b/c.ts": "22"])
     }
 
+    @Test func corruptStateFileIsSetAside() throws {
+        let dir = try tempDir()
+        let file = dir.appending(path: "plugins-state.json")
+        let store = PluginStateStore(file: file)
+        #expect(store.read() == .missing)
+        #expect(store.loadSettingAsideCorrupt().wasCorrupt == false)
+
+        try store.save([:])
+        #expect(store.read() == .loaded([:]))
+
+        try "{ not json".write(to: file, atomically: true, encoding: .utf8)
+        #expect(store.read() == .corrupt)
+        let result = store.loadSettingAsideCorrupt(now: Date(timeIntervalSince1970: 0))
+        #expect(result.wasCorrupt && result.approvals.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        let aside = dir.appending(path: "plugins-state.corrupt-1970-01-01T00-00-00.000Z.json")
+        #expect(try String(contentsOf: aside, encoding: .utf8) == "{ not json")
+        #expect(store.read() == .missing)
+    }
+
+    // MARK: Refresh plan
+
+    @Test func refreshPlan() {
+        let onDisk: Set = ["a", "b", "new"], known: Set = ["a", "b", "gone"]
+        #expect(PluginRefreshPlan.ids(changedPaths: ["a/x.ts", "a/y.ts", ".staging/z"], onDisk: onDisk, known: known)
+                == ["a", "new", "gone"])
+        // Dropped or unmappable events: everything.
+        #expect(PluginRefreshPlan.ids(changedPaths: [], onDisk: onDisk, known: known) == ["a", "b", "new", "gone"])
+        #expect(PluginRefreshPlan.ids(changedPaths: [], onDisk: [".hidden"], known: []) == [])
+    }
+
     // MARK: Changed files
 
     @Test func fileChangesListAddedRemovedChanged() {

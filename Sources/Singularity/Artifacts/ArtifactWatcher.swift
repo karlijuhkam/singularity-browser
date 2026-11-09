@@ -22,7 +22,8 @@ final class ArtifactWatcher {
 
     /// - Parameter includeFoldersAndHiddenFiles: false (artifacts): only visible files are reported.
     ///   true (plugins): folders and dotfiles too, because a plugin folder moved in or out arrives
-    ///   as one folder event, and dotfiles count towards a plugin's fingerprint.
+    ///   as one folder event, and dotfiles count towards a plugin's fingerprint. In this mode an
+    ///   empty change list means "events were dropped or couldn't be mapped: rescan everything".
     init(root: URL, includeFoldersAndHiddenFiles: Bool = false, onChange: @escaping @MainActor ([Change]) -> Void) {
         self.root = root
         self.includeFoldersAndHiddenFiles = includeFoldersAndHiddenFiles
@@ -77,15 +78,26 @@ final class ArtifactWatcher {
         self.stream = nil
     }
 
+    /// FSEvents flags meaning "events were lost or merged; look at everything below this folder".
+    private static let rescanFlags = FSEventStreamEventFlags(
+        kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped)
+
     private func handle(paths: [String], flags: [FSEventStreamEventFlags]) {
         var changes: [Change] = []
         var seen = Set<String>()
+        // Plugin mode: some events couldn't be tied to a path under `root` (dropped or merged
+        // events, the root folder itself, or a deleted file whose path no longer maps back).
+        var mustRescan = false
         for (path, flag) in zip(paths, flags) {
+            if includeFoldersAndHiddenFiles && flag & Self.rescanFlags != 0 { mustRescan = true }
             let isFile = flag & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) != 0
             guard isFile || includeFoldersAndHiddenFiles else { continue }
             let url = URL(fileURLWithPath: path)
-            guard let relative = ArtifactFiles.relativePath(of: url, in: root),
-                  includeFoldersAndHiddenFiles || !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
+            guard let relative = ArtifactFiles.relativePath(of: url, in: root) else {
+                if includeFoldersAndHiddenFiles { mustRescan = true }
+                continue
+            }
+            guard includeFoldersAndHiddenFiles || !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
                   seen.insert(relative).inserted
             else { continue }
             // Flags are unreliable across save strategies (in-place write vs. write-then-rename),
@@ -93,8 +105,12 @@ final class ArtifactWatcher {
             let exists = FileManager.default.fileExists(atPath: url.path)
             changes.append(Change(relativePath: relative, kind: exists ? .changed : .removed))
         }
-        // In plugin mode, report even when no path could be mapped (a deleted file's path may not
-        // map back under `root` once it's gone), so the listener can at least rescan the folder.
-        if !changes.isEmpty || (includeFoldersAndHiddenFiles && !paths.isEmpty) { onChange(changes) }
+        // An empty list in plugin mode means "something happened that can't be pinned down: look
+        // at everything" (see PluginRefreshPlan).
+        if mustRescan {
+            onChange([])
+        } else if !changes.isEmpty {
+            onChange(changes)
+        }
     }
 }
