@@ -18,6 +18,8 @@ import WebKit
 final class WebTabController: NSObject {
     let tabID: UUID
     let spaceID: UUID
+    /// Artifact pages are not recorded in history and have no favicon.
+    let isArtifact: Bool
     @ObservationIgnored let webView: WKWebView
     @ObservationIgnored private weak var state: AppState?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
@@ -28,9 +30,10 @@ final class WebTabController: NSObject {
     private(set) var isLoading = false
     private(set) var estimatedProgress = 0.0
 
-    init(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration, state: AppState?) {
+    init(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration, state: AppState?, isArtifact: Bool = false) {
         self.tabID = tabID
         self.spaceID = spaceID
+        self.isArtifact = isArtifact
         self.state = state
         self.webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
@@ -159,6 +162,7 @@ extension WebTabController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard !isArtifact else { return }
         if let url = webView.url {
             state?.recordVisit(spaceID: spaceID, url: url, title: webView.title ?? "")
         }

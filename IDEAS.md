@@ -5,3 +5,5 @@ Things that came up while building but are not in the v1 brief. Nothing here get
 - Drag and drop tabs between sections (pinned ↔ folder ↔ open). v1 uses context menus for moves and drag only to reorder within a section.
 - Configurable search engine (v1 hard-codes DuckDuckGo in `URLInput.searchURL`).
 - Download progress UI (v1 saves straight to ~/Downloads without UI).
+- Artifact tabs whose file was deleted currently show the server's "Not Found"; could close or mark them instead.
+- HTTP Range requests on the artifact server (seeking in large video/audio artifacts).

@@ -22,16 +22,19 @@ sync of any kind · browser extensions (including WKWebExtension) · any built-i
 ```
 Sources/
   SingularityCore/   Pure Swift, no AppKit/WebKit. Models, persistence, palette logic. Unit-tested.
-    Model/           Space, Folder, BrowserTab (TabKind enum: .web, .terminal; .artifact in Phase 3)
+    Model/           Space, Folder, BrowserTab (TabKind enum: .web, .terminal, .artifact)
     Persistence/     Paths (~/Singularity layout), SpaceStore (JSON), HistoryStore (jsonl), Slug
     Palette/         FuzzyMatcher, URLInput (URL vs search text)
     Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath
+    Artifacts/       ArtifactFiles (path containment, MIME types, page listing), ArtifactAuth (token checks)
   Singularity/       The app executable.
     App/             @main app, AppState (@Observable, the single source of truth), menu commands
     Sidebar/         Space rail, tab list (pinned / folders / open), editors
     Web/             WebViewRegistry (one WKWebView per tab), WebTabController (KVO + delegates)
     Palette/         Command palette overlay (Cmd+T / Cmd+K)
     Terminal/        TerminalRegistry, TerminalSession (SwiftTerm view + login shell + title polling)
+    Artifacts/       ArtifactServer (FlyingFox, static files only), ArtifactWatcher (FSEvents),
+                     ArtifactHost(s) (per-Space token + server + watcher), ArtifactBridge (window.singularity)
 Tests/SingularityCoreTests/   Swift Testing
 ```
 
@@ -40,6 +43,8 @@ Key decisions:
 - **Not sandboxed.** Terminal tabs need to spawn login shells. Hardened runtime is on.
 - On disk: `~/Singularity/state.json` (Space order and selection) and `~/Singularity/spaces/<slug>/{space.json, history.jsonl, favicons/}`. Writes are atomic and debounced.
 - **Known exception to "everything under ~/Singularity/":** each Space's cookies, logins and site data live in WebKit's store at `~/Library/WebKit/dev.roosa.Singularity/WebsiteDataStore/<space id>/`. WebKit chooses that location and the app cannot move it. Consequences: copying `~/Singularity/` does not carry logins over; deleting `~/Singularity/` by hand leaves the cookies behind (deleting a Space in the app does remove them); and the stores are tied to the bundle ID, so **never change `dev.roosa.Singularity`**, or every Space starts logged out. Changing the signing identity is fine.
+- **Artifact server auth (decided with the owner; the brief asked for a Bearer header on every request).** WebKit cannot add headers to page sub-requests, so: the app loads each artifact tab's first request with `Authorization: Bearer <token>`; the server answers that with `Set-Cookie: singularity_token=…; HttpOnly; SameSite=Strict`; sub-requests and `fetch()` then use the cookie. The token is random per Space per launch, never in files, never readable by page JS, and the cookie lives only in that Space's WebKit store. (Setting the cookie natively via `WKHTTPCookieStore` does not work: WebKit silently drops cookies for a bare-IP domain.) The server also refuses non-loopback Host headers (DNS rebinding) and sends no CORS headers.
+- `window.singularity` exists only on the Space's artifact origin (the script checks `location.origin`, and the native handler checks the message's `securityOrigin`). `prompt()` always asks (native sheet), then bracketed-pastes into the Space's most recently used running terminal and presses Return. Phase 5 replaces "always ask" with the Space policy.
 - WKWebViews are created lazily (only when a tab is first shown) and kept alive across Space switches.
 - Later phases (see the brief): per-Space artifact server on 127.0.0.1 with a bearer token; MCP via a `singularity-mcp` stdio launcher → Unix socket at `~/Singularity/.run/mcp.sock`; approval policy + `agent-log.jsonl`.
 

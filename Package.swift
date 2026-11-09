@@ -15,6 +15,8 @@ let package = Package(
         // Terminal emulator for terminal tabs. Pinned to the 1.99 line (v1.20 pulls in a benchmark
         // package with jemalloc by default). Exact version is locked in Package.resolved.
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.99.3"),
+        // Small HTTP server (no further dependencies) for each Space's artifact server.
+        .package(url: "https://github.com/swhitty/FlyingFox.git", from: "0.27.1"),
     ],
     targets: [
         // Pure Swift: models, persistence, palette logic. No AppKit/WebKit, so it is unit-testable.
@@ -26,6 +28,8 @@ let package = Package(
             dependencies: [
                 "SingularityCore",
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
+                .product(name: "FlyingFox", package: "FlyingFox"),
+                .product(name: "FlyingSocks", package: "FlyingFox"),
             ]
         ),
 

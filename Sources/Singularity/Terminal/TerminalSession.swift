@@ -23,6 +23,9 @@ final class TerminalSession {
     private(set) var isRunning = false
     /// Name of the program in the foreground, or nil while the shell sits at its prompt.
     private(set) var foregroundProgram: String?
+    /// Becomes true once the shell has printed anything (normally its first prompt), i.e. it has
+    /// finished reading its startup files and is ready for input.
+    @ObservationIgnored private(set) var hasProducedOutput = false
 
     @ObservationIgnored private weak var state: AppState?
     @ObservationIgnored private var pollTimer: Timer?
@@ -48,6 +51,14 @@ final class TerminalSession {
             self.state?.restartTerminal(self.tabID, in: self.spaceID)
         }
         start(in: workingDirectory)
+    }
+
+    /// Waits until the shell has printed its first output (it is ready for input), at most `timeout`.
+    func waitUntilReady(timeout: Duration = .seconds(5)) async {
+        let deadline = ContinuousClock.now + timeout
+        while !hasProducedOutput, isRunning, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     /// Called when the tab is closed or the app quits: hang up the shell and stop polling.
@@ -81,6 +92,16 @@ final class TerminalSession {
             currentDirectory: directory
         )
         isRunning = true
+
+        // SwiftTerm calls this on its I/O thread after each batch of output. We only need the
+        // first one, so we hop to the main thread once and then remove the handler.
+        view.setProcessOutputHandler { [weak self] in
+            Task { @MainActor in
+                guard let self, !self.hasProducedOutput else { return }
+                self.hasProducedOutput = true
+                self.view.setProcessOutputHandler(nil)
+            }
+        }
 
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             // Timers scheduled from the main thread fire on the main thread.

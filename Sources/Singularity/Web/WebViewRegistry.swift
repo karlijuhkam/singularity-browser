@@ -31,6 +31,19 @@ final class WebViewRegistry {
         return controller
     }
 
+    /// Artifact tabs: same Space data store, plus the `window.singularity` bridge.
+    func artifactController(for tab: BrowserTab, in space: Space, host: ArtifactHost, request: URLRequest) -> WebTabController {
+        if let existing = controllers[tab.id] { return existing }
+        let configuration = Self.configuration(for: space)
+        if let port = host.port {
+            ArtifactBridge(state: state, spaceID: space.id, port: port).install(in: configuration)
+        }
+        let controller = WebTabController(tabID: tab.id, spaceID: space.id, configuration: configuration, state: state, isArtifact: true)
+        controllers[tab.id] = controller
+        controller.webView.load(request)
+        return controller
+    }
+
     /// Registers a web view that WebKit created for a pop-up (see `AppState.openPopup`).
     func adoptPopup(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration) -> WebTabController {
         let controller = WebTabController(tabID: tabID, spaceID: spaceID, configuration: configuration, state: state)

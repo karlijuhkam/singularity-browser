@@ -37,7 +37,10 @@ struct TabRow: View {
 
     @ViewBuilder
     private var favicon: some View {
-        if tab.isTerminal {
+        if tab.isArtifact {
+            Image(systemName: "doc.richtext")
+                .foregroundStyle(.secondary)
+        } else if tab.isTerminal {
             let session = state.terminals.existingSession(tab.id)
             Image(systemName: session?.foregroundProgram != nil ? "terminal.fill" : "terminal")
                 .foregroundStyle(session?.isRunning == false ? .tertiary : .secondary)
@@ -74,6 +77,13 @@ struct TabRow: View {
 
         if tab.isTerminal, state.terminals.existingSession(tab.id)?.isRunning == false {
             Button("Start New Shell") { state.restartTerminal(tab.id, in: space.id) }
+        }
+
+        if let path = tab.artifactPath {
+            Button("Show in Finder") {
+                let file = state.paths.artifactsDirectory(space.slug).appending(path: path)
+                NSWorkspace.shared.activateFileViewerSelecting([file])
+            }
         }
 
         if let url = tab.url {

@@ -72,7 +72,7 @@ private struct AddressRow: View {
             state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent)
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: state.selectedTab?.url?.scheme == "https" ? "lock.fill" : "magnifyingglass")
+                Image(systemName: addressSymbol)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Text(addressText)
@@ -91,7 +91,16 @@ private struct AddressRow: View {
         .help("Search or enter address")
     }
 
+    private var addressSymbol: String {
+        guard let tab = state.selectedTab else { return "magnifyingglass" }
+        if tab.isArtifact { return "doc.richtext" }
+        if tab.isTerminal { return "terminal" }
+        return tab.url?.scheme == "https" ? "lock.fill" : "magnifyingglass"
+    }
+
     private var addressText: String {
+        if let path = state.selectedTab?.artifactPath { return "artifacts/\(path)" }
+        if let directory = state.selectedTab?.workingDirectory { return directory }
         guard let url = state.selectedTab?.url else { return "Search or enter address" }
         if let host = url.host() {
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host

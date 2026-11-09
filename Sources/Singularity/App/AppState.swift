@@ -25,11 +25,16 @@ final class AppState {
 
     let web: WebViewRegistry
     let terminals: TerminalRegistry
+    let artifacts: ArtifactHosts
     let favicons: FaviconStore
 
     @ObservationIgnored let paths: Paths
     @ObservationIgnored private let store: SpaceStore
     @ObservationIgnored private var historyCache: [UUID: [HistoryEntry]] = [:]
+    /// Per Space: the terminal tab that was selected most recently (target of `singularity.prompt`).
+    @ObservationIgnored private var activeTerminalBySpace: [UUID: UUID] = [:]
+    /// Per Space: artifact pages we already know about, so only genuinely new files open a tab.
+    @ObservationIgnored private var knownArtifactPages: [UUID: Set<String>] = [:]
 
     // Saving: changes mark things dirty; a short debounce then writes them all at once.
     @ObservationIgnored private var dirtySpaceIDs: Set<UUID> = []
@@ -41,6 +46,7 @@ final class AppState {
         self.store = SpaceStore(paths: paths)
         self.web = WebViewRegistry()
         self.terminals = TerminalRegistry()
+        self.artifacts = ArtifactHosts()
         self.favicons = FaviconStore(paths: paths)
 
         let loaded = store.load()
@@ -55,6 +61,7 @@ final class AppState {
 
         web.state = self
         terminals.state = self
+        artifacts.state = self
 
         // When the app quits: write pending changes and hang up all shells.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
@@ -123,6 +130,9 @@ final class AppState {
         guard spaces.count > 1, let space = space(id) else { return }
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
+        artifacts.stop(id)
+        knownArtifactPages[id] = nil
+        activeTerminalBySpace[id] = nil
         spaces.removeAll { $0.id == id }
         dirtySpaceIDs.remove(id) // don't recreate the folder with a pending save
         historyCache[id] = nil
@@ -158,9 +168,9 @@ final class AppState {
         loadSelectedTab()
     }
 
-    /// Opens a URL in a new tab in the current Space and selects it.
-    func openInNewTab(_ url: URL) {
-        guard let spaceID = selectedSpaceID else { return }
+    /// Opens a URL in a new tab and selects it (in the current Space unless one is given).
+    func openInNewTab(_ url: URL, spaceID: UUID? = nil) {
+        guard let spaceID = spaceID ?? selectedSpaceID else { return }
         let tab = BrowserTab.web(url)
         mutateSpace(spaceID) {
             $0.append(tab)
@@ -176,7 +186,7 @@ final class AppState {
 
     /// Loads a URL in the selected web tab, or in a new tab if no web tab is selected.
     func navigateSelectedTab(to url: URL) {
-        guard let space = selectedSpace, let tab = space.selectedTab, !tab.isTerminal else {
+        guard let space = selectedSpace, let tab = space.selectedTab, case .web = tab.kind else {
             openInNewTab(url)
             return
         }
@@ -283,10 +293,18 @@ final class AppState {
 
     /// Called by WebTabController when the page title or URL changes.
     func webTabDidChange(tabID: UUID, spaceID: UUID, title: String?, url: URL?) {
+        let host = artifacts.host(spaceID)
         mutateSpace(spaceID) { space in
             space.updateTab(tabID) { tab in
                 if let title { tab.title = title }
-                if let url { tab.kind = .web(url: url) }
+                guard let url else { return }
+                if tab.isArtifact {
+                    // Stays an artifact tab; follow links between artifact pages. If the page
+                    // navigates elsewhere, the tab still reopens its artifact next time.
+                    if let path = host?.artifactPath(for: url) { tab.kind = .artifact(path: path) }
+                } else {
+                    tab.kind = .web(url: url)
+                }
             }
         }
     }
@@ -327,6 +345,8 @@ final class AppState {
     /// Called when a page finishes loading: records it in the Space's history.
     func recordVisit(spaceID: UUID, url: URL, title: String) {
         guard let space = space(spaceID), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        // Artifact URLs contain this launch's port, so they'd be dead links in history.
+        if artifacts.host(spaceID)?.artifactPath(for: url) != nil { return }
         let entry = HistoryEntry(url: url, title: title)
         do {
             try HistoryStore(file: paths.historyFile(space.slug)).append(entry)
@@ -355,14 +375,150 @@ final class AppState {
 
     // MARK: - Internals
 
-    /// Makes sure the selected tab of the selected Space is live (a web view or a running shell).
-    /// Both are created lazily, so restored tabs cost nothing until first shown.
+    /// Makes sure the selected tab of the selected Space is live (a web view or a running shell),
+    /// and that the Space's artifact server runs. All of these start lazily, so restored tabs and
+    /// Spaces cost nothing until first shown.
     func loadSelectedTab() {
-        guard let space = selectedSpace, let tab = space.selectedTab else { return }
-        switch tab.kind {
-        case .web: _ = web.controller(for: tab, in: space)
-        case .terminal: _ = terminals.session(for: tab, in: space)
+        guard let space = selectedSpace else { return }
+        if artifacts.host(space.id) == nil {
+            Task { _ = await ensureArtifactHost(space) }
         }
+        guard let tab = space.selectedTab else { return }
+        switch tab.kind {
+        case .web:
+            _ = web.controller(for: tab, in: space)
+        case .terminal:
+            _ = terminals.session(for: tab, in: space)
+            activeTerminalBySpace[space.id] = tab.id
+        case .artifact(let path):
+            guard web.existingController(tab.id) == nil else { return }
+            // The page can only load once the Space's server runs.
+            Task {
+                guard let host = await ensureArtifactHost(space),
+                      web.existingController(tab.id) == nil,
+                      let request = host.request(for: path)
+                else { return }
+                _ = web.artifactController(for: tab, in: space, host: host, request: request)
+            }
+        }
+    }
+
+    private func ensureArtifactHost(_ space: Space) async -> ArtifactHost? {
+        let host = await artifacts.ensureStarted(space, root: paths.artifactsDirectory(space.slug))
+        if let host, knownArtifactPages[space.id] == nil {
+            knownArtifactPages[space.id] = Set(host.pages)
+        }
+        return host
+    }
+
+    // MARK: - Artifacts
+
+    /// Called by a Space's folder watcher. New HTML pages get a tab (without taking focus);
+    /// changed files reload the artifact tabs that show them.
+    func artifactsDidChange(spaceID: UUID, changes: [ArtifactWatcher.Change]) {
+        guard let space = space(spaceID) else { return }
+        var known = knownArtifactPages[spaceID] ?? []
+        var reloadAll = false
+        var pagesToReload = Set<String>()
+
+        for change in changes {
+            let path = change.relativePath
+            let isPage = ArtifactFiles.isArtifactPage(path)
+            switch change.kind {
+            case .removed:
+                known.remove(path)
+            case .changed where isPage:
+                pagesToReload.insert(path)
+                if known.insert(path).inserted, !space.tabs.contains(where: { $0.artifactPath == path }) {
+                    mutateSpace(spaceID) { $0.append(.artifact(path: path)) }
+                }
+            case .changed:
+                reloadAll = true // a script, stylesheet or image changed; any page may use it
+            }
+        }
+        knownArtifactPages[spaceID] = known
+
+        for tab in space.tabs {
+            guard let path = tab.artifactPath, reloadAll || pagesToReload.contains(path) else { continue }
+            web.existingController(tab.id)?.reload()
+        }
+    }
+
+    /// Opens an artifact page (or selects its tab if one is already open).
+    func openArtifact(_ path: String) {
+        guard let space = selectedSpace else { return }
+        if let existing = space.tabs.first(where: { $0.artifactPath == path }) {
+            selectTab(existing.id)
+            return
+        }
+        let tab = BrowserTab.artifact(path: path)
+        mutateSpace(space.id) {
+            $0.append(tab)
+            $0.selectedTabID = tab.id
+        }
+        loadSelectedTab()
+    }
+
+    func revealArtifactsFolder() {
+        guard let space = selectedSpace else { return }
+        let folder = paths.artifactsDirectory(space.slug)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(folder)
+    }
+
+    /// `singularity.prompt(text)` from an artifact page: after the user confirms, paste the text
+    /// into the Space's active terminal and press Return. (Phase 5 replaces "always ask" with the
+    /// Space's approval policy.)
+    func sendPromptFromArtifact(_ text: String, spaceID: UUID) async -> PromptResult {
+        guard let space = space(spaceID), let (tab, session) = activeTerminal(in: space) else { return .noTerminal }
+
+        let alert = NSAlert()
+        alert.messageText = "Send this to the terminal?"
+        alert.informativeText = "An artifact page in “\(space.name)” wants to paste the text below into “\(tab.displayTitle)” and press Return."
+        let scrollView = NSTextView.scrollableTextView()
+        scrollView.frame = NSRect(x: 0, y: 0, width: 440, height: 140)
+        if let textView = scrollView.documentView as? NSTextView {
+            textView.string = text.count > 4000 ? String(text.prefix(4000)) + "\n…" : text
+            textView.isEditable = false
+            textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        }
+        alert.accessoryView = scrollView
+        alert.addButton(withTitle: "Send")
+        alert.addButton(withTitle: "Cancel")
+        let response: NSApplication.ModalResponse
+        if let window = NSApp.mainWindow ?? NSApp.keyWindow {
+            response = await alert.beginSheetModal(for: window)
+        } else {
+            response = alert.runModal()
+        }
+        guard response == .alertFirstButtonReturn else { return .declined }
+        guard session.isRunning else { return .noTerminal }
+        // A shell started just now for this prompt may still be reading ~/.zshrc.
+        await session.waitUntilReady()
+
+        // Bracketed paste keeps multi-line text together as one message in programs such as
+        // Claude Code; the short pause lets the program finish handling the paste before Return.
+        session.view.pasteText(text)
+        try? await Task.sleep(for: .milliseconds(150))
+        session.view.send(txt: "\r")
+        return .sent
+    }
+
+    /// The terminal that `singularity.prompt` types into: the most recently selected terminal tab
+    /// with a running shell, else any terminal tab with a running shell. If the Space's terminal
+    /// tabs haven't been opened yet since launch (shells start lazily), starts the shell of the
+    /// preferred one. Nil only when the Space has no terminal tab at all.
+    private func activeTerminal(in space: Space) -> (BrowserTab, TerminalSession)? {
+        var candidates = space.tabsInSidebarOrder.filter(\.isTerminal)
+        if let preferred = activeTerminalBySpace[space.id], let index = candidates.firstIndex(where: { $0.id == preferred }) {
+            candidates.insert(candidates.remove(at: index), at: 0)
+        }
+        for tab in candidates {
+            if let session = terminals.existingSession(tab.id), session.isRunning { return (tab, session) }
+        }
+        guard let tab = candidates.first(where: { terminals.existingSession($0.id) == nil }) else { return nil }
+        activeTerminalBySpace[space.id] = tab.id
+        return (tab, terminals.session(for: tab, in: space))
     }
 
     private func mutateSpace(_ id: UUID, _ change: (inout Space) -> Void) {

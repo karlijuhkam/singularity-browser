@@ -7,6 +7,7 @@ import Foundation
 ///     └─ spaces/<slug>/
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
+///        ├─ artifacts/              HTML artifacts, served by the Space's local server
 ///        └─ favicons/<host>.png
 ///
 /// `root` is injectable so tests can use a temporary directory.
@@ -34,6 +35,10 @@ public struct Paths: Sendable {
 
     public func historyFile(_ slug: String) -> URL {
         spaceDirectory(slug).appending(path: "history.jsonl")
+    }
+
+    public func artifactsDirectory(_ slug: String) -> URL {
+        spaceDirectory(slug).appending(path: "artifacts", directoryHint: .isDirectory)
     }
 
     public func faviconsDirectory(_ slug: String) -> URL {

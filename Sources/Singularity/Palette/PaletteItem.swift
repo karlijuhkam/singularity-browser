@@ -37,6 +37,13 @@ enum PaletteResults {
             .prefix(500)
             .map(historyItem)
         let commands = commandItems(state: state, space: space)
+        let openArtifacts = Set(space.tabs.compactMap(\.artifactPath))
+        let artifacts = (state.artifacts.host(space.id)?.pages ?? [])
+            .filter { !openArtifacts.contains($0) }
+            .map { path in
+                PaletteItem(id: "artifact-\(path)", title: (path as NSString).lastPathComponent, subtitle: "artifacts/\(path)",
+                            hint: "Artifact", icon: .symbol("doc.richtext"), action: .run { state.openArtifact(path) })
+            }
 
         if trimmed.isEmpty {
             return Array(tabs.prefix(8)) + commands
@@ -51,7 +58,7 @@ enum PaletteResults {
                 return (item, score + bonus)
             }
         }
-        let matches = (ranked(tabs, bonus: 300) + ranked(commands, bonus: 200) + ranked(Array(history), bonus: 0))
+        let matches = (ranked(tabs, bonus: 300) + ranked(commands, bonus: 200) + ranked(artifacts, bonus: 100) + ranked(Array(history), bonus: 0))
             .sorted { $0.1 > $1.1 }
             .prefix(30)
             .map(\.0)
@@ -74,13 +81,15 @@ enum PaletteResults {
         space.tabsInSidebarOrder.map { tab in
             let icon: PaletteItem.Icon = if tab.isTerminal {
                 .symbol("terminal")
+            } else if tab.isArtifact {
+                .symbol("doc.richtext")
             } else {
                 tab.url?.host().map { .favicon(host: $0) } ?? .symbol("globe")
             }
             return PaletteItem(
                 id: "tab-\(tab.id)",
                 title: tab.displayTitle,
-                subtitle: tab.url?.absoluteString ?? tab.workingDirectory ?? "",
+                subtitle: tab.url?.absoluteString ?? tab.workingDirectory ?? tab.artifactPath.map { "artifacts/\($0)" } ?? "",
                 hint: tab.id == space.selectedTabID ? "Current Tab" : "Switch to Tab",
                 icon: icon,
                 action: .selectTab(tab.id)
@@ -127,6 +136,7 @@ enum PaletteResults {
             })
         }
         items.append(command("new-folder", "New Folder…", "folder.badge.plus") { state.promptNewFolder() })
+        items.append(command("artifacts-folder", "Show Artifacts Folder in Finder", "folder") { state.revealArtifactsFolder() })
         items.append(command("new-space", "New Space…", "plus.square.on.square") {
             state.spaceEditor = SpaceEditorRequest(spaceID: nil)
         })
