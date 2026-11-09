@@ -60,14 +60,22 @@ async function onClick(anchor: HTMLInputElement, usernameInput: HTMLInputElement
   singularity.fillLogin({
     usernameInput,
     passwordInput,
-    username: answer.fill.username,
+    // An empty username is passed as undefined so what the user already typed stays.
+    username: answer.fill.username || undefined,
     password: answer.fill.password,
   });
 }
 
+/** Sign-up forms have a second (confirm) password field: only the first one gets a button. */
+function isLaterPasswordField(password: HTMLInputElement): boolean {
+  const scope: ParentNode = password.form ?? password.parentElement ?? document;
+  const passwords = Array.from(scope.querySelectorAll<HTMLInputElement>("input[type=password]"));
+  return passwords.slice(0, passwords.indexOf(password)).some(isUsable);
+}
+
 function decorate(): void {
   for (const password of document.querySelectorAll<HTMLInputElement>("input[type=password]")) {
-    if (!isUsable(password)) continue;
+    if (!isUsable(password) || isLaterPasswordField(password)) continue;
     const username = usernameFor(password);
     const click = () => onClick(password, username, password);
     // addFieldButton keeps one button per input, so calling it again after a page change is fine.

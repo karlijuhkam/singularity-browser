@@ -35,6 +35,8 @@ async function listLogins(frameHost: string): Promise<Match[] | null> {
     singularity.log("op item list: unexpected output");
     return null;
   }
+  // Forget entries past their time, so the map can't grow without bound.
+  for (const [host, entry] of listed) if (Date.now() - entry.at > REMEMBER_MS) listed.delete(host);
   listed.set(frameHost, { at: Date.now(), hosts: new Map(matches.map((m) => [m.id, m.host])) });
   return matches;
 }
@@ -58,12 +60,18 @@ async function handleFill(frameHost: string, id: unknown) {
   const forHost = entry?.hosts.get(id);
   if (forHost === undefined) return { error: NOT_AVAILABLE_HERE };
 
-  // The id is its own argument; `--fields label=username,label=password` is one argument too.
+  // The id is its own argument. We fetch the whole item (no --fields) so a missing username label can't fail the call.
   const result = await singularity.run("op", [
-    "item", "get", id, "--fields", "label=username,label=password", "--reveal", "--format", "json",
+    "item", "get", id, "--format", "json", "--reveal",
   ]);
   if (result.status !== 0 || result.timedOut) {
     singularity.log(`op item get failed (${result.timedOut ? "timed out" : "status " + result.status})`);
+    return { error: UNAVAILABLE };
+  }
+  try {
+    JSON.parse(result.stdout);
+  } catch {
+    singularity.log("op item get: unparsable output");
     return { error: UNAVAILABLE };
   }
   const credentials = parseCredentials(result.stdout);

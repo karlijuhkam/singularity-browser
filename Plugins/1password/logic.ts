@@ -25,6 +25,13 @@ export function isSameOrSubdomain(frameHost: string, itemHost: string): boolean 
   return i !== "" && (f === i || f.endsWith("." + i));
 }
 
+/** 1Password often stores "github.com" or "www.github.com/login" without a scheme: add https://. */
+export function withScheme(href: string): string {
+  const text = href.trim();
+  if (text.startsWith("//")) return "https:" + text;
+  return /^[a-z][a-z0-9+.-]*:/i.test(text) ? text : "https://" + text;
+}
+
 /** The hosts of an item's http(s) URLs. */
 function itemHosts(item: Record<string, unknown>): string[] {
   if (!Array.isArray(item.urls)) return [];
@@ -33,7 +40,7 @@ function itemHosts(item: Record<string, unknown>): string[] {
     const href = entry && typeof entry === "object" ? (entry as Record<string, unknown>).href : undefined;
     if (typeof href !== "string") continue;
     try {
-      const url = new URL(href);
+      const url = new URL(withScheme(href));
       if (url.protocol === "http:" || url.protocol === "https:") hosts.push(normalizeHost(url.hostname));
     } catch {
       // Not a URL: skip it.
@@ -71,28 +78,35 @@ export function matchLogins(listJSON: string, frameHost: string): Match[] | null
 }
 
 /**
- * Parses the output of `op item get <id> --fields label=username,label=password --reveal --format json`.
- * With several fields `op` prints an array of field objects, with one field a single object; both
- * are accepted. A field counts as the username/password by its `purpose` (USERNAME/PASSWORD) or,
- * failing that, its label. Returns null when there is no password.
+ * Parses the output of `op item get <id> --format json --reveal` (the whole item; its `fields` is an
+ * array of {id, type, purpose, label, value}). The password is the field with purpose PASSWORD,
+ * else a CONCEALED field labelled "password". The username is purpose USERNAME, else a field
+ * labelled "username", else "email". Returns null when the shape is wrong or there is no password;
+ * the username may be "" (the page then leaves what the user typed alone).
  */
 export function parseCredentials(getJSON: string): { username: string; password: string } | null {
-  let data: unknown;
+  let item: unknown;
   try {
-    data = JSON.parse(getJSON);
+    item = JSON.parse(getJSON);
   } catch {
     return null;
   }
-  const fields = (Array.isArray(data) ? data : [data]).filter(
-    (f): f is Record<string, unknown> => !!f && typeof f === "object",
+  const rawFields = item && typeof item === "object" ? (item as Record<string, unknown>).fields : undefined;
+  if (!Array.isArray(rawFields)) return null;
+  const fields = rawFields.filter((f): f is Record<string, unknown> => !!f && typeof f === "object");
+  const label = (f: Record<string, unknown>) => (typeof f.label === "string" ? f.label.toLowerCase() : "");
+  const valueOf = (f: Record<string, unknown> | undefined) =>
+    f && typeof f.value === "string" && f.value !== "" ? f.value : undefined;
+
+  const password = valueOf(
+    fields.find((f) => f.purpose === "PASSWORD" && valueOf(f)) ??
+      fields.find((f) => f.type === "CONCEALED" && label(f) === "password" && valueOf(f)),
   );
-  function find(purpose: string, label: string): string | undefined {
-    const field =
-      fields.find((f) => f.purpose === purpose) ??
-      fields.find((f) => typeof f.label === "string" && f.label.toLowerCase() === label);
-    return field && typeof field.value === "string" ? field.value : undefined;
-  }
-  const password = find("PASSWORD", "password");
-  if (password === undefined || password === "") return null;
-  return { username: find("USERNAME", "username") ?? "", password };
+  if (password === undefined) return null;
+  const username = valueOf(
+    fields.find((f) => f.purpose === "USERNAME" && valueOf(f)) ??
+      fields.find((f) => label(f) === "username" && valueOf(f)) ??
+      fields.find((f) => label(f) === "email" && valueOf(f)),
+  );
+  return { username: username ?? "", password };
 }

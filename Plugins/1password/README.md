@@ -29,7 +29,7 @@ Then enable it in the Spaces where you want it.
 
 - `plugin.json` the manifest and permissions
 - `background.ts` talks to `op`
-- `logic.ts` the parsing and matching rules (tested by `logic.test.ts` with `bun test`)
+- `logic.ts` the parsing and matching rules (tests: `Vendor/bun/bun test Tests/plugins/1password` from the repo root)
 - `page.ts` finds login fields and shows the button and menu
 
 There is no `icon.png` on purpose: no trademarked logo shipped.
