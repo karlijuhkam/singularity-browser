@@ -439,7 +439,7 @@ public final class PluginSupervisor: @unchecked Sendable {
     public static let window: TimeInterval = 60
     public static let keptLogLines = 50
 
-    private let makeProcess: @Sendable () -> PluginProcess
+    private let makeProcess: @Sendable () throws -> PluginProcess
     private let now: @Sendable () -> Date
     private let restartDelay: Duration
 
@@ -461,8 +461,11 @@ public final class PluginSupervisor: @unchecked Sendable {
     ///   - restartDelay: pause before a restart.
     ///   - now: the clock used for the 60 s window (tests pass a fake one).
     ///   - makeProcess: builds a fresh, not yet started process (a `Process` can only run once).
+    ///     Called for every launch, restarts included, on the thread that calls `start()` (restarts:
+    ///     a background thread). It may throw to refuse a launch (the app re-checks the plugin's
+    ///     approval there); that ends as `.failedToStart`, without further restarts.
     public init(restartDelay: Duration = .seconds(1), now: @escaping @Sendable () -> Date = { Date() },
-                makeProcess: @escaping @Sendable () -> PluginProcess) {
+                makeProcess: @escaping @Sendable () throws -> PluginProcess) {
         self.restartDelay = restartDelay
         self.now = now
         self.makeProcess = makeProcess
@@ -511,6 +514,20 @@ public final class PluginSupervisor: @unchecked Sendable {
         setState(.stopped)
     }
 
+    /// For app termination: like `stop()`, but kills the process at once (SIGKILL) instead of
+    /// asking it to exit and waiting.
+    public func terminateNow() {
+        let process: PluginProcess? = lock.withLock {
+            wanted = false
+            launchPending = false
+            generation += 1
+            defer { current = nil }
+            return current
+        }
+        process?.terminateNow()
+        setState(.stopped)
+    }
+
     /// Passes a message to the running process; dropped when none is running.
     public func send(_ message: PluginWire) {
         lock.withLock { current }?.send(message)
@@ -522,7 +539,16 @@ public final class PluginSupervisor: @unchecked Sendable {
         func allowed() -> Bool { wanted && (expected == nil || expected == self.generation) }
         guard lock.withLock(allowed) else { return }
         if expected != nil { record("info", "restarting") }
-        let process = makeProcess()
+        let process: PluginProcess
+        do {
+            process = try makeProcess()
+        } catch {
+            // A restart had set launchPending; clear it so a later start() can try again.
+            lock.withLock { if expected == nil || expected == self.generation { launchPending = false } }
+            record("error", "not started: \(error)")
+            setState(.failedToStart(String(describing: error)), ifGeneration: expected)
+            return
+        }
         // Reserve a generation now; `current` is set only once the process has started, so
         // send() never hands a message to a process that can't take it yet.
         let generation: Int? = lock.withLock {

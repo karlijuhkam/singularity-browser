@@ -18,7 +18,7 @@ enum PluginDebugCommands {
     }
 
     private static func onePasswordReport() async -> String {
-        let shell = loginShell()
+        let shell = LoginShell.path()
         // Resolving blocks (it waits for the login shell), so keep it off the main thread.
         guard let path = await Task.detached(operation: { CommandBroker.resolve("op", loginShell: shell) }).value else {
             return "Could not find the `op` command with \(shell). Is the 1Password CLI installed?"
@@ -33,15 +33,6 @@ enum PluginDebugCommands {
             return "\(path) succeeded but printed something other than a JSON list."
         }
         return "\(items.count) logins"
-    }
-
-    /// The user's login shell from the user database (same lookup as terminal tabs), falling back to zsh.
-    private static func loginShell() -> String {
-        if let entry = getpwuid(getuid()), let shell = entry.pointee.pw_shell {
-            let path = String(cString: shell)
-            if FileManager.default.isExecutableFile(atPath: path) { return path }
-        }
-        return "/bin/zsh"
     }
 }
 #endif

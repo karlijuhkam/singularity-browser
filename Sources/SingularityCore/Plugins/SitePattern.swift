@@ -17,6 +17,9 @@ public enum PluginError: Error, Equatable, Sendable {
     case symlinkNotAllowed(String)
     /// A FIFO, socket or device inside a plugin folder; the path is relative.
     case unsupportedFile(String)
+    /// The plugin's files couldn't be read (permissions, a file vanished mid-read, …); the text
+    /// is the underlying error.
+    case unreadable(String)
 }
 
 /// Host comparison helpers shared by site patterns and the 1Password fill guard.

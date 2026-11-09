@@ -614,4 +614,41 @@ struct PluginProcessTests {
         #expect(supervisor.state == .running)
         #expect(starts.value == 5)
     }
+
+    private struct Refused: Error {}
+
+    @Test(.timeLimit(.minutes(1))) func aRefusingFactoryEndsAsFailedToStart() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        let manifest = try PluginManifest.load(from: ws.plugin)
+        let refuse = Counter(), starts = Counter()
+        let supervisor = PluginSupervisor(restartDelay: .zero) {
+            starts.increment()
+            if refuse.value == 0 { throw Refused() }
+            return PluginProcess(manifest: manifest, folder: ws.plugin, dataFolder: ws.data,
+                                 runtime: bunPath, host: hostScript, commandPaths: [:])
+        }
+        defer { supervisor.stop() }
+        supervisor.start()
+        guard case .failedToStart = supervisor.state else { Issue.record("state \(supervisor.state)"); return }
+        #expect(supervisor.recentLogs.contains { $0.message.hasPrefix("not started") })
+        // Nothing pending: a later start() tries again.
+        refuse.increment()
+        supervisor.start()
+        #expect(supervisor.state == .running)
+        #expect(starts.value == 2)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func terminateNowKillsWithoutRestart() async throws {
+        let clock = FakeClock(), starts = Counter()
+        let (supervisor, ws) = try supervise(clock, starts)
+        defer { ws.remove() }
+        supervisor.start()
+        #expect(supervisor.state == .running)
+        supervisor.terminateNow()
+        #expect(supervisor.state == .stopped)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(starts.value == 1)
+        #expect(supervisor.state == .stopped)
+    }
 }

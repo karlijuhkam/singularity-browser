@@ -29,6 +29,8 @@ final class AppState {
     let favicons: FaviconStore
     /// Approval policy checks and confirmation sheets for agent actions.
     let approvals = AgentApprovals()
+    /// Installed plugins: approvals, background processes, Settings → Plugins.
+    let plugins: PluginManager
     /// Preferences from the Settings window (`~/Singularity/settings.json`). Change via `updateSettings`.
     private(set) var settings = AppSettings()
     @ObservationIgnored private var settingsDirty = false
@@ -61,6 +63,10 @@ final class AppState {
         self.terminals = TerminalRegistry()
         self.artifacts = ArtifactHosts()
         self.favicons = FaviconStore(paths: paths)
+        // Bun and the plugin host ship inside the app bundle (see scripts/build-app.sh).
+        let bundle = Bundle.main.bundleURL
+        self.plugins = PluginManager(paths: paths, runtime: bundle.appending(path: "Contents/Helpers/bun"),
+                                     host: bundle.appending(path: "Contents/Resources/plugin-host/host.ts"))
 
         settings = store.loadSettings()
         let loaded = store.load()
@@ -83,12 +89,15 @@ final class AppState {
         mcp.start(socketPath: paths.mcpSocket.path)
         self.mcp = mcp
 
-        // When the app quits: write pending changes and hang up all shells.
+        plugins.start()
+
+        // When the app quits: write pending changes, hang up all shells, kill plugin processes.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.flushSaves()
                 self?.terminals.tearDownAll()
                 self?.mcp?.stop()
+                self?.plugins.terminateAll()
             }
         }
     }
@@ -173,6 +182,7 @@ final class AppState {
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
         artifacts.stop(id)
+        plugins.spaceRemoved(id)
         knownArtifactPages[id] = nil
         activeTerminalBySpace[id] = nil
         spaces.removeAll { $0.id == id }

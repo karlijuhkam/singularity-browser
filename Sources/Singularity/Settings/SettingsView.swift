@@ -13,6 +13,8 @@ struct SettingsView: View {
                 .tabItem { Label("Terminal", systemImage: "terminal") }
             AgentSettings()
                 .tabItem { Label("Agents", systemImage: "sparkles") }
+            PluginSettings()
+                .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
             DataSettings()
                 .tabItem { Label("Data & Privacy", systemImage: "hand.raised") }
         }

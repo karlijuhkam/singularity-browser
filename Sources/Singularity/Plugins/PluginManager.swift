@@ -1,0 +1,559 @@
+import Foundation
+import Observation
+import SingularityCore
+
+/// One folder in `~/Singularity/plugins/`, as Settings → Plugins shows it.
+struct InstalledPlugin: Identifiable {
+    /// The folder name (a valid manifest's id equals it).
+    let id: String
+    var folder: URL
+    var manifest: Result<PluginManifest, PluginError>
+    var status: PluginStatus
+    var approval: PluginApproval?
+    /// The last 200 log lines, oldest first ("10:42:07 info: started").
+    var logs: [String] = []
+    /// Whether it should be running now, and if not, why.
+    var decision: PluginLaunch.Decision = .notApproved
+    /// The background process's state (`.stopped` when there is none).
+    var runState: PluginSupervisor.State = .stopped
+
+    var validManifest: PluginManifest? {
+        if case .success(let m) = manifest { return m }
+        return nil
+    }
+
+    /// The status line ("On", "Waiting for your approval", "Problem: …").
+    var statusLine: (text: String, tone: PluginStatusText.Tone) {
+        PluginStatusText.describe(status: status, decision: decision, run: runState)
+    }
+}
+
+/// Problems `PluginManager` reports to the UI, as plain sentences.
+enum PluginManagerError: LocalizedError, Equatable {
+    case changedWhileReviewing
+    case notInstalled(String)
+    case commandsNotFound([String])
+    case commandMoved(name: String, path: String)
+    case couldNotSave(String)
+    case addFailed(PluginInstaller.AddError)
+    case removeFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .changedWhileReviewing: return "The plugin changed while you were reviewing it. This is the current version."
+        case .notInstalled(let id): return "There is no plugin “\(id)” any more."
+        case .commandsNotFound(let names): return "Can't find \(names.joined(separator: ", ")) on this Mac. Install it, then review again."
+        case let .commandMoved(name, path): return "\(name) isn't at \(path) any more. Review again."
+        case .couldNotSave(let why): return "Couldn't save the approval: \(why)"
+        case .addFailed(let error): return error.userMessage
+        case .removeFailed(let why): return "Couldn't move the plugin to the Trash: \(why)"
+        }
+    }
+}
+
+/// Finds the plugins in `~/Singularity/plugins/`, keeps their approvals (`plugins-state.json`),
+/// runs the approved ones (one `PluginSupervisor` each), watches their files, and routes page
+/// messages to them (`send`, used by page scripts in Task 8).
+///
+/// Threading: everything here lives on the main actor. Slow work (reading every file for the
+/// fingerprint, finding command paths through the login shell, copying, trashing) runs in
+/// detached tasks, and the supervisors' callbacks hop back to the main thread.
+/// Operations on one plugin (refresh, approve, remove) run one after another through `enqueue`,
+/// and file-change events are debounced per plugin, so a burst of edits can't cause overlapping
+/// restarts.
+///
+/// When a plugin runs: its status is `.approved`, it is on in at least one Space, and every
+/// command path pinned at approval is still an executable file (`PluginLaunch.decide`). That is
+/// checked again, with a fresh fingerprint, right before every launch, crash restarts included
+/// (inside the supervisor's `makeProcess`).
+@MainActor
+@Observable
+final class PluginManager {
+    /// Sorted by id.
+    private(set) var plugins: [InstalledPlugin] = []
+
+    /// How long `send` waits for a plugin's answer. Longer than a command's 60 s limit, because a
+    /// page action may run `op`, which can wait for Touch ID.
+    static let requestTimeout: Duration = .seconds(75)
+    static let keptLogLines = 200
+
+    @ObservationIgnored let paths: Paths
+    @ObservationIgnored private let runtime: URL
+    @ObservationIgnored private let host: URL
+    @ObservationIgnored private let store: PluginStateStore
+    /// Plugin id -> approval, as saved in plugins-state.json. Change it through `setApproval`.
+    @ObservationIgnored private var approvals: [String: PluginApproval]
+    /// The same approvals, readable from the supervisors' background threads.
+    @ObservationIgnored private let launchApprovals = LockedApprovals()
+    @ObservationIgnored private var supervisors: [String: PluginSupervisor] = [:]
+    /// The latest scan of each plugin folder (manifest + file hashes).
+    @ObservationIgnored private var scans: [String: PluginScan] = [:]
+    /// What the approval sheet currently shows, per plugin (see `prepareReview` / `approve`).
+    @ObservationIgnored private var reviews: [String: PluginReview] = [:]
+    @ObservationIgnored private var queues: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var debounces: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var watcher: ArtifactWatcher?
+    @ObservationIgnored private var pendingRequests: [Int: PendingRequest] = [:]
+    @ObservationIgnored private var nextRequestID = 1
+
+    private struct PendingRequest {
+        let pluginID: String
+        let continuation: CheckedContinuation<JSONValue?, Never>
+    }
+
+    /// - Parameters:
+    ///   - paths: where `plugins/`, `plugins-data/` and `plugins-state.json` live (tests: a temp folder).
+    ///   - runtime: the Bun executable (`Contents/Helpers/bun` in the app).
+    ///   - host: `plugin-host/host.ts` (in the app's Resources).
+    init(paths: Paths, runtime: URL, host: URL) {
+        self.paths = paths
+        self.runtime = runtime
+        self.host = host
+        self.store = PluginStateStore(file: paths.pluginStateFile)
+        self.approvals = store.load()
+        launchApprovals.set(approvals)
+    }
+
+    func plugin(_ id: String) -> InstalledPlugin? {
+        plugins.first { $0.id == id }
+    }
+
+    // MARK: - Discovery and watching
+
+    /// Looks at every plugin folder (starting the approved ones) and watches the plugins folder.
+    func start() {
+        try? FileManager.default.createDirectory(at: paths.pluginsDirectory, withIntermediateDirectories: true)
+        if watcher == nil {
+            let watcher = ArtifactWatcher(root: paths.pluginsDirectory, includeFoldersAndHiddenFiles: true) { [weak self] changes in
+                self?.filesChanged(changes.map(\.relativePath))
+            }
+            watcher.start()
+            self.watcher = watcher
+        }
+        for id in Set(folderIDs()).union(plugins.map(\.id)).sorted() {
+            enqueue(id) { [weak self] in await self?.refresh(id, filesChanged: false) }
+        }
+    }
+
+    /// For app termination: kills every plugin process at once.
+    func terminateAll() {
+        watcher?.stop()
+        watcher = nil
+        for supervisor in supervisors.values { supervisor.terminateNow() }
+        supervisors = [:]
+    }
+
+    /// Folder names in the plugins folder that could be plugins (folders, and links so they can
+    /// be shown as refused). Names starting with "." are ignored.
+    private func folderIDs() -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: paths.pluginsDirectory.path)) ?? []
+        return names.filter { !$0.hasPrefix(".") && isPluginFolder(paths.pluginsDirectory.appending(path: $0)) }
+    }
+
+    private func isPluginFolder(_ url: URL) -> Bool {
+        // attributesOfItem doesn't follow links: a link reports itself.
+        let type = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
+        return type == .typeDirectory || type == .typeSymbolicLink
+    }
+
+    /// FSEvents reported these paths (relative to the plugins folder). The first component is
+    /// the plugin id; each affected plugin is refreshed 300 ms after its last event.
+    private func filesChanged(_ relativePaths: [String]) {
+        var ids = Set(relativePaths.compactMap { $0.split(separator: "/").first.map(String.init) })
+        // Folders moved in or out arrive as a single folder event at most: compare the listing too.
+        let onDisk = Set(folderIDs())
+        let known = Set(plugins.map(\.id))
+        ids.formUnion(onDisk.symmetricDifference(known))
+        for id in ids where !id.hasPrefix(".") {
+            debounces[id]?.cancel()
+            debounces[id] = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, let self else { return }
+                self.debounces[id] = nil
+                self.enqueue(id) { [weak self] in await self?.refresh(id, filesChanged: true) }
+            }
+        }
+    }
+
+    /// Runs `operation` after every operation already queued for this plugin has finished.
+    @discardableResult
+    private func enqueue<T: Sendable>(_ id: String,
+                                      _ operation: @escaping @MainActor @Sendable () async throws -> T) -> Task<T, Error> {
+        let previous = queues[id]
+        let task = Task { @MainActor () async throws -> T in
+            await previous?.value
+            return try await operation()
+        }
+        queues[id] = Task { @MainActor in _ = await task.result }
+        return task
+    }
+
+    /// Re-reads one plugin folder and starts, keeps or stops its process to match.
+    /// `filesChanged`: called because files changed; a running plugin whose files really changed
+    /// is restarted (only possible while approved, i.e. in development mode).
+    private func refresh(_ id: String, filesChanged: Bool) async {
+        let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
+        guard isPluginFolder(folder) else {
+            // Gone (deleted or moved away): forget it, but keep its approval in case it comes back.
+            stopSupervisor(id, reason: "its folder is gone")
+            plugins.removeAll { $0.id == id }
+            scans[id] = nil
+            return
+        }
+        let scan = await Task.detached { PluginScan.scan(folder: folder) }.value
+        let previous = scans[id]?.fingerprint
+        await apply(scan, to: id, restart: filesChanged && scan.fingerprint != previous)
+    }
+
+    /// Records `scan`, works out the status, and starts or stops the plugin to match.
+    private func apply(_ scan: PluginScan, to id: String, restart: Bool) async {
+        scans[id] = scan
+        let approval = approvals[id]
+        let status = scan.status(approval: approval)
+        let decision = PluginLaunch.decide(status: status, approval: approval, manifest: scan.validManifest)
+        update(id) { plugin in
+            plugin.folder = scan.folder
+            plugin.manifest = scan.manifest
+            plugin.status = status
+            plugin.approval = approval
+            plugin.decision = decision
+        }
+        guard decision == .launch else {
+            stopSupervisor(id, reason: Self.stopReason(status: status, decision: decision))
+            return
+        }
+        if restart, supervisors[id] != nil {
+            appendLog(id, "info", "files changed; restarting")
+            stopSupervisor(id, reason: nil)
+        }
+        if supervisors[id] == nil { await launch(id) }
+    }
+
+    private static func stopReason(status: PluginStatus, decision: PluginLaunch.Decision) -> String {
+        switch decision {
+        case .switchedOff: return "switched off in every Space"
+        case .blocked(let why): return why
+        default: return PluginStatusText.describe(status: status, decision: decision, run: .stopped).text.lowercased()
+        }
+    }
+
+    /// Queues a refresh of one plugin (from outside an operation on it).
+    private func refreshLater(_ id: String) {
+        enqueue(id) { [weak self] in await self?.refresh(id, filesChanged: false) }
+    }
+
+    /// Re-applies the latest scan after an approval change (Spaces, development mode).
+    private func reapply(_ id: String) {
+        guard let scan = scans[id] else { return }
+        // Update the row at once; starting or stopping happens in the plugin's queue.
+        let approval = approvals[id]
+        let status = scan.status(approval: approval)
+        update(id) {
+            $0.approval = approval
+            $0.status = status
+            $0.decision = PluginLaunch.decide(status: status, approval: approval, manifest: scan.validManifest)
+        }
+        enqueue(id) { [weak self] in
+            guard let self, let latest = self.scans[id] else { return }
+            await self.apply(latest, to: id, restart: false)
+        }
+    }
+
+    // MARK: - Running
+
+    /// The supervisor's `makeProcess` refused to launch (see `launch`).
+    private struct LaunchRefused: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    private func launch(_ id: String) async {
+        let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
+        let dataFolder = paths.pluginsDataDirectory(id)
+        let runtime = runtime, host = host, approvals = launchApprovals
+        // Called for every launch, crash restarts included, on a background thread: re-checks the
+        // plugin with a fresh scan and the current approval, and builds the process from that scan.
+        let supervisor = PluginSupervisor { [weak self] in
+            let scan = PluginScan.scan(folder: folder)
+            let approval = approvals.get(id)
+            let status = scan.status(approval: approval)
+            let decision = PluginLaunch.decide(status: status, approval: approval, manifest: scan.validManifest)
+            guard decision == .launch, let manifest = scan.validManifest, let approval else {
+                // Let the row catch up with whatever changed.
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.refreshLater(id) } }
+                throw LaunchRefused(description: "it changed or lost its approval just before starting")
+            }
+            try PluginInstaller.makeDataFolder(dataFolder)
+            return PluginProcess(manifest: manifest, folder: folder, dataFolder: dataFolder, runtime: runtime,
+                                 host: host, commandPaths: approval.commandPaths)
+        }
+        // The callbacks come from background threads. DispatchQueue.main keeps them in order
+        // (log lines must not be shuffled); `MainActor.assumeIsolated` tells the compiler we are
+        // on the main thread now.
+        supervisor.onLog = { [weak self] level, message in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.appendLog(id, level, message) } }
+        }
+        supervisor.onReply = { [weak self] requestID, payload in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.finishRequest(requestID, pluginID: id, payload) } }
+        }
+        supervisor.onStateChange = { [weak self, weak supervisor] state in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let supervisor, self.supervisors[id] === supervisor else { return }
+                    self.update(id) { $0.runState = state }
+                    if state == .running { self.appendLog(id, "info", "started") }
+                    if state != .running { self.failRequests(of: id) }
+                }
+            }
+        }
+        supervisors[id] = supervisor
+        // start() runs makeProcess (which reads every file) synchronously: keep it off the main
+        // thread, and wait for it so the next queued operation sees a started supervisor.
+        await Task.detached { supervisor.start() }.value
+    }
+
+    private func stopSupervisor(_ id: String, reason: String?) {
+        guard let supervisor = supervisors.removeValue(forKey: id) else { return }
+        supervisor.stop()
+        update(id) { $0.runState = .stopped }
+        failRequests(of: id)
+        appendLog(id, "info", reason.map { "stopped: \($0)" } ?? "stopped")
+    }
+
+    // MARK: - Messages from pages (Task 8)
+
+    /// Sends a page script's message to the plugin's background program and waits for its reply.
+    /// nil at once when the plugin isn't running or isn't on in `space` (the Space of the tab the
+    /// message came from; the caller knows it, so it is passed in rather than looked up here);
+    /// nil after 75 s without a reply, or when the plugin stops meanwhile. Request ids increase
+    /// per manager; replies with unknown or stale ids are ignored.
+    func send(pluginID: String, tabID: UUID, space: UUID, frameHost: String, payload: JSONValue) async -> JSONValue? {
+        guard let plugin = plugin(pluginID), plugin.status == .approved,
+              plugin.approval?.enabledSpaces.contains(space) == true,
+              let supervisor = supervisors[pluginID], supervisor.state == .running else { return nil }
+        let requestID = nextRequestID
+        nextRequestID += 1
+        return await withCheckedContinuation { continuation in
+            pendingRequests[requestID] = PendingRequest(pluginID: pluginID, continuation: continuation)
+            supervisor.send(.pageMessage(requestID: requestID, tabID: tabID, frameHost: frameHost, payload: payload))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.requestTimeout)
+                self?.finishRequest(requestID, pluginID: pluginID, nil)
+            }
+        }
+    }
+
+    /// Resumes the waiting `send` once; anything for an unknown id or another plugin is ignored.
+    private func finishRequest(_ requestID: Int, pluginID: String, _ value: JSONValue?) {
+        guard let request = pendingRequests[requestID], request.pluginID == pluginID else { return }
+        pendingRequests[requestID] = nil
+        request.continuation.resume(returning: value)
+    }
+
+    private func failRequests(of pluginID: String) {
+        for (requestID, request) in pendingRequests where request.pluginID == pluginID {
+            finishRequest(requestID, pluginID: pluginID, nil)
+        }
+    }
+
+    // MARK: - Approval
+
+    /// Scans the plugin and finds its programs' paths (off the main thread) and remembers the
+    /// result as what the approval sheet shows. `approve` only accepts exactly this.
+    func prepareReview(_ id: String) async -> Result<PluginReview, PluginError> {
+        let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
+        let result = await Task.detached {
+            let shell = LoginShell.path()
+            // resolve() asks the login shell; it can take a few seconds per program.
+            return PluginReview.prepare(scan: PluginScan.scan(folder: folder)) { CommandBroker.resolve($0, loginShell: shell) }
+        }.value
+        switch result {
+        case .success(let review): reviews[id] = review
+        case .failure: reviews[id] = nil
+        }
+        return result
+    }
+
+    /// Approves what the sheet showed (`prepareReview`), if it is still exactly that: the files are
+    /// scanned again, and a different fingerprint or different permissions throw
+    /// `.changedWhileReviewing` (the sheet then loads the current version). Pins the command paths
+    /// the sheet showed, creates the data folder (0700), records the fingerprint and per-file
+    /// hashes, saves, and starts the plugin.
+    func approve(_ id: String, expectedFingerprint: String, enabledSpaces: Set<UUID>, developmentMode: Bool) async throws {
+        try await enqueue(id) { [weak self] in
+            try await self?.performApprove(id, expectedFingerprint: expectedFingerprint,
+                                           enabledSpaces: enabledSpaces, developmentMode: developmentMode)
+        }.value
+    }
+
+    private func performApprove(_ id: String, expectedFingerprint: String, enabledSpaces: Set<UUID>,
+                                developmentMode: Bool) async throws {
+        guard let review = reviews[id], review.fingerprint == expectedFingerprint else {
+            throw PluginManagerError.changedWhileReviewing
+        }
+        let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
+        guard isPluginFolder(folder) else { throw PluginManagerError.notInstalled(id) }
+        guard review.missingCommands.isEmpty else { throw PluginManagerError.commandsNotFound(review.missingCommands) }
+        let scan = await Task.detached { PluginScan.scan(folder: folder) }.value
+        guard review.matches(scan), let manifest = scan.validManifest, case .success(let snapshot) = scan.files else {
+            reviews[id] = nil
+            await apply(scan, to: id, restart: false)
+            throw PluginManagerError.changedWhileReviewing
+        }
+        for (name, path) in review.commandPaths.sorted(by: { $0.key < $1.key })
+        where !PluginLaunch.isExecutableRegularFile(path) {
+            throw PluginManagerError.commandMoved(name: name, path: path)
+        }
+
+        let dataFolder = paths.pluginsDataDirectory(id)
+        try await Task.detached { try PluginInstaller.makeDataFolder(dataFolder) }.value
+
+        // Task 9: install packages here, then fingerprint (node_modules is part of the fingerprint,
+        // so the approval must record the folder as it is after installing).
+
+        let approval = PluginApproval(
+            fingerprint: snapshot.fingerprint, permissions: manifest.permissions, commandPaths: review.commandPaths,
+            enabledSpaces: enabledSpaces, developmentMode: developmentMode, approvedAt: Date(),
+            fileHashes: snapshot.fileHashes)
+        try setApproval(id, approval)
+        reviews[id] = nil
+        appendLog(id, "info", "approved")
+        // A process of an earlier approval (re-review while running) gives way to a fresh one.
+        stopSupervisor(id, reason: nil)
+        await apply(scan, to: id, restart: false)
+    }
+
+    /// Switches a plugin on or off in one Space. Writes the approval; no new review needed.
+    func setEnabled(_ id: String, space: UUID, _ on: Bool) {
+        guard var approval = approvals[id] else { return }
+        if on { approval.enabledSpaces.insert(space) } else { approval.enabledSpaces.remove(space) }
+        saveQuietly(id, approval)
+        reapply(id)
+    }
+
+    /// Development mode: while on, edited files restart the plugin instead of pausing it. It can be
+    /// switched on only while the plugin is approved as it is now (`canSetDevelopmentMode`).
+    /// Switching it off pauses the plugin if its files differ from the approved ones.
+    func setDevelopmentMode(_ id: String, _ on: Bool) {
+        guard var approval = approvals[id], let plugin = plugin(id),
+              PluginStatusText.canSetDevelopmentMode(to: on, status: plugin.status) else { return }
+        approval.developmentMode = on
+        saveQuietly(id, approval)
+        reapply(id)
+    }
+
+    /// A Space was deleted: it can't be in any plugin's list any more.
+    func spaceRemoved(_ space: UUID) {
+        for (id, var approval) in approvals where approval.enabledSpaces.contains(space) {
+            approval.enabledSpaces.remove(space)
+            saveQuietly(id, approval)
+            reapply(id)
+        }
+    }
+
+    /// Saves the state file with `approval` for `id` (nil removes it); the in-memory copy only
+    /// changes when saving worked.
+    private func setApproval(_ id: String, _ approval: PluginApproval?) throws {
+        var next = approvals
+        next[id] = approval
+        do { try store.save(next) } catch { throw PluginManagerError.couldNotSave(error.localizedDescription) }
+        approvals = next
+        launchApprovals.set(next)
+        update(id) { $0.approval = approval }
+    }
+
+    /// For switches in Settings: on a save error the change still applies for this session, and
+    /// the error goes to the plugin's log.
+    private func saveQuietly(_ id: String, _ approval: PluginApproval) {
+        do {
+            try setApproval(id, approval)
+        } catch {
+            approvals[id] = approval
+            launchApprovals.set(approvals)
+            appendLog(id, "error", error.localizedDescription)
+        }
+    }
+
+    // MARK: - Adding and removing
+
+    /// Copies a plugin folder into the plugins folder (see `PluginInstaller.add`) and returns its
+    /// id. Async because copying (node_modules) can take a while; it runs off the main thread.
+    func addPlugin(from folder: URL) async throws -> String {
+        let pluginsDirectory = paths.pluginsDirectory
+        let result = await Task.detached {
+            Result { () throws(PluginInstaller.AddError) -> String in
+                try PluginInstaller.add(from: folder, pluginsDirectory: pluginsDirectory)
+            }
+        }.value
+        let id: String
+        switch result {
+        case .success(let value): id = value
+        case .failure(let error): throw PluginManagerError.addFailed(error)
+        }
+        // Show it right away rather than waiting for the file watcher.
+        try? await enqueue(id) { [weak self] in await self?.refresh(id, filesChanged: false) }.value
+        return id
+    }
+
+    /// Stops the plugin, moves its folder and its data folder to the Trash, and forgets its
+    /// approval. (The UI asks for confirmation first.)
+    func remove(_ id: String) async throws {
+        try await enqueue(id) { [weak self] in try await self?.performRemove(id) }.value
+    }
+
+    private func performRemove(_ id: String) async throws {
+        debounces.removeValue(forKey: id)?.cancel()
+        stopSupervisor(id, reason: "removed")
+        let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
+        let dataFolder = paths.pluginsDataDirectory(id)
+        // trashItem moves a link itself, never what it points to.
+        func trash(_ url: URL) async throws {
+            try await Task.detached {
+                guard (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil else { return }
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            }.value
+        }
+        do { try await trash(folder) } catch { throw PluginManagerError.removeFailed(error.localizedDescription) }
+        plugins.removeAll { $0.id == id }
+        scans[id] = nil
+        reviews[id] = nil
+        try setApproval(id, nil)
+        do { try await trash(dataFolder) } catch {
+            throw PluginManagerError.removeFailed("the plugin is gone, but its data folder could not be moved: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Rows and logs
+
+    /// Changes the row for `id`, creating it if needed (rows stay sorted by id).
+    private func update(_ id: String, _ change: (inout InstalledPlugin) -> Void) {
+        if let index = plugins.firstIndex(where: { $0.id == id }) {
+            change(&plugins[index])
+            return
+        }
+        guard let scan = scans[id] else { return }
+        var plugin = InstalledPlugin(id: id, folder: scan.folder, manifest: scan.manifest,
+                                     status: scan.status(approval: approvals[id]), approval: approvals[id])
+        change(&plugin)
+        plugins.append(plugin)
+        plugins.sort { $0.id < $1.id }
+    }
+
+    private static let timeFormat = Date.FormatStyle(date: .omitted, time: .standard)
+
+    private func appendLog(_ id: String, _ level: String, _ message: String) {
+        guard let index = plugins.firstIndex(where: { $0.id == id }) else { return }
+        let text = PluginText.block(message, max: 1000)
+        plugins[index].logs.append("\(Date().formatted(Self.timeFormat)) \(level): \(text)")
+        let extra = plugins[index].logs.count - Self.keptLogLines
+        if extra > 0 { plugins[index].logs.removeFirst(extra) }
+    }
+}
+
+/// Plugin id -> approval behind a lock, for the supervisors' background threads.
+/// `@unchecked Sendable`: `value` is only touched while holding `lock`.
+private final class LockedApprovals: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: [String: PluginApproval] = [:]
+    func set(_ approvals: [String: PluginApproval]) { lock.withLock { value = approvals } }
+    func get(_ id: String) -> PluginApproval? { lock.withLock { value[id] } }
+}

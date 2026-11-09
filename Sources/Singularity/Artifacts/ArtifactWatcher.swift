@@ -16,11 +16,16 @@ final class ArtifactWatcher {
     }
 
     private let root: URL
+    private let includeFoldersAndHiddenFiles: Bool
     private let onChange: @MainActor ([Change]) -> Void
     private var stream: FSEventStreamRef?
 
-    init(root: URL, onChange: @escaping @MainActor ([Change]) -> Void) {
+    /// - Parameter includeFoldersAndHiddenFiles: false (artifacts): only visible files are reported.
+    ///   true (plugins): folders and dotfiles too, because a plugin folder moved in or out arrives
+    ///   as one folder event, and dotfiles count towards a plugin's fingerprint.
+    init(root: URL, includeFoldersAndHiddenFiles: Bool = false, onChange: @escaping @MainActor ([Change]) -> Void) {
         self.root = root
+        self.includeFoldersAndHiddenFiles = includeFoldersAndHiddenFiles
         self.onChange = onChange
     }
 
@@ -76,10 +81,11 @@ final class ArtifactWatcher {
         var changes: [Change] = []
         var seen = Set<String>()
         for (path, flag) in zip(paths, flags) {
-            guard flag & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) != 0 else { continue }
+            let isFile = flag & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) != 0
+            guard isFile || includeFoldersAndHiddenFiles else { continue }
             let url = URL(fileURLWithPath: path)
             guard let relative = ArtifactFiles.relativePath(of: url, in: root),
-                  !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
+                  includeFoldersAndHiddenFiles || !relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
                   seen.insert(relative).inserted
             else { continue }
             // Flags are unreliable across save strategies (in-place write vs. write-then-rename),
@@ -87,6 +93,8 @@ final class ArtifactWatcher {
             let exists = FileManager.default.fileExists(atPath: url.path)
             changes.append(Change(relativePath: relative, kind: exists ? .changed : .removed))
         }
-        if !changes.isEmpty { onChange(changes) }
+        // In plugin mode, report even when no path could be mapped (a deleted file's path may not
+        // map back under `root` once it's gone), so the listener can at least rescan the folder.
+        if !changes.isEmpty || (includeFoldersAndHiddenFiles && !paths.isEmpty) { onChange(changes) }
     }
 }

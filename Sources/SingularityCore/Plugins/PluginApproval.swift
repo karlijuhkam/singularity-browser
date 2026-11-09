@@ -3,6 +3,19 @@ import Foundation
 
 /// A hash of everything in a plugin folder that could change what it does.
 public enum PluginFingerprint {
+    /// The fingerprint and the per-file hashes of one folder, from a single read of its files.
+    public struct Snapshot: Equatable, Sendable {
+        /// What `compute(folder:)` returns.
+        public let fingerprint: String
+        /// What `fileHashes(folder:)` returns.
+        public let fileHashes: [String: String]
+
+        public init(fingerprint: String, fileHashes: [String: String]) {
+            self.fingerprint = fingerprint
+            self.fileHashes = fileHashes
+        }
+    }
+
     /// SHA-256 (lowercase hex) over every file, sorted by relative path (byte order).
     /// Everything counts, including dotfiles, bun.lock and `node_modules` at every depth: Bun
     /// resolves `lib/node_modules/x` and imports `./.git/p.js`, so skipping them would let
@@ -14,6 +27,38 @@ public enum PluginFingerprint {
     /// Throws `symlinkNotAllowed` for a symlink (also the folder itself, reported as "."), and
     /// `unsupportedFile` for anything but regular files and directories (a FIFO would hang the read).
     public static func compute(folder: URL) throws -> String {
+        try snapshot(folder: folder).fingerprint
+    }
+
+    /// Relative path -> SHA-256 (lowercase hex) of that file's content, for the same files as
+    /// `compute` (same walk, same skips, same errors). The approval screen compares these with the
+    /// ones recorded at approval to list which files changed.
+    public static func fileHashes(folder: URL) throws -> [String: String] {
+        try snapshot(folder: folder).fileHashes
+    }
+
+    /// Both values from one pass over the files (each file is read once).
+    public static func snapshot(folder: URL) throws -> Snapshot {
+        let files = try listFiles(folder: folder)
+        var hasher = SHA256()
+        func putLength(_ n: Int) {
+            var be = UInt64(n).bigEndian
+            withUnsafeBytes(of: &be) { hasher.update(bufferPointer: $0) }
+        }
+        var hashes: [String: String] = [:]
+        for file in files {
+            let pathBytes = Data(file.path.utf8)
+            let content = try Data(contentsOf: file.url)
+            putLength(pathBytes.count); hasher.update(data: pathBytes)
+            putLength(content.count); hasher.update(data: content)
+            hashes[file.path] = hex(SHA256.hash(data: content))
+        }
+        return Snapshot(fingerprint: hex(hasher.finalize()), fileHashes: hashes)
+    }
+
+    /// The files that count, sorted by relative path (byte order), without reading them.
+    /// Throws like `compute`. Also used to check a folder before copying it (Add Plugin).
+    public static func listFiles(folder: URL) throws -> [(path: String, url: URL)] {
         let fm = FileManager.default
         var files: [(path: String, url: URL)] = []
 
@@ -36,20 +81,12 @@ public enum PluginFingerprint {
             }
         }
         try walk(folder, "")
-
         files.sort { Array($0.path.utf8).lexicographicallyPrecedes(Array($1.path.utf8)) }
-        var hasher = SHA256()
-        func putLength(_ n: Int) {
-            var be = UInt64(n).bigEndian
-            withUnsafeBytes(of: &be) { hasher.update(bufferPointer: $0) }
-        }
-        for file in files {
-            let pathBytes = Data(file.path.utf8)
-            let content = try Data(contentsOf: file.url)
-            putLength(pathBytes.count); hasher.update(data: pathBytes)
-            putLength(content.count); hasher.update(data: content)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return files
+    }
+
+    private static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
+        digest.map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -63,10 +100,14 @@ public struct PluginApproval: Codable, Equatable, Sendable {
     /// While on, edited files do not pause the plugin (permission widening still does).
     public var developmentMode: Bool
     public var approvedAt: Date
+    /// Relative path -> SHA-256 of each file at approval (`PluginFingerprint.fileHashes`), so the
+    /// approval screen can list what changed since. Empty in state files written before this existed.
+    public var fileHashes: [String: String]
 
     public init(fingerprint: String, permissions: PluginManifest.Permissions, commandPaths: [String: String],
-                enabledSpaces: Set<UUID>, developmentMode: Bool, approvedAt: Date) {
+                enabledSpaces: Set<UUID>, developmentMode: Bool, approvedAt: Date, fileHashes: [String: String] = [:]) {
         self.fingerprint = fingerprint
+        self.fileHashes = fileHashes
         self.permissions = permissions
         self.commandPaths = commandPaths
         self.enabledSpaces = enabledSpaces
@@ -76,7 +117,7 @@ public struct PluginApproval: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case fingerprint, permissions, commandPaths, enabledSpaces, developmentMode, approvedAt
+        case fingerprint, permissions, commandPaths, enabledSpaces, developmentMode, approvedAt, fileHashes
     }
 
     public init(from decoder: Decoder) throws {
@@ -87,6 +128,7 @@ public struct PluginApproval: Codable, Equatable, Sendable {
         enabledSpaces = Set(try c.decode([UUID].self, forKey: .enabledSpaces))
         developmentMode = try c.decode(Bool.self, forKey: .developmentMode)
         approvedAt = try c.decode(Date.self, forKey: .approvedAt)
+        fileHashes = try c.decodeIfPresent([String: String].self, forKey: .fileHashes) ?? [:]
     }
 
     /// `enabledSpaces` is written sorted so the file is stable between saves.
@@ -98,6 +140,7 @@ public struct PluginApproval: Codable, Equatable, Sendable {
         try c.encode(enabledSpaces.sorted { $0.uuidString < $1.uuidString }, forKey: .enabledSpaces)
         try c.encode(developmentMode, forKey: .developmentMode)
         try c.encode(approvedAt, forKey: .approvedAt)
+        try c.encode(fileHashes, forKey: .fileHashes)
     }
 }
 

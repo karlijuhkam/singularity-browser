@@ -76,7 +76,7 @@ final class TerminalSession {
     // MARK: - Starting the shell
 
     private func start(in workingDirectory: String) {
-        let shell = Self.loginShell
+        let shell = LoginShell.path()
         var directory = HomePath.expand(workingDirectory)
         var isDirectory: ObjCBool = false
         if !FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory) || !isDirectory.boolValue {
@@ -111,15 +111,6 @@ final class TerminalSession {
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
-    }
-
-    /// The user's login shell from the user database (what `chsh` sets), falling back to zsh.
-    private static var loginShell: String {
-        if let entry = getpwuid(getuid()), let shell = entry.pointee.pw_shell {
-            let path = String(cString: shell)
-            if FileManager.default.isExecutableFile(atPath: path) { return path }
-        }
-        return "/bin/zsh"
     }
 
     /// The app's own environment (which carries SSH_AUTH_SOCK, TMPDIR, …) plus terminal settings.
