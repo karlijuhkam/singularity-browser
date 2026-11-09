@@ -40,6 +40,15 @@ function transpile(source: string): Outcome {
   if (/\bimport\s*\(/.test(javascript)) {
     return { ok: false, problem: "page.ts can't import other files in round 1 (it uses import())" };
   }
+  // In the page the code runs as the body of an async function (PluginPrelude.wrap). Compile it
+  // exactly like that (compiling doesn't run it): module-only syntax that scan() lets through,
+  // such as `export {}` or `import.meta`, fails here.
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  try {
+    new AsyncFunction(javascript);
+  } catch (error) {
+    return { ok: false, problem: `page.ts can't use import/export in round 1 (${describe(error)})` };
+  }
   return { ok: true, javascript };
 }
 

@@ -349,6 +349,24 @@ private func url(_ s: String) -> URL { URL(string: s)! }
             Issue.record("syntax error: \(broken)"); return
         }
         #expect(syntax.contains("syntax"))
+        // Module-only syntax that scan() lets through fails when compiled as the async function
+        // body it becomes in the page.
+        for source in ["export {};\nconst q = 1;", "const s = `${import.meta}`;", "const u = \"x\";\nimport.source(u);"] {
+            let result = transpile(source)
+            guard case .failure(.refused(let text)) = result else {
+                Issue.record("\(source): \(result)"); continue
+            }
+            // Bun itself rejects `import.source` as a syntax error; the others fail as a function body.
+            #expect(text.contains("import/export") || text.contains("syntax error"), "\(source): \(text)")
+        }
+        // Comments and line breaks between import and "(" don't hide it (Bun reprints the code).
+        for source in ["const u = \"x\";\nimport /**/ (u);", "const u = \"x\";\nimport //line\n(u);",
+                       "const u = \"x\";\n\\u0069mport(u);"] {
+            let result = transpile(source)
+            guard case .failure(.refused) = result else { Issue.record("\(source): \(result)"); continue }
+        }
+        // Top-level await is fine: the code runs inside an async function.
+        #expect((try? transpile("await Promise.resolve(1);").get()) != nil)
         // Type-only imports vanish when transpiling, so they are fine.
         #expect((try? transpile(#"import type { A } from "./a"; const x: A | null = null;"#).get()) != nil)
     }

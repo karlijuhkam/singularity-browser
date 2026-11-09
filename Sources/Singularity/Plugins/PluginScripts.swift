@@ -55,6 +55,9 @@ final class PluginScripts {
         var pluginIDs: [String] = []
         /// The plugin scripts we added (so they are never mistaken for the app's own).
         var pluginScripts: [WKUserScript] = []
+        /// Per plugin: the secret and bridge made for this fingerprint. Reused on rebuilds caused by
+        /// other plugins, so pages already open (whose prelude holds the secret) keep working.
+        var bridges: [String: (fingerprint: String, secret: String, bridge: PluginPageBridge)] = [:]
 
         init(controller: WKUserContentController, spaceID: UUID, baseScripts: [WKUserScript]) {
             self.controller = controller
@@ -70,8 +73,11 @@ final class PluginScripts {
     var tabID: (WKWebView) -> UUID? = { _ in nil }
 
     private var attached: [ObjectIdentifier: Attached] = [:]
-    /// Plugin id -> the fingerprint it was prepared for and the outcome. In memory only.
-    private var compiled: [String: (fingerprint: String, result: Result<String, PluginPageCompiler.Failure>)] = [:]
+    /// Plugin id -> the fingerprint it was prepared for, the outcome and when. In memory only.
+    /// `.changed` outcomes are never kept (the next scan brings a new fingerprint); `.failed` ones
+    /// (Bun couldn't run) are tried again after `retryFailedAfter`.
+    private var compiled: [String: (fingerprint: String, result: Result<String, PluginPageCompiler.Failure>, at: Date)] = [:]
+    private static let retryFailedAfter: TimeInterval = 10
     /// Plugin id -> fingerprint being prepared right now.
     private var compiling: [String: String] = [:]
     private var refreshPending = false
@@ -169,7 +175,12 @@ final class PluginScripts {
         guard let manifest = plugin.validManifest, let page = manifest.page,
               let snapshot = plugin.snapshot else { return }
         let id = plugin.id, fingerprint = snapshot.fingerprint
-        if compiled[id]?.fingerprint == fingerprint || compiling[id] == fingerprint { return }
+        if compiling[id] == fingerprint { return }
+        if let done = compiled[id], done.fingerprint == fingerprint {
+            // Done, unless Bun itself failed a while ago: then try again (on this refresh).
+            guard case .failure(.failed) = done.result,
+                  Date().timeIntervalSince(done.at) >= Self.retryFailedAfter else { return }
+        }
         compiling[id] = fingerprint
         let folder = plugin.folder, expected = snapshot.fileHashes[page.script]
         let runtime = runtime, hostFolder = hostFolder
@@ -181,15 +192,15 @@ final class PluginScripts {
             }.value
             guard let self, self.compiling[id] == fingerprint else { return }   // superseded meanwhile
             self.compiling[id] = nil
-            self.compiled[id] = (fingerprint, result)
+            if case .failure(.changed) = result {
+                // Edited while we read it: not kept; the file watcher brings a new scan (and
+                // fingerprint), and the next refresh tries again.
+                return
+            }
+            self.compiled[id] = (fingerprint, result, Date())
             switch result {
-            case .success:
-                self.manager.setPageProblem(id, nil)
-            case .failure(.changed):
-                // Edited while we read it: the file watcher brings a new scan (and fingerprint).
-                break
-            case .failure(let failure):
-                self.manager.setPageProblem(id, failure.userMessage)
+            case .success: self.manager.setPageProblem(id, nil)
+            case .failure(let failure): self.manager.setPageProblem(id, failure.userMessage)
             }
             self.scheduleRefresh()
         }
@@ -201,22 +212,33 @@ final class PluginScripts {
         let signature = plugins.map { "\($0.pluginID)@\($0.fingerprint)" }
         guard signature != entry.signature else { return }
         let spaceID = entry.spaceID
+        var bridges: [String: (fingerprint: String, secret: String, bridge: PluginPageBridge)] = [:]
         entry.pluginScripts = Self.rebuild(controller, plugins: plugins, baseScripts: entry.baseScripts,
-                                           previousPluginIDs: entry.pluginIDs) { [weak self] prepared, secret in
-            PluginPageBridge(pluginID: prepared.pluginID, spaceID: spaceID, access: prepared.access, secret: secret,
-                             manager: self?.manager, tabID: { [weak self] in self?.tabID($0) })
+                                           previousPluginIDs: entry.pluginIDs) { [weak self] prepared in
+            // Same plugin version as before: same secret and bridge (open pages keep their tokens).
+            if let kept = entry.bridges[prepared.pluginID], kept.fingerprint == prepared.fingerprint {
+                bridges[prepared.pluginID] = kept
+                return (kept.secret, kept.bridge)
+            }
+            let secret = PluginPageRequest.makeSecret()
+            let bridge = PluginPageBridge(pluginID: prepared.pluginID, spaceID: spaceID, access: prepared.access,
+                                          secret: secret, manager: self?.manager,
+                                          tabID: { [weak self] in self?.tabID($0) })
+            bridges[prepared.pluginID] = (prepared.fingerprint, secret, bridge)
+            return (secret, bridge)
         }
+        entry.bridges = bridges
         entry.signature = signature
         entry.pluginIDs = plugins.map(\.pluginID)
     }
 
     /// Replaces a content controller's scripts: removes all user scripts, re-adds `baseScripts` (the
     /// app's own: page agent, artifact bridge), and adds each plugin's prelude and page script in the
-    /// plugin's world, with a fresh secret and a new message handler. Only the plugin worlds'
+    /// plugin's world, with its secret and message handler from `bridgeFor`. Only the plugin worlds'
     /// handlers are touched; the agent's and the artifact bridge's stay. Returns the scripts added.
     static func rebuild(_ controller: WKUserContentController, plugins: [Prepared], baseScripts: [WKUserScript],
                         previousPluginIDs: [String],
-                        makeBridge: (Prepared, String) -> PluginPageBridge) -> [WKUserScript] {
+                        bridgeFor: (Prepared) -> (secret: String, bridge: PluginPageBridge)) -> [WKUserScript] {
         controller.removeAllUserScripts()
         for script in baseScripts { controller.addUserScript(script) }
         for id in previousPluginIDs {
@@ -225,7 +247,7 @@ final class PluginScripts {
         var added: [WKUserScript] = []
         for plugin in plugins {
             let world = world(plugin.pluginID)
-            let secret = PluginPageRequest.makeSecret()
+            let (secret, bridge) = bridgeFor(plugin)
             // forMainFrameOnly: false: login forms also live in frames (each frame is checked on its own).
             let prelude = WKUserScript(source: PluginPrelude.source(configJSON: plugin.configJSON, secret: secret),
                                        injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world)
@@ -237,7 +259,7 @@ final class PluginScripts {
             // Adding a second handler with the same name in the same world raises an exception, so
             // make sure there is none (removing a missing one does nothing).
             controller.removeScriptMessageHandler(forName: handlerName, contentWorld: world)
-            controller.addScriptMessageHandler(makeBridge(plugin, secret), contentWorld: world, name: handlerName)
+            controller.addScriptMessageHandler(bridge, contentWorld: world, name: handlerName)
         }
         return added
     }

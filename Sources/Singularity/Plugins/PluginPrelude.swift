@@ -23,12 +23,13 @@ import Foundation
 /// Real clicks: buttons and menus live in a *closed* shadow root, so the page can tell they are
 /// there but can't read or click inside them; a script's `element.click()` or `dispatchEvent`
 /// produces `isTrusted: false` events, which are ignored. On a real click the prelude asks
-/// Singularity for a one-time click token, proving with `secret` (random per build, known only to
-/// this prelude and to the native handler) that the request is its own. The next `send` within 2 s
-/// carries the token, and Singularity only lets a fill through for a send that carried a valid one.
-/// The secret lives in a variable of the prelude's own function, which the plugin's code can't
-/// read. The built-ins the prelude relies on at click time are copied before any plugin code runs,
-/// so replacing them later doesn't help the plugin.
+/// Singularity for a one-time click token, proving with `secret` (random per plugin version and web
+/// view, known only to this prelude and to the native handler) that the request is its own. The
+/// next `send` within 2 s carries the token, and Singularity only lets a fill through for a send
+/// that carried a valid one. The secret lives in a variable of the prelude's own function, which
+/// the plugin's code can't read. The built-ins the prelude relies on at click time are copied
+/// before any plugin code runs, so replacing them later doesn't help the plugin. Before asking for
+/// a token, the prelude also checks the click wasn't hijacked (see `genuineClick` below).
 enum PluginPrelude {
     /// - Parameters:
     ///   - configJSON: `{"pluginID", "handlerName", "pageSites", "pageAdditions", "fillForms"}`, the
@@ -81,6 +82,11 @@ enum PluginPrelude {
       const createElement = Document.prototype.createElement;
       const attachShadow = Element.prototype.attachShadow;
       const setAttribute = Element.prototype.setAttribute;
+      const getAttribute = Element.prototype.getAttribute;
+      const getComputedStyle = window.getComputedStyle;
+      const getPropertyValue = CSSStyleDeclaration.prototype.getPropertyValue;
+      const parentNodeOf = Object.getOwnPropertyDescriptor(Node.prototype, "parentNode").get;
+      const documentElementOf = Object.getOwnPropertyDescriptor(Document.prototype, "documentElement").get;
       const appendChild = Node.prototype.appendChild;
       const removeElement = Element.prototype.remove;
       const getRect = Element.prototype.getBoundingClientRect;
@@ -102,6 +108,9 @@ enum PluginPrelude {
       const setText = (node, text) => apply(textContent, node, [String(text)]);
       const connected = (node) => apply(isConnected, node, []);
       const rectOf = (el) => apply(getRect, el, []);
+      const styleOf = (el, name) => apply(getPropertyValue, apply(getComputedStyle, window, [el]), [name]);
+      const parentOf = (node) => apply(parentNodeOf, node, []);
+      const rootElement = () => apply(documentElementOf, document, []);
 
       // ---- 2. Is this page one of the plugin's sites? ----------------------------------------------
       // The patterns were parsed by Singularity (SitePattern.browserMatcher). Singularity checks
@@ -124,19 +133,39 @@ enum PluginPrelude {
       // ---- 3. No network for the plugin's page code ------------------------------------------------
       // Defence in depth: plugins can't send what they see in a page anywhere. These are replaced in
       // this world only (the page's own scripts are unaffected), can't be put back, and throw.
+      // Every frame runs this prelude (forMainFrameOnly: false), so child frames are locked the same way.
       // What this can NOT stop: a script that may change the page can also make the page load
-      // things (an <img src>, a link, a form, a new location). Plugins are reviewed with that in mind.
+      // things, and those requests can carry data: `new Image().src = …`, inserting an <img>,
+      // <script> or <link> element, CSS url(…), assigning `location`, submitting a form. They can't
+      // be blocked from a script that must touch the DOM; plugins are reviewed with that in mind.
       function blocked() { throw new Error("network isn't available to plugins"); }
       const lock = (target, name) => {
         try { defineProperty(target, name, { value: blocked, writable: false, configurable: false }); } catch (_) {}
       };
+      // For properties read like `window.caches`: reading them throws.
+      const lockGetter = (target, name) => {
+        try { defineProperty(target, name, { get: blocked, configurable: false }); } catch (_) {}
+      };
+      // Methods on built-in prototypes (so instances made any other way can't use them either).
+      const lockMethods = (constructorName, names) => {
+        const C = window[constructorName];
+        if (C && C.prototype) for (const name of names) lock(C.prototype, name);
+      };
+      lockMethods("CacheStorage", ["open", "match", "has"]);
+      lockMethods("Cache", ["add", "addAll", "put"]);
+      lockMethods("Worklet", ["addModule"]);               // audioWorklet, paintWorklet, …
+      lockMethods("FontFaceSet", ["add", "load"]);         // document.fonts
+      lockMethods("ServiceWorkerContainer", ["register"]); // navigator.serviceWorker
+      lockMethods("Navigation", ["navigate"]);             // window.navigation, where present
+      lockMethods("Navigator", ["sendBeacon"]);
+      lock(navigator, "sendBeacon");
+      if (document.fonts) { lock(document.fonts, "add"); lock(document.fonts, "load"); }
+      lockGetter(window, "caches");
       for (const name of ["fetch", "XMLHttpRequest", "WebSocket", "WebSocketStream", "EventSource", "Worker",
                           "SharedWorker", "RTCPeerConnection", "webkitRTCPeerConnection", "WebTransport",
-                          "importScripts", "open"]) {
+                          "importScripts", "open", "FontFace"]) {
         lock(window, name);
       }
-      lock(Navigator.prototype, "sendBeacon");
-      lock(navigator, "sendBeacon");
       // Dynamic import() works in this world and can load a module from any URL. transpile-page.ts
       // refuses page scripts that contain "import(", so the remaining way is code built from a
       // string at run time: eval, the Function constructors and string timers are switched off too.
@@ -201,25 +230,55 @@ enum PluginPrelude {
         const root = apply(attachShadow, host, [{ mode: "closed" }]);
         return { host, root };
       };
-      const place = (host, left, top, width, height) => {
-        apply(setAttribute, host, ["style", HOST_STYLE +
-          ` left: ${left}px !important; top: ${top}px !important; width: ${width}px !important; height: ${height}px !important;`]);
+      // Writes the host's style only when it differs, so our own write doesn't start another round
+      // through the MutationObserver below (which puts the style back whenever the page changes it).
+      const setStyle = (host, style) => {
+        if (apply(getAttribute, host, ["style"]) !== style) apply(setAttribute, host, ["style", style]);
       };
-      const hide = (host) => apply(setAttribute, host, ["style", HOST_STYLE + " display: none !important;"]);
+      const placedStyle = (left, top, width, height) => HOST_STYLE +
+        ` left: ${left}px !important; top: ${top}px !important; width: ${width}px !important; height: ${height}px !important;`;
+      const place = (host, left, top, width, height) => setStyle(host, placedStyle(left, top, width, height));
+      const hide = (host) => setStyle(host, HOST_STYLE + " display: none !important;");
+      // Our hosts are direct children of <html>; put one back there if the page moved or removed it.
       const ensureInPage = (host) => {
-        if (!connected(host)) apply(appendChild, document.documentElement, [host]);
+        const root = rootElement();
+        if (root && parentOf(host) !== root) apply(appendChild, root, [host]);
       };
       // Only data:image URLs: loading an icon from elsewhere would be a network request.
       const safeIcon = (url) => (typeof url === "string" && /^data:image\//i.test(url) ? url : null);
 
-      // A real click, on our own element, by a person (not a script). A click on a button the plugin
-      // has made huge or invisible to catch clicks meant for the page doesn't count either.
-      const genuineClick = (event, element) => {
-        if (event.isTrusted !== true) return false;
-        const r = rectOf(element);
-        if (r.width > 64 || r.height > 64) return false;
+      // A real click, by a person, on our element where we put it and as we drew it. This is what
+      // stops click-jacking: the page can restyle our host <div> (move it under a lure, fade it out,
+      // blow it up) to collect a click the user meant for something else. So at click time:
+      //   - the event is trusted (not a script's click() or dispatchEvent);
+      //   - the host is still a child of <html> and its rectangle is where we computed it (±2 px);
+      //   - the click point lies inside that rectangle (except Return on a focused menu item, which
+      //     has no point; the page can't focus inside our closed shadow root);
+      //   - a field button is small (≤ 64 px); the clicked element is visible (checkVisibility), and the host and
+      //     <html> have opacity ≥ 0.9, visibility "visible", and the host has no filter.
+      // Remaining risk we can't see from here: an overlay with `pointer-events: none` drawn over our
+      // button lets a click through while the user sees the overlay. The authoring guide therefore
+      // recommends a menu pick before releasing passwords.
+      const near = (a, b) => Math.abs(a - b) <= 2;
+      const genuineClick = (event, host, element, expected, isMenuItem) => {
+        const allowKeyboard = isMenuItem;
+        if (event.isTrusted !== true || !expected) return false;
+        const root = rootElement();
+        if (!root || parentOf(host) !== root) return false;
+        const r = rectOf(host);
+        if (!near(r.left, expected.left) || !near(r.top, expected.top) ||
+            !near(r.width, expected.width) || !near(r.height, expected.height)) return false;
+        const keyboard = allowKeyboard && event.detail === 0 && event.clientX === 0 && event.clientY === 0;
+        if (!keyboard && !(event.clientX >= r.left && event.clientX <= r.right &&
+                           event.clientY >= r.top && event.clientY <= r.bottom)) return false;
+        const e = rectOf(element);
+        if (!isMenuItem && (e.width > 64 || e.height > 64)) return false;
         if (typeof checkVisibility === "function" &&
             !apply(checkVisibility, element, [{ opacityProperty: true, visibilityProperty: true }])) return false;
+        for (const el of [host, root]) {
+          if (!(Number(styleOf(el, "opacity")) >= 0.9) || styleOf(el, "visibility") !== "visible") return false;
+        }
+        if (styleOf(host, "filter") !== "none") return false;
         return true;
       };
 
@@ -239,6 +298,14 @@ enum PluginPrelude {
       const buttons = new Map(); // input -> { host, button, options }
       let framePending = false;
 
+      // Where an input's button belongs (viewport coordinates), or null when the input is too small
+      // or off screen. Used for drawing and, at click time, to check nobody moved the button.
+      const placement = (input) => {
+        const r = rectOf(input);
+        if (r.width < 24 || r.height < 12 || r.bottom < 0 || r.top > innerHeight) return null;
+        const size = Math.max(12, Math.min(22, r.height - 6));
+        return { left: Math.round(r.right - size - 4), top: Math.round(r.top + (r.height - size) / 2), width: size, height: size };
+      };
       const layoutButtons = () => {
         framePending = false;
         for (const [input, entry] of buttons) {
@@ -248,14 +315,9 @@ enum PluginPrelude {
             buttons.delete(input);
             continue;
           }
-          const r = rectOf(input);
-          if (r.width < 24 || r.height < 12 || r.bottom < 0 || r.top > innerHeight) {
-            hide(entry.host);
-            continue;
-          }
-          const size = Math.max(12, Math.min(22, r.height - 6));
+          const at = placement(input);
           ensureInPage(entry.host);
-          place(entry.host, Math.round(r.right - size - 4), Math.round(r.top + (r.height - size) / 2), size, size);
+          if (at) place(entry.host, at.left, at.top, at.width, at.height); else hide(entry.host);
         }
       };
       const scheduleLayout = () => {
@@ -263,12 +325,12 @@ enum PluginPrelude {
         framePending = true;
         requestFrame(layoutButtons);
       };
-      const isOurs = (node) => {
-        for (const entry of buttons.values()) if (entry.host === node) return true;
-        return node === openMenu?.host;
-      };
+      // Any change in the page may move inputs; a change to one of our hosts (the page rewriting its
+      // style, say) puts our style back. Writing the same style again is skipped (setStyle), so our
+      // own writes end there.
       const pageObserver = new RealMutationObserver((records) => {
-        if (records.some((r) => !isOurs(r.target))) scheduleLayout();
+        if (openMenu && records.some((r) => r.target === openMenu.host || r.target === rootElement())) openMenu.restore();
+        scheduleLayout();
       });
       let watching = false;
       const watchPage = () => {
@@ -314,13 +376,17 @@ enum PluginPrelude {
         apply(appendChild, root, [style]);
         apply(appendChild, root, [button]);
 
-        const entry = { host, button, options: { onClick }, resizeObserver: new RealResizeObserver(scheduleLayout) };
+        const entry = { input, host, button, options: { onClick }, resizeObserver: new RealResizeObserver(scheduleLayout) };
         // Keep the field focused when the button is pressed (some forms validate on blur).
         on(button, "mousedown", (event) => event.preventDefault());
         on(button, "click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          if (!genuineClick(event, button)) return;
+          const input = entry.input;
+          if (!genuineClick(event, host, button, placement(input), false)) {
+            layoutButtons(); // put it back where it belongs; no action, no token
+            return;
+          }
           realClickHappened();
           try {
             const result = entry.options.onClick(input);
@@ -369,6 +435,8 @@ enum PluginPrelude {
           apply(setAttribute, menu, ["class", "menu"]);
           apply(setAttribute, menu, ["role", "menu"]);
           const itemButtons = [];
+          let menuRect = null;      // where we put the menu (checked at click time)
+          let restore = () => {};   // puts the menu back if the page moves or restyles it
 
           const finish = (value) => {
             if (openMenu && openMenu.host === host) openMenu = null;
@@ -411,8 +479,11 @@ enum PluginPrelude {
             on(button, "click", (event) => {
               event.preventDefault();
               event.stopPropagation();
-              // Return on a focused item also produces a real click.
-              if (event.isTrusted !== true) return;
+              // Return on a focused item also produces a real click (with no click point).
+              if (!genuineClick(event, host, button, menuRect, true)) {
+                restore();
+                return;
+              }
               realClickHappened();
               finish(index);
             });
@@ -433,9 +504,15 @@ enum PluginPrelude {
           const height = Math.min(320, Math.max(1, itemButtons.length) * 44 + 8);
           const top = r.bottom + 4 + height > innerHeight && r.top - 4 - height > 0 ? r.top - 4 - height : r.bottom + 4;
           const left = Math.max(4, Math.min(r.left, innerWidth - 364));
-          place(host, Math.round(left), Math.round(top), 360, height);
-          ensureInPage(host);
-          openMenu = { host, finish };
+          menuRect = { left: Math.round(left), top: Math.round(top), width: 360, height };
+          const menuStyle = placedStyle(menuRect.left, menuRect.top, menuRect.width, menuRect.height);
+          restore = () => {
+            setStyle(host, menuStyle);
+            ensureInPage(host);
+          };
+          restore();
+          openMenu = { host, finish, restore };
+          watchPage();
           on(window, "pointerdown", outside, true);
           on(window, "keydown", keys, true);
           on(window, "resize", dismiss, true);
