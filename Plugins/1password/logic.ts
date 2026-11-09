@@ -29,7 +29,7 @@ export function isSameOrSubdomain(frameHost: string, itemHost: string): boolean 
 export function withScheme(href: string): string {
   const text = href.trim();
   if (text.startsWith("//")) return "https:" + text;
-  return /^[a-z][a-z0-9+.-]*:/i.test(text) ? text : "https://" + text;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : "https://" + text;
 }
 
 /** The hosts of an item's http(s) URLs. */
@@ -41,6 +41,9 @@ function itemHosts(item: Record<string, unknown>): string[] {
     if (typeof href !== "string") continue;
     try {
       const url = new URL(withScheme(href));
+      // "mailto:a@b.c" becomes https://mailto:a@b.c, which parses as user "mailto" at host b.c:
+      // skip URLs with a user name or password so that can't match.
+      if (url.username !== "" || url.password !== "") continue;
       if (url.protocol === "http:" || url.protocol === "https:") hosts.push(normalizeHost(url.hostname));
     } catch {
       // Not a URL: skip it.

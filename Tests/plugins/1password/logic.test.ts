@@ -43,6 +43,10 @@ test("URLs without a scheme", () => {
   expect(one("www.github.com/login", "www.github.com")).toBe(1);
   expect(one("//github.com", "github.com")).toBe(1);
   expect(one("ftp://x", "x")).toBe(0);
+  expect(one("localhost:3000", "localhost")).toBe(1);
+  expect(one("127.0.0.1:8080/login", "127.0.0.1")).toBe(1);
+  expect(one("[::1]:3000", "[::1]")).toBe(1);
+  expect(one("mailto:a@b.c", "b.c")).toBe(0);
   expect(one("ssh://github.com", "github.com")).toBe(0);
 });
 
