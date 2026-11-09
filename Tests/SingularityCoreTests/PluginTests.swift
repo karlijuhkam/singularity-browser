@@ -168,4 +168,54 @@ import Testing
             #expect(!CommandPolicy.allows(command: name, arguments: ["x"], declared: [name: ["x"]]))
         }
     }
+
+    // MARK: Fix round 1
+
+    @Test func refusedNameVariants() throws {
+        for name in ["Bash", "SH", "Python3", "python3.12", "zsh-5.9", "nodejs", "perl5.34", "ruby3.2", "php8.2"] {
+            #expect(CommandPolicy.isRefused(name), "\(name)")
+            #expect(!CommandPolicy.allows(command: name, arguments: ["x"], declared: [name: ["x"]]))
+            let dir = try temp(folder: "t", json: manifestJSON(permissions: "{\"commands\":{\"\(name)\":[\"x\"]}}"))
+            #expect(throws: PluginError.refusedCommand(name)) { _ = try PluginManifest.load(from: dir) }
+        }
+        for name in ["op", "op2"] {
+            #expect(!CommandPolicy.isRefused(name))
+            #expect(CommandPolicy.allows(command: name, arguments: ["x"], declared: [name: ["x"]]))
+        }
+        for name in ["-c", ".", ".."] {
+            let dir = try temp(folder: "t", json: manifestJSON(permissions: "{\"commands\":{\"\(name)\":[\"x\"]}}"))
+            #expect(throws: PluginError.refusedCommand(name)) { _ = try PluginManifest.load(from: dir) }
+        }
+    }
+
+    @Test func packageJSONFailsClosed() throws {
+        func load(package: String?, lockAsDirectory: Bool = false) throws -> PluginError? {
+            let dir = try temp(folder: "t", json: manifestJSON())
+            if let package { try Data(package.utf8).write(to: dir.appending(path: "package.json")) }
+            if lockAsDirectory {
+                try FileManager.default.createDirectory(at: dir.appending(path: "bun.lock"), withIntermediateDirectories: false)
+            }
+            do { _ = try PluginManifest.load(from: dir); return nil } catch { return error }
+        }
+        if case .invalidJSON? = try load(package: #"{"dependencies":{"a":"1"},}"#) {} else { Issue.record("trailing comma") }
+        if case .invalidJSON? = try load(package: #"[]"#) {} else { Issue.record("not object") }
+        if case .invalidJSON? = try load(package: #"{"dependencies":[]}"#) {} else { Issue.record("deps not object") }
+        #expect(try load(package: #"{"devDependencies":{"a":"1"}}"#) == .missingLockfile)
+        #expect(try load(package: #"{"dependencies":{"a":"1"}}"#, lockAsDirectory: true) == .missingLockfile)
+        #expect(try load(package: #"{"dependencies":{}}"#) == nil)
+        #expect(try load(package: nil) == nil)
+    }
+
+    @Test func pageSitesMustBeCovered() throws {
+        let page = #","page":{"script":"background.ts","sites":["<all_urls>"]}"#
+        var dir = try temp(folder: "t", json: manifestJSON(extra: page))
+        #expect(throws: PluginError.pageSiteNotPermitted("<all_urls>")) { _ = try PluginManifest.load(from: dir) }
+        dir = try temp(folder: "t", json: manifestJSON(permissions: #"{"pageAdditions":["<all_urls>"]}"#, extra: page))
+        _ = try PluginManifest.load(from: dir)
+        let one = #","page":{"script":"background.ts","sites":["https://a.com/*"]}"#
+        dir = try temp(folder: "t", json: manifestJSON(permissions: #"{"pageAdditions":["https://b.com/*"]}"#, extra: one))
+        #expect(throws: PluginError.pageSiteNotPermitted("https://a.com/*")) { _ = try PluginManifest.load(from: dir) }
+        dir = try temp(folder: "t", json: manifestJSON(extra: #","page":{"script":"background.ts","sites":[]}"#))
+        _ = try PluginManifest.load(from: dir)
+    }
 }

@@ -12,6 +12,7 @@ public enum PluginError: Error, Equatable, Sendable {
     case refusedCommand(String)
     case networkNotAvailable
     case missingLockfile
+    case pageSiteNotPermitted(String)
 }
 
 /// Host comparison helpers shared by site patterns and the 1Password fill guard.

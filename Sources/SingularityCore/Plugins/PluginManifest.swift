@@ -95,13 +95,19 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         for site in (page?.sites ?? []) + permissions.pageAdditions + permissions.fillForms {
             _ = try SitePattern(site) // throws invalidSitePattern
         }
+        // A page script may only run where pageAdditions allows it.
+        if !permissions.pageAdditions.contains("<all_urls>") {
+            for site in page?.sites ?? [] where !permissions.pageAdditions.contains(site) {
+                throw .pageSiteNotPermitted(site)
+            }
+        }
         guard permissions.network.isEmpty else { throw .networkNotAvailable }
 
         // Sorted so the error for a manifest with several bad commands is deterministic.
         for (name, subcommands) in permissions.commands.sorted(by: { $0.key < $1.key }) {
             // An empty list or an empty sub-command would otherwise allow every argument.
-            let hasEmptySub = subcommands.contains { $0.trimmingCharacters(in: .whitespaces).isEmpty }
-            if CommandPolicy.refused.contains(name) || !CommandPolicy.isValidName(name)
+            let hasEmptySub = subcommands.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if CommandPolicy.isRefused(name) || !CommandPolicy.isValidName(name)
                 || subcommands.isEmpty || hasEmptySub {
                 throw .refusedCommand(name)
             }
@@ -111,14 +117,55 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             guard Self.isRegularFile(path, inside: folder) else { throw .missingFile(path) }
         }
 
-        // Packages must be pinned: package.json with dependencies needs bun.lock.
-        let packageJSON = folder.appending(path: "package.json")
-        if let data = try? Data(contentsOf: packageJSON),
-           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let deps = object["dependencies"] as? [String: Any], !deps.isEmpty,
-           !FileManager.default.fileExists(atPath: folder.appending(path: "bun.lock").path) {
+        try Self.checkPackages(in: folder)
+    }
+
+    /// Packages must be pinned: any non-empty dependency group needs a `bun.lock` file.
+    /// A package.json that can't be understood is an error (fail closed).
+    private static func checkPackages(in folder: URL) throws(PluginError) {
+        let url = folder.appending(path: "package.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let object: Any
+        do {
+            let data = try Data(contentsOf: url)
+            // Foundation's parser tolerates trailing commas; real JSON (and Bun) does not.
+            if hasTrailingComma(data) { throw CocoaError(.propertyListReadCorrupt) }
+            object = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw .invalidJSON("package.json: not readable or not valid JSON")
+        }
+        guard let root = object as? [String: Any] else { throw .invalidJSON("package.json: not an object") }
+        var hasDependencies = false
+        for key in ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] {
+            guard let value = root[key] else { continue }
+            guard let group = value as? [String: Any] else { throw .invalidJSON("package.json: \(key) is not an object") }
+            if !group.isEmpty { hasDependencies = true }
+        }
+        guard hasDependencies else { return }
+        var isDir: ObjCBool = false
+        let lock = folder.appending(path: "bun.lock").path
+        guard FileManager.default.fileExists(atPath: lock, isDirectory: &isDir), !isDir.boolValue else {
             throw .missingLockfile
         }
+    }
+
+    /// True when a "," is followed (ignoring whitespace) by "}" or "]", outside of strings.
+    private static func hasTrailingComma(_ data: Data) -> Bool {
+        var inString = false, escaped = false, pendingComma = false
+        for b in data {
+            if inString {
+                if escaped { escaped = false } else if b == 0x5C { escaped = true } else if b == 0x22 { inString = false }
+                continue
+            }
+            switch b {
+            case 0x20, 0x09, 0x0A, 0x0D: continue
+            case 0x7D, 0x5D: if pendingComma { return true }
+            default: break
+            }
+            pendingComma = (b == 0x2C)
+            if b == 0x22 { inString = true }
+        }
+        return false
     }
 
     /// A relative path, no `..` component, that is a regular file still inside `folder`
