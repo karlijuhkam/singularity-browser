@@ -10,7 +10,7 @@ import Foundation
 ///     singularity.fillLogin({ usernameInput?, passwordInput?, username?, password? })
 ///
 /// It is two user scripts (see `PluginScripts`):
-/// 1. `source(...)`, at document start: the API, and network functions switched off.
+/// 1. `source(...)`, at document start: the API, and network and site-data functions switched off.
 /// 2. `wrap(...)`, at document end: the plugin's transpiled page.ts, run only when
 ///    `singularity.siteMatches` is true. It is a separate script so the plugin's code can't see
 ///    the prelude's private variables (the secret below).
@@ -135,73 +135,208 @@ enum PluginPrelude {
       const siteMatches = matchesAny(config.pageSites) && matchesAny(config.pageAdditions);
       const fillAllowed = siteMatches && matchesAny(config.fillForms);
 
-      // ---- 3. No network for the plugin's page code ------------------------------------------------
-      // Defence in depth: plugins can't send what they see in a page anywhere. These are replaced in
-      // this world only (the page's own scripts are unaffected), can't be put back, and throw.
-      // Every frame runs this prelude (forMainFrameOnly: false), so child frames are locked the same way.
-      // What this can NOT stop: a script that may change the page can also make the page load
-      // things, and those requests can carry data: `new Image().src = …`, inserting an <img>,
-      // <script> or <link> element, CSS url(…), assigning `location`, submitting a form. They can't
-      // be blocked from a script that must touch the DOM; plugins are reviewed with that in mind.
+      // ---- 3. Locks: no network, no site data, no code from strings ----------------------------------
+      // Defence in depth. These are replaced in this world only (the page's own scripts are
+      // unaffected: a content world shares the page's DOM but has its own JavaScript objects and
+      // prototypes), can't be put back (configurable: false), and throw.
+      //
+      // - Network: plugins can't send what they see in a page anywhere through fetch & co. What this
+      //   can NOT stop: a script that may change the page can also make the page load things, and
+      //   those requests can carry data: `new Image().src = …`, inserting an <img>, <script> or <link>
+      //   element, CSS url(…), assigning `location`, submitting a form. They can't be blocked from a
+      //   script that must touch the DOM; plugins are reviewed with that in mind.
+      // - Site data: cookies, Web Storage, IndexedDB, the Cookie Store API and navigator.storage
+      //   (which leads to the origin-private file system) hold the page's sessions and logins.
+      // - Code from strings: dynamic import() works in this world and can load a module from any URL.
+      //   transpile-page.ts refuses page scripts that contain "import(", so the remaining way is code
+      //   built from a string at run time: eval, the Function constructors and string timers.
+      //
+      // Every realm: every frame runs this prelude (forMainFrameOnly: false), but a frame that is
+      // still loading shows its *initial* about:blank document, into which WebKit injects no user
+      // scripts, and `window[n]` / `window.frames[n]` hand that window to this world with all its
+      // built-ins intact (fetch, document.cookie, Function…). WindowProxy's indexed access can't be
+      // intercepted, so instead `lockRealm` is applied to every frame we can reach, from:
+      //   - the plugin world's own DOM insertion functions (appendChild, innerHTML, setAttribute, …),
+      //     synchronously, right after they run (a plugin inserting <iframe src=slow>);
+      //   - a MutationObserver on this document, for frames the page adds (it runs before any later
+      //     task, so before the plugin's code can run again).
+      // `iframe.contentWindow` / `contentDocument` return null in this world; frames inside shadow
+      // roots aren't in `window[n]`, so they can't be reached at all.
+      const getOwnDescriptor = Object.getOwnPropertyDescriptor;
+      const getPrototypeOf = Object.getPrototypeOf;
+      const topOf = getOwnDescriptor(window, "top").get;
       function blocked() { throw new Error("network isn't available to plugins"); }
-      const lock = (target, name) => {
-        try { defineProperty(target, name, { value: blocked, writable: false, configurable: false }); } catch (_) {}
+      function noSiteData() { throw new Error("site data isn't available to plugins"); }
+      function noCodeFromStrings() { throw new Error("running code from a string isn't available to plugins"); }
+      const lockValue = (target, name, value) => {
+        try { defineProperty(target, name, { value, writable: false, configurable: false }); } catch (_) {}
       };
-      // For properties read like `window.caches`: reading them throws.
-      const lockGetter = (target, name) => {
-        try { defineProperty(target, name, { get: blocked, configurable: false }); } catch (_) {}
+      const lockAccessor = (target, name, get, set) => {
+        try { defineProperty(target, name, { get, set, configurable: false }); } catch (_) {}
+      };
+      const protoOf = (w, constructorName) => {
+        const C = w[constructorName];
+        return C && C.prototype ? C.prototype : null;
       };
       // Methods on built-in prototypes (so instances made any other way can't use them either).
-      const lockMethods = (constructorName, names) => {
-        const C = window[constructorName];
-        if (C && C.prototype) for (const name of names) lock(C.prototype, name);
+      const lockMethods = (w, constructorName, names, fn) => {
+        const proto = protoOf(w, constructorName);
+        if (proto) for (const name of names) lockValue(proto, name, fn);
       };
-      lockMethods("CacheStorage", ["open", "match", "has"]);
-      lockMethods("Cache", ["add", "addAll", "put"]);
-      lockMethods("Worklet", ["addModule"]);               // audioWorklet, paintWorklet, …
-      lockMethods("FontFaceSet", ["add", "load"]);         // document.fonts
-      lockMethods("ServiceWorkerContainer", ["register"]); // navigator.serviceWorker
-      lockMethods("Navigation", ["navigate"]);             // window.navigation, where present
-      lockMethods("Navigator", ["sendBeacon"]);
-      lock(navigator, "sendBeacon");
-      if (document.fonts) { lock(document.fonts, "add"); lock(document.fonts, "load"); }
-      lockGetter(window, "caches");
-      for (const name of ["fetch", "XMLHttpRequest", "WebSocket", "WebSocketStream", "EventSource", "Worker",
-                          "SharedWorker", "RTCPeerConnection", "webkitRTCPeerConnection", "WebTransport",
-                          "importScripts", "open", "FontFace"]) {
-        lock(window, name);
-      }
-      // Dynamic import() works in this world and can load a module from any URL. transpile-page.ts
-      // refuses page scripts that contain "import(", so the remaining way is code built from a
-      // string at run time: eval, the Function constructors and string timers are switched off too.
-      function noCodeFromStrings() { throw new Error("running code from a string isn't available to plugins"); }
-      const lockCode = (target, name) => {
-        try { defineProperty(target, name, { value: noCodeFromStrings, writable: false, configurable: false }); } catch (_) {}
+
+      // Runs `lockReachableFrames` right after a DOM function of realm `w` has run (see above).
+      const hookInsertions = (w) => {
+        const after = (constructorName, names) => {
+          const proto = protoOf(w, constructorName);
+          if (!proto) return;
+          for (const name of names) {
+            const original = proto[name];
+            if (typeof original !== "function") continue;
+            lockValue(proto, name, function (...args) {
+              try { return apply(original, this, args); } finally { lockReachableFrames(apply(topOf, window, [])); }
+            });
+          }
+        };
+        const afterSet = (constructorName, names) => {
+          const proto = protoOf(w, constructorName);
+          if (!proto) return;
+          for (const name of names) {
+            const d = getOwnDescriptor(proto, name);
+            if (!d || typeof d.set !== "function") continue;
+            const set = d.set;
+            lockAccessor(proto, name, d.get, function (value) {
+              try { apply(set, this, [value]); } finally { lockReachableFrames(apply(topOf, window, [])); }
+            });
+          }
+        };
+        after("Node", ["appendChild", "insertBefore", "replaceChild"]);
+        after("Element", ["append", "prepend", "before", "after", "replaceWith", "replaceChildren", "moveBefore",
+                          "insertAdjacentElement", "insertAdjacentHTML", "setHTMLUnsafe",
+                          "setAttribute", "setAttributeNS", "setAttributeNode", "setAttributeNodeNS", "toggleAttribute"]);
+        after("CharacterData", ["before", "after", "replaceWith"]);
+        after("DocumentType", ["before", "after", "replaceWith"]);
+        after("Document", ["append", "prepend", "replaceChildren", "moveBefore", "write", "writeln", "execCommand"]);
+        after("DocumentFragment", ["append", "prepend", "replaceChildren", "moveBefore"]);
+        after("ShadowRoot", ["setHTMLUnsafe"]);
+        after("Range", ["insertNode", "surroundContents"]);
+        afterSet("Element", ["innerHTML", "outerHTML"]);
+        afterSet("ShadowRoot", ["innerHTML"]);
+        afterSet("Node", ["textContent", "nodeValue"]); // also how an Attr node's value is set
+        afterSet("Attr", ["value"]);
+        afterSet("HTMLIFrameElement", ["src", "srcdoc"]);
+        afterSet("HTMLFrameElement", ["src"]);
+        afterSet("HTMLEmbedElement", ["src"]);
+        afterSet("HTMLObjectElement", ["data"]);
       };
-      lockCode(window, "eval");
-      lockCode(window, "Function");
-      for (const fn of [function () {}, async function () {}, function* () {}, async function* () {}]) {
-        lockCode(Object.getPrototypeOf(fn), "constructor");
-      }
-      for (const name of ["setTimeout", "setInterval"]) {
-        const original = window[name];
-        try {
-          defineProperty(window, name, {
-            value: (callback, ...rest) => {
-              if (typeof callback !== "function") noCodeFromStrings();
-              return apply(original, window, [callback, ...rest]);
-            },
-            writable: false,
-            configurable: false,
-          });
-        } catch (_) {}
-      }
-      // A new frame's window would have fresh copies of everything above: don't hand them out.
-      for (const proto of [HTMLIFrameElement.prototype, HTMLFrameElement.prototype, HTMLObjectElement.prototype]) {
-        for (const name of ["contentWindow", "contentDocument"]) {
-          try { defineProperty(proto, name, { get: () => null, configurable: false }); } catch (_) {}
+
+      // Locks realm `w` (this frame's window, or another frame's as seen from this world).
+      const lockRealm = (w, isOwnRealm) => {
+        // Network.
+        lockMethods(w, "CacheStorage", ["open", "match", "has"], blocked);
+        lockMethods(w, "Cache", ["add", "addAll", "put"], blocked);
+        lockMethods(w, "Worklet", ["addModule"], blocked);               // audioWorklet, paintWorklet, …
+        lockMethods(w, "FontFaceSet", ["add", "load"], blocked);         // document.fonts
+        lockMethods(w, "ServiceWorkerContainer", ["register"], blocked); // navigator.serviceWorker
+        lockMethods(w, "Navigation", ["navigate"], blocked);             // window.navigation, where present
+        lockMethods(w, "Navigator", ["sendBeacon"], blocked);
+        if (w.navigator) lockValue(w.navigator, "sendBeacon", blocked);
+        const fonts = w.document && w.document.fonts;
+        if (fonts) { lockValue(fonts, "add", blocked); lockValue(fonts, "load", blocked); }
+        lockAccessor(w, "caches", blocked, undefined);
+        for (const name of ["fetch", "XMLHttpRequest", "WebSocket", "WebSocketStream", "EventSource", "Worker",
+                            "SharedWorker", "RTCPeerConnection", "webkitRTCPeerConnection", "WebTransport",
+                            "importScripts", "open", "FontFace"]) {
+          lockValue(w, name, blocked);
         }
-      }
+
+        // Code from strings.
+        const OwnFunction = w.Function;
+        lockValue(w, "eval", noCodeFromStrings);
+        lockValue(w, "Function", noCodeFromStrings);
+        if (isOwnRealm) {
+          for (const fn of [function () {}, async function () {}, function* () {}, async function* () {}]) {
+            lockValue(getPrototypeOf(fn), "constructor", noCodeFromStrings);
+          }
+        } else if (OwnFunction) {
+          // Async and generator functions of another realm can only come from code running there,
+          // and no code of this world runs in a realm we lock from outside.
+          lockValue(OwnFunction.prototype, "constructor", noCodeFromStrings);
+        }
+        for (const name of ["setTimeout", "setInterval"]) {
+          const original = w[name];
+          if (typeof original !== "function") continue;
+          lockValue(w, name, (callback, ...rest) => {
+            if (typeof callback !== "function") noCodeFromStrings();
+            return apply(original, w, [callback, ...rest]);
+          });
+        }
+
+        // Site data. Window attributes live on the window object itself (WebIDL [Global]);
+        // Window.prototype is locked as well in case a WebKit version puts them there.
+        for (const name of ["localStorage", "sessionStorage", "indexedDB", "webkitIndexedDB", "cookieStore"]) {
+          lockAccessor(w, name, noSiteData, noSiteData);
+          const windowProto = protoOf(w, "Window");
+          if (windowProto) lockAccessor(windowProto, name, noSiteData, noSiteData);
+        }
+        const navigatorProto = protoOf(w, "Navigator");
+        if (navigatorProto) lockAccessor(navigatorProto, "storage", noSiteData, noSiteData);
+        if (w.navigator) lockAccessor(w.navigator, "storage", noSiteData, noSiteData);
+        // In case a reference to one of these objects is obtained another way (a StorageEvent, say).
+        lockMethods(w, "Storage", ["getItem", "setItem", "removeItem", "key", "clear"], noSiteData);
+        lockMethods(w, "IDBFactory", ["open", "databases", "deleteDatabase"], noSiteData);
+        lockMethods(w, "CookieStore", ["get", "getAll", "set", "delete"], noSiteData);
+        lockMethods(w, "StorageManager", ["getDirectory", "estimate", "persist", "persisted"], noSiteData);
+        const storageEventProto = protoOf(w, "StorageEvent");
+        if (storageEventProto) {
+          for (const name of ["key", "oldValue", "newValue", "storageArea"]) {
+            lockAccessor(storageEventProto, name, noSiteData, undefined);
+          }
+        }
+
+        // Frames: a new frame's window would have fresh copies of everything above.
+        for (const name of ["HTMLIFrameElement", "HTMLFrameElement", "HTMLObjectElement"]) {
+          const proto = protoOf(w, name);
+          if (proto) for (const prop of ["contentWindow", "contentDocument"]) lockAccessor(proto, prop, () => null, undefined);
+        }
+        // `length` is how we find frames: keep its real getter, but don't let it be shadowed.
+        const length = getOwnDescriptor(w, "length");
+        if (length && typeof length.get === "function") lockAccessor(w, "length", length.get, undefined);
+        hookInsertions(w);
+
+        // Last, because `isLocked` looks at it: `document.cookie` is an accessor on
+        // Document.prototype in WebKit; HTMLDocument.prototype is locked too in case a version
+        // defines (shadows) it there.
+        const htmlDocumentProto = protoOf(w, "HTMLDocument");
+        if (htmlDocumentProto) lockAccessor(htmlDocumentProto, "cookie", noSiteData, noSiteData);
+        lockAccessor(protoOf(w, "Document"), "cookie", noSiteData, noSiteData);
+      };
+      // Locked already (by us, or by that frame's own copy of this prelude)? Untouched, a WebIDL
+      // attribute is configurable. Throws for a cross-origin frame (which this world can't use anyway).
+      const isLocked = (w) => {
+        const d = getOwnDescriptor(protoOf(w, "Document"), "cookie");
+        return !!d && d.configurable === false;
+      };
+      // Locks every frame under `from` (breadth first; cross-origin frames are skipped but their
+      // children, which may be same-origin with us, aren't).
+      const lockReachableFrames = (from) => {
+        const queue = [from];
+        for (let i = 0; i < queue.length && i < 1000; i++) {
+          const w = queue[i];
+          try { if (!isLocked(w)) lockRealm(w, false); } catch (_) {}
+          let count = 0;
+          try { count = w.length; } catch (_) {}
+          for (let k = 0; k < count; k++) {
+            try { const child = w[k]; if (child) queue.push(child); } catch (_) {}
+          }
+        }
+      };
+      lockRealm(window, true);
+      // Frames the page adds (or points somewhere else) while this document lives. Frames inside
+      // child documents are their own prelude's job.
+      new RealMutationObserver(() => lockReachableFrames(window)).observe(document, {
+        childList: true, subtree: true, attributes: true, attributeFilter: ["src", "srcdoc", "data"],
+      });
+      lockReachableFrames(window);
 
       // ---- 4. Talking to the plugin's background program --------------------------------------------
       // Click tickets: a real click on our button or menu asks Singularity for a click token at once
