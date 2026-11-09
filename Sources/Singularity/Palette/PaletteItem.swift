@@ -160,6 +160,7 @@ enum PaletteResults {
         }
         items.append(command("new-folder", "New Folder…", "folder.badge.plus") { state.promptNewFolder() })
         items.append(command("artifacts-folder", "Show Artifacts Folder in Finder", "folder") { state.revealArtifactsFolder() })
+        items.append(command("agent-log", "Show Agent Log File", "sparkles") { state.revealAgentLog() })
         items.append(command("new-space", "New Space…", "plus.square.on.square") {
             state.spaceEditor = SpaceEditorRequest(spaceID: nil)
         })

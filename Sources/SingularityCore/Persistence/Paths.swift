@@ -9,6 +9,7 @@ import Foundation
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
 ///        ├─ artifacts/              HTML artifacts, served by the Space's local server
+///        ├─ agent-log.jsonl         one line per agent action
 ///        └─ favicons/<host>.png
 ///
 /// `root` is injectable so tests can use a temporary directory.
@@ -38,6 +39,11 @@ public struct Paths: Sendable {
 
     public func historyFile(_ slug: String) -> URL {
         spaceDirectory(slug).appending(path: "history.jsonl")
+    }
+
+    /// One JSON line per agent action in this Space (see AgentLog.swift).
+    public func agentLogFile(_ slug: String) -> URL {
+        spaceDirectory(slug).appending(path: "agent-log.jsonl")
     }
 
     public func artifactsDirectory(_ slug: String) -> URL {

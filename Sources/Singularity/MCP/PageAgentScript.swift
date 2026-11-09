@@ -310,7 +310,27 @@ enum PageAgentScript {
         return `Typed into ${describe(el)}${submitted}.`;
       };
 
-      window.__singularityAgent = Object.freeze({ snapshot, find, click, type });
+      // ---- inspect (for approvals: what would acting on this element do?) -------------------
+      const inspect = (ref) => {
+        const el = lookup(ref);
+        const role = roleOf(el) || el.tagName.toLowerCase();
+        const form = el.form || el.closest("form");
+        const tag = el.tagName;
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        // Clicking these submits their form: submit buttons/inputs, and <button> without a type.
+        const submits = !!form && ((tag === "BUTTON" && (type === "" || type === "submit"))
+          || (tag === "INPUT" && (type === "submit" || type === "image")));
+        const link = el.closest("a[href]");
+        const href = link && !link.getAttribute("href").startsWith("javascript:") ? link.href : null;
+        return JSON.stringify({
+          description: describe(el),
+          submits,
+          href,
+          isPassword: tag === "INPUT" && type === "password",
+        });
+      };
+
+      window.__singularityAgent = Object.freeze({ snapshot, find, click, type, inspect });
     })();
     """##
 }

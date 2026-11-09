@@ -20,6 +20,9 @@ struct SidebarView: View {
                     AddressRow()
                     if let space = state.selectedSpace {
                         TabList(space: space)
+                        if space.agentsEnabled || !(state.agentLogs[space.id] ?? []).isEmpty {
+                            AgentLogPane(space: space)
+                        }
                     }
                     HStack(spacing: 0) {
                         NewTabButton()
@@ -194,6 +197,8 @@ private struct SplitRow: View {
                                 .font(.system(size: 12))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
+                            Spacer(minLength: 0)
+                            AgentBadge(tab: tab)
                         }
                     }
                     .padding(.horizontal, 6)
@@ -202,6 +207,7 @@ private struct SplitRow: View {
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .fill(Color.primary.opacity(focused ? 0.14 : (splitIsShown ? 0.07 : 0.04)))
                     )
+                    .agentBusyBackground(id, cornerRadius: 5)
                     .contentShape(Rectangle())
                     .onTapGesture { state.selectTab(id) }
                     .contextMenu { TabContextMenu(tab: tab, space: space) }

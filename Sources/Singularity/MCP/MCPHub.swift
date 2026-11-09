@@ -64,17 +64,22 @@ final class MCPHub {
         servers[id] = server
         mcpLog.notice("agent connected")
 
+        // The client's name ("claude-code"), from its initialize request; used in sheets and the log.
+        let client = ClientName()
+
         Task { [weak self, toolbox] in
             await server.withMethodHandler(ListTools.self) { _ in
                 await .init(tools: toolbox.listTools())
             }
             await server.withMethodHandler(CallTool.self) { params in
-                await toolbox.call(params.name, arguments: params.arguments ?? [:])
+                await toolbox.call(params.name, arguments: params.arguments ?? [:], client: client.value)
             }
             // The socket is both our input and our output.
             let transport = StdioTransport(input: FileDescriptor(rawValue: fd), output: FileDescriptor(rawValue: fd))
             do {
-                try await server.start(transport: transport)
+                try await server.start(transport: transport) { info, _ in
+                    client.value = info.name
+                }
                 await server.waitUntilCompleted()
             } catch {
                 mcpLog.error("MCP connection failed: \(error)")
@@ -83,6 +88,16 @@ final class MCPHub {
             close(fd)
             self?.servers[id] = nil
             mcpLog.notice("agent disconnected")
+        }
+    }
+
+    /// Holds the connected client's name once it has introduced itself.
+    private final class ClientName: @unchecked Sendable {
+        private let lock = NSLock()
+        private var name = "agent"
+        var value: String {
+            get { lock.withLock { name } }
+            set { lock.withLock { name = newValue } }
         }
     }
 

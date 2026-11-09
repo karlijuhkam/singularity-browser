@@ -74,6 +74,7 @@ final class ArtifactBridge: NSObject, WKScriptMessageHandlerWithReply {
             switch await state.sendPromptFromArtifact(text, spaceID: spaceID) {
             case .sent: return (true, nil)
             case .declined: return (false, nil)
+            case .refused(let reason): return (nil, reason)
             case .noTerminal: return (nil, "no terminal tab in this Space")
             }
 
@@ -93,4 +94,6 @@ final class ArtifactBridge: NSObject, WKScriptMessageHandlerWithReply {
 
 enum PromptResult {
     case sent, declined, noTerminal
+    /// The Space's agent policy doesn't allow it (read-only).
+    case refused(String)
 }

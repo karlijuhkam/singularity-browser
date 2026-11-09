@@ -24,6 +24,14 @@ final class WebTabController: NSObject {
     @ObservationIgnored private weak var state: AppState?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
+    /// Set while an agent's click or type runs on this tab. Every main-frame navigation during
+    /// that time is checked: it gets the URL and whether it is a form submission, and returns
+    /// whether it may go ahead (it may ask the user first). Catches JavaScript-driven submits and
+    /// redirects that couldn't be predicted before the click.
+    @ObservationIgnored var agentNavigationGuard: (@MainActor (URL, Bool) async -> Bool)?
+    /// Navigations currently waiting for the user's answer (the agent's call waits for these).
+    @ObservationIgnored private(set) var pendingNavigationApprovals = 0
+
     // Mirrored from the web view so SwiftUI can observe them (toolbar buttons, progress bar).
     private(set) var canGoBack = false
     private(set) var canGoForward = false
@@ -61,6 +69,30 @@ final class WebTabController: NSObject {
         while webView.isLoading, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(100))
         }
+        // A navigation held for the user's approval doesn't count as loading yet; wait for the
+        // answer (approval sheets time out on their own), then for the load it may start.
+        if pendingNavigationApprovals > 0 {
+            while pendingNavigationApprovals > 0 {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            while webView.isLoading, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+    }
+
+    /// What acting on an element would do (for approvals); see `inspect` in PageAgentScript.
+    struct ElementInfo: Decodable {
+        let description: String
+        let submits: Bool
+        let href: String?
+        let isPassword: Bool
+    }
+
+    func inspect(ref: Int) async throws -> ElementInfo {
+        let json = try await callPageAgent("inspect(ref)", arguments: ["ref": ref])
+        return try JSONDecoder().decode(ElementInfo.self, from: Data(json.utf8))
     }
 
     /// Calls a function of the page agent (PageAgentScript) in its isolated world, e.g.
@@ -155,6 +187,16 @@ extension WebTabController: WKNavigationDelegate {
         if let scheme = url.scheme?.lowercased(), !webSchemes.contains(scheme) {
             NSWorkspace.shared.open(url)
             return .cancel
+        }
+
+        // During an agent's click/type, navigations of the page itself are checked first.
+        if let guardCheck = agentNavigationGuard, navigationAction.targetFrame?.isMainFrame ?? true,
+           ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            let isForm = navigationAction.navigationType == .formSubmitted || navigationAction.navigationType == .formResubmitted
+            pendingNavigationApprovals += 1
+            let allowed = await guardCheck(url, isForm)
+            pendingNavigationApprovals -= 1
+            if !allowed { return .cancel }
         }
 
         // Cmd+click on a link opens it in a background tab, like every other browser.

@@ -202,6 +202,7 @@ private struct PaneHeader: View {
                         .font(.system(size: 11, weight: isFocused ? .semibold : .regular))
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    AgentBadge(tab: tab)
                     Spacer(minLength: 4)
                 }
                 .allowsHitTesting(false)
@@ -234,5 +235,10 @@ private struct PaneHeader: View {
         .foregroundStyle(isFocused ? .primary : .secondary)
         .frame(height: 24)
         .background(.bar)
+        .overlay {
+            if state.isAgentBusy(tab.id) {
+                agentTint.opacity(0.18).allowsHitTesting(false)
+            }
+        }
     }
 }

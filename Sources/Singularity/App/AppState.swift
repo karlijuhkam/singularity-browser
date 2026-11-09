@@ -27,6 +27,12 @@ final class AppState {
     let terminals: TerminalRegistry
     let artifacts: ArtifactHosts
     let favicons: FaviconStore
+    /// Approval policy checks and confirmation sheets for agent actions.
+    let approvals = AgentApprovals()
+    /// Tabs an agent is working on right now (count, since calls can overlap). Drives the badges.
+    private(set) var agentBusyTabs: [UUID: Int] = [:]
+    /// Recent agent log entries per Space (oldest first), loaded from agent-log.jsonl on demand.
+    private(set) var agentLogs: [UUID: [AgentLogEntry]] = [:]
     /// The MCP server agents connect to (set at the end of init, since it needs `self`).
     @ObservationIgnored private(set) var mcp: MCPHub?
 
@@ -107,9 +113,11 @@ final class AppState {
     // MARK: - Spaces
 
     @discardableResult
-    func createSpace(name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool = false) -> Space {
+    func createSpace(name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool = false,
+                     agentPolicy: AgentPolicy = .ask) -> Space {
         let slug = Slug.unique(from: name, existing: Set(spaces.map(\.slug)) .union(slugsOnDisk()))
-        let space = Space(name: name, slug: slug, colorHex: colorHex, workingDirectory: workingDirectory, agentsEnabled: agentsEnabled)
+        let space = Space(name: name, slug: slug, colorHex: colorHex, workingDirectory: workingDirectory,
+                          agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
         spaces.append(space)
         markDirty(space.id)
         stateFileDirty = true
@@ -118,13 +126,15 @@ final class AppState {
         return space
     }
 
-    func updateSpace(_ id: UUID, name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool) {
+    func updateSpace(_ id: UUID, name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool,
+                     agentPolicy: AgentPolicy) {
         let wasEnabled = space(id)?.agentsEnabled
         mutateSpace(id) {
             $0.name = name
             $0.colorHex = colorHex
             $0.workingDirectory = workingDirectory
             $0.agentsEnabled = agentsEnabled
+            $0.agentPolicy = agentPolicy
         }
         // Tool descriptions mention the Space's name, so a rename also counts as a change.
         if wasEnabled != agentsEnabled || agentsEnabled { mcp?.toolsChanged() }
@@ -538,10 +548,54 @@ final class AppState {
     /// Opens a URL in a new tab of a Space *without* selecting it, so the user's view doesn't
     /// jump around while an agent works. The web view loads in the background.
     func agentOpenTab(url: URL, spaceID: UUID) -> (BrowserTab, WebTabController)? {
-        let tab = BrowserTab.web(url)
+        var tab = BrowserTab.web(url)
+        tab.openedByAgent = true
         mutateSpace(spaceID) { $0.append(tab) }
         guard let space = space(spaceID) else { return nil }
         return (tab, web.controller(for: tab, in: space))
+    }
+
+    func beginAgentWork(on tabID: UUID) {
+        agentBusyTabs[tabID, default: 0] += 1
+    }
+
+    func endAgentWork(on tabID: UUID) {
+        guard let count = agentBusyTabs[tabID] else { return }
+        agentBusyTabs[tabID] = count > 1 ? count - 1 : nil
+    }
+
+    func isAgentBusy(_ tabID: UUID) -> Bool {
+        agentBusyTabs[tabID] != nil
+    }
+
+    /// Appends to `<space>/agent-log.jsonl` and to the in-memory list the sidebar shows.
+    func appendAgentLog(_ entry: AgentLogEntry, spaceID: UUID) {
+        guard let space = space(spaceID) else { return }
+        do {
+            try AgentLogStore(file: paths.agentLogFile(space.slug)).append(entry)
+        } catch {
+            NSLog("Singularity: could not write the agent log: \(error)")
+        }
+        if agentLogs[spaceID] != nil {
+            agentLogs[spaceID]!.append(entry)
+            if agentLogs[spaceID]!.count > 200 { agentLogs[spaceID]!.removeFirst() }
+        }
+    }
+
+    /// Loads a Space's recent log entries (call from onAppear, not while rendering).
+    func loadAgentLog(spaceID: UUID) {
+        guard agentLogs[spaceID] == nil, let space = space(spaceID) else { return }
+        agentLogs[spaceID] = AgentLogStore(file: paths.agentLogFile(space.slug)).loadRecent()
+    }
+
+    func revealAgentLog() {
+        guard let space = selectedSpace else { return }
+        let file = paths.agentLogFile(space.slug)
+        if FileManager.default.fileExists(atPath: file.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([file])
+        } else {
+            NSWorkspace.shared.open(paths.spaceDirectory(space.slug))
+        }
     }
 
     /// A live web view for a web or artifact tab, creating (and loading) it if the tab hasn't
@@ -628,28 +682,36 @@ final class AppState {
     /// Space's approval policy.)
     func sendPromptFromArtifact(_ text: String, spaceID: UUID) async -> PromptResult {
         guard let space = space(spaceID), let (tab, session) = activeTerminal(in: space) else { return .noTerminal }
+        let started = Date()
 
-        let alert = NSAlert()
-        alert.messageText = "Send this to the terminal?"
-        alert.informativeText = "An artifact page in “\(space.name)” wants to paste the text below into “\(tab.displayTitle)” and press Return."
-        let scrollView = NSTextView.scrollableTextView()
-        scrollView.frame = NSRect(x: 0, y: 0, width: 440, height: 140)
-        if let textView = scrollView.documentView as? NSTextView {
-            textView.string = text.count > 4000 ? String(text.prefix(4000)) + "\n…" : text
-            textView.isEditable = false
-            textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        // Same policy as agents: read-only refuses, allow-all sends, ask always shows a sheet.
+        let outcome = await approvals.check(
+            AgentActionContext(kind: .artifactPrompt, pageOrigin: artifacts.host(spaceID)?.origin.flatMap(AgentApprovalRules.origin(of:))),
+            space: space,
+            request: AgentApprovals.Request(
+                actor: "An artifact page", action: "send text to a terminal",
+                detail: "It will be pasted into “\(tab.displayTitle)” and Return will be pressed.",
+                url: nil, spaceName: space.name, tabTitle: nil, text: text))
+
+        func log(_ ok: Bool, _ result: String) {
+            appendAgentLog(AgentLogEntry(client: "artifact page", tool: "artifact.prompt", tabID: tab.id,
+                                         args: ["text": AgentLogStore.clip(text)], decision: outcome.logValue, ok: ok,
+                                         result: result, milliseconds: Int(Date().timeIntervalSince(started) * 1000)),
+                           spaceID: spaceID)
         }
-        alert.accessoryView = scrollView
-        alert.addButton(withTitle: "Send")
-        alert.addButton(withTitle: "Cancel")
-        let response: NSApplication.ModalResponse
-        if let window = NSApp.mainWindow ?? NSApp.keyWindow {
-            response = await alert.beginSheetModal(for: window)
-        } else {
-            response = alert.runModal()
+
+        if case .refused(let reason) = outcome {
+            log(false, reason)
+            return .refused(reason)
         }
-        guard response == .alertFirstButtonReturn else { return .declined }
-        guard session.isRunning else { return .noTerminal }
+        guard outcome.isAllowed else {
+            log(false, outcome.refusal ?? "declined")
+            return .declined
+        }
+        guard session.isRunning else {
+            log(false, "no running terminal")
+            return .noTerminal
+        }
         // A shell started just now for this prompt may still be reading ~/.zshrc.
         await session.waitUntilReady()
 
@@ -658,6 +720,7 @@ final class AppState {
         session.view.pasteText(text)
         try? await Task.sleep(for: .milliseconds(150))
         session.view.send(txt: "\r")
+        log(true, "sent to \(tab.displayTitle)")
         return .sent
     }
 

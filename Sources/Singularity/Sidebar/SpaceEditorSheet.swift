@@ -12,6 +12,7 @@ struct SpaceEditorSheet: View {
     @State private var colorHex = SpaceColors.presets[0]
     @State private var workingDirectory = "~"
     @State private var agentsEnabled = false
+    @State private var agentPolicy: AgentPolicy = .ask
 
     private var existing: Space? { request.spaceID.flatMap { state.space($0) } }
 
@@ -54,6 +55,19 @@ struct SpaceEditorSheet: View {
                     }
                 }
 
+                if agentsEnabled {
+                    Picker("Agents may", selection: $agentPolicy) {
+                        ForEach(AgentPolicy.allCases, id: \.self) { policy in
+                            Text(policy.title).tag(policy)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(policyHint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if let existing {
                     LabeledContent("Folder on disk") {
                         Text("~/Singularity/spaces/\(existing.slug)")
@@ -80,6 +94,7 @@ struct SpaceEditorSheet: View {
                 colorHex = existing.colorHex
                 workingDirectory = existing.workingDirectory
                 agentsEnabled = existing.agentsEnabled
+                agentPolicy = existing.agentPolicy
             } else {
                 // Pick the first colour no other Space uses yet.
                 let used = Set(state.spaces.map(\.colorHex))
@@ -92,9 +107,10 @@ struct SpaceEditorSheet: View {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         if let existing {
             state.updateSpace(existing.id, name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
-                              agentsEnabled: agentsEnabled)
+                              agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
         } else {
-            state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory, agentsEnabled: agentsEnabled)
+            state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
+                              agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
         }
         dismiss()
     }
@@ -102,6 +118,14 @@ struct SpaceEditorSheet: View {
     private var agentsHint: String {
         let slug = existing?.slug ?? Slug.make(from: name.isEmpty ? "space" : name)
         return "Agents connected over MCP can read and operate this Space's tabs (tools named \(slug).…)."
+    }
+
+    private var policyHint: String {
+        switch agentPolicy {
+        case .readOnly: return "Agents can list tabs, read pages and take screenshots, but can't click, type, open or close anything."
+        case .ask: return "You confirm each click, typing, page opened or tab closed. Form submissions and going to another site always ask."
+        case .allowAll: return "Agents act without asking. Everything they do is still recorded in the agent log."
+        }
     }
 
     private func chooseFolder() {

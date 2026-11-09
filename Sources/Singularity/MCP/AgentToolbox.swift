@@ -105,37 +105,68 @@ final class AgentToolbox {
 
     // MARK: - Calling tools
 
-    func call(_ name: String, arguments: [String: Value]) async -> CallTool.Result {
+    /// Book-keeping for one call: who, what, which tab, and the approval decision (for the log).
+    private final class CallRecord {
+        let started = Date()
+        let client: String
+        var spaceID: UUID?
+        var tabID: UUID?
+        var args: [String: String] = [:]
+        var decision = "auto"
+
+        init(client: String) {
+            self.client = client
+        }
+    }
+
+    /// Runs one tool call: checks the approval policy, marks the tab as busy while it runs,
+    /// and appends the call to the Space's agent log.
+    func call(_ name: String, arguments: [String: Value], client: String) async -> CallTool.Result {
+        let record = CallRecord(client: client)
+        let result: CallTool.Result
         do {
-            if name == AgentToolName.listSpaces {
-                return .init(content: [.plain(try listSpaces())])
-            }
-            guard let state, let (slug, tool) = AgentToolName.parse(name),
-                  let space = state.spaces.first(where: { $0.slug == slug }) else {
-                throw ToolError("Unknown tool \(name). Call list_spaces to see what is available.")
-            }
-            guard space.agentsEnabled else {
-                throw ToolError("Agents are not allowed in the “\(space.name)” Space.")
-            }
-            let args = Arguments(arguments)
-            switch tool {
-            case "list_tabs": return .init(content: [.plain(try listTabs(space))])
-            case "open": return .init(content: [.plain(try await open(space, url: args.url("url")))])
-            case "navigate": return .init(content: [.plain(try await navigate(space, tabID: args.tabID(), url: args.url("url")))])
-            case "close": return .init(content: [.plain(try close(space, tabID: args.tabID()))])
-            case "read_page": return .init(content: [.plain(try await readPage(space, tabID: args.tabID()))])
-            case "find": return .init(content: [.plain(try await find(space, tabID: args.tabID(), query: args.string("query")))])
-            case "click": return .init(content: [.plain(try await click(space, tabID: args.tabID(), ref: args.int("ref")))])
-            case "type":
-                return .init(content: [.plain(try await type(space, tabID: args.tabID(), ref: args.int("ref"),
-                                                            text: args.string("text"), submit: args.bool("submit") ?? false))])
-            case "screenshot": return .init(content: [try await screenshot(space, tabID: args.tabID())])
-            default: throw ToolError("Unknown tool \(name).")
-            }
+            result = try await perform(name, arguments: arguments, record: record)
         } catch let error as ToolError {
-            return .init(content: [.plain(error.message)], isError: true)
+            result = .init(content: [.plain(error.message)], isError: true)
         } catch {
-            return .init(content: [.plain(Self.message(for: error))], isError: true)
+            result = .init(content: [.plain(Self.message(for: error))], isError: true)
+        }
+        if let tabID = record.tabID { state?.endAgentWork(on: tabID) }
+        if let spaceID = record.spaceID { log(name, record: record, result: result, spaceID: spaceID) }
+        return result
+    }
+
+    private func perform(_ name: String, arguments: [String: Value], record: CallRecord) async throws -> CallTool.Result {
+        if name == AgentToolName.listSpaces {
+            return .init(content: [.plain(try listSpaces())])
+        }
+        guard let state, let (slug, tool) = AgentToolName.parse(name),
+              let space = state.spaces.first(where: { $0.slug == slug }) else {
+            throw ToolError("Unknown tool \(name). Call list_spaces to see what is available.")
+        }
+        guard space.agentsEnabled else {
+            throw ToolError("Agents are not allowed in the “\(space.name)” Space.")
+        }
+        record.spaceID = space.id
+        let args = Arguments(arguments)
+        record.args = args.forLog()
+
+        switch tool {
+        case "list_tabs": return .init(content: [.plain(try listTabs(space))])
+        case "open": return .init(content: [.plain(try await open(space, url: args.url("url"), record: record))])
+        case "navigate":
+            return .init(content: [.plain(try await navigate(space, tabID: args.tabID(), url: args.url("url"), record: record))])
+        case "close": return .init(content: [.plain(try await close(space, tabID: args.tabID(), record: record))])
+        case "read_page": return .init(content: [.plain(try await readPage(space, tabID: args.tabID(), record: record))])
+        case "find":
+            return .init(content: [.plain(try await find(space, tabID: args.tabID(), query: args.string("query"), record: record))])
+        case "click": return .init(content: [.plain(try await click(space, tabID: args.tabID(), ref: args.int("ref"), record: record))])
+        case "type":
+            return .init(content: [.plain(try await type(space, tabID: args.tabID(), ref: args.int("ref"),
+                                                        text: args.string("text"), submit: args.bool("submit") ?? false,
+                                                        record: record))])
+        case "screenshot": return .init(content: [try await screenshot(space, tabID: args.tabID(), record: record)])
+        default: throw ToolError("Unknown tool \(name).")
         }
     }
 
@@ -145,12 +176,14 @@ final class AgentToolbox {
         guard let state else { throw ToolError("Browser is shutting down.") }
         let spaces = state.spaces.filter(\.agentsEnabled).map { space -> [String: Any] in
             ["slug": space.slug, "name": space.name, "tabs": space.tabs.count,
+             "policy": space.agentPolicy.rawValue,
              "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
         }
         if spaces.isEmpty {
             return "No Spaces are open to agents. The user can allow agents per Space in the Space's settings (right-click the Space → Edit Space…)."
         }
-        return try Self.json(spaces)
+        let note = "policy: readOnly = you may only look; ask = the user confirms each action (open, navigate, close, click, type) in a dialog; allowAll = no confirmation."
+        return try Self.json(spaces) + "\n" + note
     }
 
     private func listTabs(_ space: Space) throws -> String {
@@ -170,48 +203,77 @@ final class AgentToolbox {
             if tab.id == space.selectedTabID { entry["selected"] = true }
             // On screen right now: the selected tab, or any pane of its split (in the Space being shown).
             if state?.selectedSpaceID == space.id, space.visibleTabIDs.contains(tab.id) { entry["visible"] = true }
+            if tab.openedByAgent { entry["opened_by_agent"] = true }
             return entry
         }
         // Titles come from pages, so the whole list counts as page content.
         return UntrustedContent.wrap(try Self.json(tabs), source: "tab list of Space \(space.slug)")
     }
 
-    private func open(_ space: Space, url: URL) async throws -> String {
+    private func open(_ space: Space, url: URL, record: CallRecord) async throws -> String {
+        try await authorize(
+            AgentActionContext(kind: .open, targetOrigin: AgentApprovalRules.origin(of: url)), space, record,
+            request(record, space, action: "open a page", detail: url.absoluteString))
         guard let state, let (tab, controller) = state.agentOpenTab(url: url, spaceID: space.id) else {
             throw ToolError("Could not open a tab.")
         }
+        record.tabID = tab.id
+        state.beginAgentWork(on: tab.id)
         await controller.waitUntilLoaded()
         return "Opened tab_id \(tab.id.uuidString.lowercased()).\n" + pageSummary(controller)
     }
 
-    private func navigate(_ space: Space, tabID: UUID, url: URL) async throws -> String {
-        let controller = try await webController(space, tabID)
+    private func navigate(_ space: Space, tabID: UUID, url: URL, record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record)
+        try await authorize(
+            AgentActionContext(kind: .navigate, pageOrigin: AgentApprovalRules.origin(of: controller.webView.url),
+                               targetOrigin: AgentApprovalRules.origin(of: url)), space, record,
+            request(record, space, action: "go to a page", detail: url.absoluteString, tabTitle: controller.webView.title))
         controller.load(url)
         await controller.waitUntilLoaded()
         return pageSummary(controller)
     }
 
-    private func close(_ space: Space, tabID: UUID) throws -> String {
+    private func close(_ space: Space, tabID: UUID, record: CallRecord) async throws -> String {
         guard let state, let tab = space.tab(tabID) else { throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space.") }
         guard !tab.isTerminal else { throw ToolError("Terminal tabs cannot be closed by agents.") }
+        let origin = AgentApprovalRules.origin(of: tab.url ?? state.artifacts.host(space.id)?.origin)
+        try await authorize(
+            AgentActionContext(kind: .close, pageOrigin: origin), space, record,
+            request(record, space, action: "close a tab", detail: tab.displayTitle, url: tab.url))
         state.closeTab(tabID, in: space.id, confirmIfBusy: false)
         return "Closed tab_id \(tabID.uuidString.lowercased())."
     }
 
-    private func readPage(_ space: Space, tabID: UUID) async throws -> String {
-        let controller = try await webController(space, tabID)
+    private func readPage(_ space: Space, tabID: UUID, record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record)
         let outline = try await controller.callPageAgent("snapshot(maxChars)", arguments: ["maxChars": 15_000])
         return UntrustedContent.wrap(outline, source: controller.webView.url?.absoluteString ?? "")
     }
 
-    private func find(_ space: Space, tabID: UUID, query: String) async throws -> String {
-        let controller = try await webController(space, tabID)
+    private func find(_ space: Space, tabID: UUID, query: String, record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record)
         let matches = try await controller.callPageAgent("find(query, 25)", arguments: ["query": query])
         return UntrustedContent.wrap(matches, source: controller.webView.url?.absoluteString ?? "")
     }
 
-    private func click(_ space: Space, tabID: UUID, ref: Int) async throws -> String {
-        let controller = try await webController(space, tabID)
+    private func click(_ space: Space, tabID: UUID, ref: Int, record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record)
+        // Look before acting: does this click submit a form or follow a link elsewhere?
+        let info = try await controller.inspect(ref: ref)
+        let pageOrigin = AgentApprovalRules.origin(of: controller.webView.url)
+        let linkOrigin = AgentApprovalRules.origin(of: info.href.flatMap { URL(string: $0) })
+        try await authorize(
+            AgentActionContext(kind: .click, pageOrigin: pageOrigin, targetOrigin: linkOrigin, isFormSubmission: info.submits),
+            space, record,
+            request(record, space, action: info.submits ? "click a button that submits a form" : "click",
+                    detail: info.description + (info.href.map { " → \($0)" } ?? ""),
+                    url: controller.webView.url, tabTitle: controller.webView.title))
+
+        installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
+                               approved: Set([pageOrigin, linkOrigin].compactMap { $0 }), submissionApproved: info.submits)
+        defer { controller.agentNavigationGuard = nil }
+
         let result = try await controller.callPageAgent("click(ref)", arguments: ["ref": ref])
         // If the click started a navigation, wait for it so the next read sees the new page.
         try? await Task.sleep(for: .milliseconds(300))
@@ -219,33 +281,114 @@ final class AgentToolbox {
         return UntrustedContent.wrap(result, source: controller.webView.url?.absoluteString ?? "") + "\n" + pageSummary(controller)
     }
 
-    private func type(_ space: Space, tabID: UUID, ref: Int, text: String, submit: Bool) async throws -> String {
-        let controller = try await webController(space, tabID)
+    private func type(_ space: Space, tabID: UUID, ref: Int, text: String, submit: Bool, record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record)
+        let info = try await controller.inspect(ref: ref)
+        // Never show or log what goes into a password field.
+        let shownText = info.isPassword ? "•••• (\(text.count) characters, password field)" : text
+        record.args["text"] = info.isPassword ? "•••• (\(text.count) characters)" : AgentLogStore.clip(text)
+        let pageOrigin = AgentApprovalRules.origin(of: controller.webView.url)
+        try await authorize(
+            AgentActionContext(kind: .type, pageOrigin: pageOrigin, isFormSubmission: submit), space, record,
+            request(record, space, action: submit ? "type into a field and submit the form" : "type into a field",
+                    detail: info.description, url: controller.webView.url, tabTitle: controller.webView.title, text: shownText))
+
+        installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
+                               approved: Set([pageOrigin].compactMap { $0 }), submissionApproved: submit)
+        defer { controller.agentNavigationGuard = nil }
+
         let result = try await controller.callPageAgent("type(ref, text, submit)",
                                                         arguments: ["ref": ref, "text": text, "submit": submit])
-        if submit {
-            try? await Task.sleep(for: .milliseconds(300))
-            await controller.waitUntilLoaded()
-        }
+        try? await Task.sleep(for: .milliseconds(submit ? 300 : 50))
+        await controller.waitUntilLoaded()
         return UntrustedContent.wrap(result, source: controller.webView.url?.absoluteString ?? "") + "\n" + pageSummary(controller)
     }
 
-    private func screenshot(_ space: Space, tabID: UUID) async throws -> Tool.Content {
-        let controller = try await webController(space, tabID)
+    private func screenshot(_ space: Space, tabID: UUID, record: CallRecord) async throws -> Tool.Content {
+        let controller = try await webController(space, tabID, record)
         let image = try await controller.webView.takeSnapshot(configuration: nil)
         guard let png = Self.pngData(image, maxWidth: 1280) else { throw ToolError("Could not encode the screenshot.") }
         return .image(data: png.base64EncodedString(), mimeType: "image/png", annotations: nil, _meta: nil)
     }
 
+    // MARK: - Approvals and logging
+
+    /// Asks the policy (and maybe the user). Throws, with a message for the agent, if not allowed.
+    private func authorize(_ context: AgentActionContext, _ space: Space, _ record: CallRecord,
+                           _ request: AgentApprovals.Request) async throws {
+        guard let state else { throw ToolError("Browser is shutting down.") }
+        // Use the Space as it is now (the policy may have changed since the call started).
+        let current = state.space(space.id) ?? space
+        let outcome = await state.approvals.check(context, space: current, request: request)
+        record.decision = outcome.logValue
+        if let refusal = outcome.refusal { throw ToolError(refusal) }
+    }
+
+    private func request(_ record: CallRecord, _ space: Space, action: String, detail: String,
+                         url: URL? = nil, tabTitle: String? = nil, text: String? = nil) -> AgentApprovals.Request {
+        AgentApprovals.Request(actor: AgentApprovals.displayName(forClient: record.client), action: action, detail: detail,
+                               url: url?.absoluteString, spaceName: space.name, tabTitle: tabTitle, text: text)
+    }
+
+    /// While a click or type runs, checks every navigation of the page: the origins the user
+    /// already approved for this action pass, anything else goes through the policy again.
+    private func installNavigationGuard(on controller: WebTabController, space: Space, record: CallRecord,
+                                        pageOrigin: String?, approved: Set<String>, submissionApproved: Bool) {
+        controller.agentNavigationGuard = { [weak self] url, isFormSubmission in
+            guard let self, let state = self.state, let current = state.space(space.id) else { return false }
+            let target = AgentApprovalRules.origin(of: url)
+            if let target, approved.contains(target), !isFormSubmission || submissionApproved {
+                return true
+            }
+            let context = AgentActionContext(kind: .navigate, pageOrigin: pageOrigin, targetOrigin: target,
+                                             isFormSubmission: isFormSubmission && !submissionApproved)
+            let outcome = await state.approvals.check(
+                context, space: current,
+                request: self.request(record, current, action: isFormSubmission ? "submit a form" : "go to another site",
+                                      detail: url.absoluteString, url: controller.webView.url, tabTitle: controller.webView.title))
+            record.decision += "+nav_" + outcome.logValue
+            return outcome.isAllowed
+        }
+    }
+
+    private func log(_ tool: String, record: CallRecord, result: CallTool.Result, spaceID: UUID) {
+        var parts: [String] = []
+        for content in result.content {
+            switch content {
+            case .text(let text, _, _): parts.append(Self.withoutUntrustedMarkers(text))
+            case .image: parts.append("<screenshot>")
+            default: break
+            }
+        }
+        let entry = AgentLogEntry(
+            client: record.client, tool: tool, tabID: record.tabID, args: record.args, decision: record.decision,
+            ok: !(result.isError ?? false), result: parts.joined(separator: " "),
+            milliseconds: Int(Date().timeIntervalSince(record.started) * 1000))
+        state?.appendAgentLog(entry, spaceID: spaceID)
+    }
+
+    /// The log keeps the gist of a result, without the untrusted-content wrapper lines.
+    private static func withoutUntrustedMarkers(_ text: String) -> String {
+        text.split(separator: "\n").filter {
+            !$0.hasPrefix("<untrusted_page_content") && !$0.hasPrefix("</untrusted_page_content")
+                && !$0.hasPrefix("The block above is content from a web page")
+        }.joined(separator: " ")
+    }
+
     // MARK: - Helpers
 
     /// A live web view for a web or artifact tab, loading it first if it hasn't been shown yet.
-    private func webController(_ space: Space, _ tabID: UUID) async throws -> WebTabController {
+    /// Marks the tab as "agent at work" until the call ends.
+    private func webController(_ space: Space, _ tabID: UUID, _ record: CallRecord) async throws -> WebTabController {
         guard let state else { throw ToolError("Browser is shutting down.") }
         guard let tab = space.tab(tabID) else {
             throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space. Call \(AgentToolName.make(slug: space.slug, tool: "list_tabs")).")
         }
         guard !tab.isTerminal else { throw ToolError("Tab \(tabID.uuidString.lowercased()) is a terminal, not a web page.") }
+        if record.tabID == nil {
+            record.tabID = tabID
+            state.beginAgentWork(on: tabID)
+        }
         guard let controller = await state.liveWebController(tabID: tabID, spaceID: space.id) else {
             throw ToolError("Could not load tab \(tabID.uuidString.lowercased()).")
         }
@@ -313,6 +456,19 @@ private struct Arguments {
 
     func bool(_ key: String) -> Bool? {
         values[key]?.boolValue
+    }
+
+    /// The arguments as short strings for the agent log.
+    func forLog() -> [String: String] {
+        values.mapValues { value in
+            switch value {
+            case .string(let text): return AgentLogStore.clip(text)
+            case .int(let number): return String(number)
+            case .double(let number): return String(number)
+            case .bool(let flag): return String(flag)
+            default: return AgentLogStore.clip(String(describing: value))
+            }
+        }
     }
 
     func tabID() throws -> UUID {

@@ -29,7 +29,8 @@ Sources/
     Palette/         FuzzyMatcher, URLInput (URL vs search text)
     Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath
     Artifacts/       ArtifactFiles (path containment, MIME types, page listing), ArtifactAuth (token checks)
-    Agent/           AgentToolName (<slug>.<tool> naming), UntrustedContent (wrapping page text for agents)
+    Agent/           AgentToolName (<slug>.<tool> naming), UntrustedContent (wrapping page text for agents),
+                     AgentPolicy (readOnly / ask / allowAll + the approval rules table), AgentLog (agent-log.jsonl)
     Model/SplitLayout.swift  SplitNode tree, SplitGroup, split/remove/swap/neighbour ops, sidebar rows (SidebarItem)
   Singularity/       The app executable.
     App/             @main app, AppState (@Observable, the single source of truth), menu commands
@@ -41,6 +42,8 @@ Sources/
                      ArtifactHost(s) (per-Space token + server + watcher), ArtifactBridge (window.singularity)
     MCP/             MCPSocketListener (Unix socket), MCPHub (one MCP SDK Server per connection),
                      AgentToolbox (tool definitions + implementations), PageAgentScript (read_page/find/click/type JS)
+    Agent/           AgentApprovals (policy checks, one confirmation sheet at a time, "Allow on this site"),
+                     AgentViews (agent badge, busy tint, Agent activity pane)
     Split/           SplitViews (recursive panes + draggable gaps), PaneContainerView (hosts a tab's view; drop
                      overlay during tab drags; click-to-focus monitor), PaneDragHandle (pane header drag source)
   singularity-mcp/   Stdio launcher agents start: relays bytes to ~/Singularity/.run/mcp.sock, starts the app if needed
@@ -56,6 +59,7 @@ Key decisions:
 - `window.singularity` exists only on the Space's artifact origin (the script checks `location.origin`, and the native handler checks the message's `securityOrigin`). `prompt()` always asks (native sheet), then bracketed-pastes into the Space's most recently used running terminal and presses Return. Phase 5 replaces "always ask" with the Space policy.
 - **MCP.** Agents run `Singularity.app/Contents/MacOS/singularity-mcp` (stdio). It contains no MCP logic: the app runs an MCP `Server` (official Swift SDK) per socket connection, reusing the SDK's `StdioTransport` on the socket's file descriptor. Tools: `list_spaces` plus `<slug>.<tool>` for Spaces with `agentsEnabled` (per-Space toggle in Edit Space, off by default); `tools/list_changed` is sent when that set changes. Claude Code shows `work.read_page` as `mcp__singularity__work_read_page` (dots become underscores; verified). The socket folder is 0700, the socket 0600, and peers must have the same uid.
 - **Page agent.** `PageAgentScript` is injected at document start into every web/artifact tab in an isolated `WKContentWorld`, so pages can't see or tamper with it. Refs come from a WeakMap (element → number) and are stable for the life of a page load. Everything page-derived that is returned to an agent goes through `UntrustedContent.wrap`. Agent-opened tabs load in the background (not selected) at 1280×800.
+- **Approvals (Phase 5).** Every agent tool call and every `window.singularity.prompt()` goes through `AgentApprovals.check` *inside the app*, so the policy holds for any client (an agent once drove `singularity-mcp` directly). Rules live in `AgentApprovalRules` (Core, tested): reads always pass; readOnly refuses acting; allowAll passes; ask shows a sheet (Allow / Allow on <site> / Deny, 2-minute timeout = deny) unless the page's site was allowed, and **always** asks for form submissions, artifact prompts and going to a site not yet allowed. `click` inspects the element first (submits a form? link to another site?), and while a click/type runs `WebTabController.agentNavigationGuard` holds any navigation that wasn't approved. Every call is appended to `<space>/agent-log.jsonl` (password text never logged) and shown in the sidebar's Agent activity pane; tabs opened by agents carry `openedByAgent` (sparkles badge), tabs being worked on pulse. Test hook: `defaults write dev.roosa.Singularity agentApprovalTimeoutSeconds 3`.
 - **Split view.** `Space.splits: [SplitGroup]`; a tab is in at most one. Arc-style: the content area shows the selected tab's whole split, or the tab alone; the sidebar shows a split as one row of chips. Every tab of a visible split is loaded. Things that bit us, keep them:
   - A tab's web/terminal view can only be in one place. During layout changes SwiftUI may update an outgoing pane next to the new one, so `HostedView` lets only the *newest* `PaneContainerView` own a view.
   - WKWebView takes almost any drop, so panes put a transparent `PaneDropOverlay` on top only while a tab is dragged (private UTI `dev.roosa.singularity.tab`, declared in Info.plist).

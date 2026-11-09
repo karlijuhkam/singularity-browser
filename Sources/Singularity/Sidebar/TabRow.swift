@@ -18,6 +18,7 @@ struct TabRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 0)
+            AgentBadge(tab: tab)
             if isHovering {
                 Button {
                     state.closeTab(tab.id)
@@ -31,6 +32,7 @@ struct TabRow: View {
                 .help("Close Tab (⌘W)")
             }
         }
+        .agentBusyBackground(tab.id)
         .onHover { isHovering = $0 }
         .help(tab.url?.absoluteString ?? "")
         .contextMenu { TabContextMenu(tab: tab, space: space) }

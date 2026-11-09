@@ -22,13 +22,28 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
     public var isPinned: Bool
     /// When set, the tab is shown inside that folder (regardless of `isPinned`).
     public var folderID: UUID?
+    /// The tab was opened by an agent (shown with an agent badge in the sidebar).
+    public var openedByAgent: Bool
 
-    public init(id: UUID = UUID(), kind: TabKind, title: String = "", isPinned: Bool = false, folderID: UUID? = nil) {
+    public init(id: UUID = UUID(), kind: TabKind, title: String = "", isPinned: Bool = false, folderID: UUID? = nil,
+                openedByAgent: Bool = false) {
         self.id = id
         self.kind = kind
         self.title = title
         self.isPinned = isPinned
         self.folderID = folderID
+        self.openedByAgent = openedByAgent
+    }
+
+    /// Decoding by hand so files written before a field existed still load.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        kind = try container.decode(TabKind.self, forKey: .kind)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        folderID = try container.decodeIfPresent(UUID.self, forKey: .folderID)
+        openedByAgent = try container.decodeIfPresent(Bool.self, forKey: .openedByAgent) ?? false
     }
 
     public static func web(_ url: URL, title: String = "") -> BrowserTab {

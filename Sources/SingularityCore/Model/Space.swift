@@ -19,6 +19,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     /// Whether external agents may see and control this Space through the MCP server.
     /// Off by default; switched on per Space in the Space settings.
     public var agentsEnabled: Bool
+    /// What agents may do without asking (when `agentsEnabled`). Default: ask before acting.
+    public var agentPolicy: AgentPolicy
     /// Remembered split views (see SplitLayout.swift). A tab is in at most one.
     public var splits: [SplitGroup]
 
@@ -32,6 +34,7 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         tabs: [BrowserTab] = [],
         selectedTabID: UUID? = nil,
         agentsEnabled: Bool = false,
+        agentPolicy: AgentPolicy = .ask,
         splits: [SplitGroup] = []
     ) {
         self.id = id
@@ -43,6 +46,7 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         self.tabs = tabs
         self.selectedTabID = selectedTabID
         self.agentsEnabled = agentsEnabled
+        self.agentPolicy = agentPolicy
         self.splits = splits
     }
 
@@ -59,6 +63,7 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         tabs = try container.decodeIfPresent([BrowserTab].self, forKey: .tabs) ?? []
         selectedTabID = try container.decodeIfPresent(UUID.self, forKey: .selectedTabID)
         agentsEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentsEnabled) ?? false
+        agentPolicy = try container.decodeIfPresent(AgentPolicy.self, forKey: .agentPolicy) ?? .ask
         splits = try container.decodeIfPresent([SplitGroup].self, forKey: .splits) ?? []
     }
 
