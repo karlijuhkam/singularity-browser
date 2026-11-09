@@ -423,6 +423,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(p.contains("(allow file-read* (subpath \"/private/tmp/sbx-test/plugins/a\"))"))
         #expect(p.contains("(allow file-read* file-write* (subpath \"/private/tmp/sbx-test/data/a\"))"))
         #expect(p.contains("(allow file-read* (subpath \"/private/tmp/sbx-test/host\"))"))
+        #expect(!p.contains("(allow sysctl-read)"))   // only named sysctls
         #expect(!p.contains("~/Library"))
         #expect(!p.contains("Singularity/spaces"))
         // No write access to anything but the data folder.
@@ -452,6 +453,13 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         try "secret".write(to: secret, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: secret) }
 
+        // Another program of the same user, for the KERN_PROCARGS2 probe.
+        let victim = Process()
+        victim.executableURL = URL(filePath: "/bin/sleep")
+        victim.arguments = ["30"]
+        try victim.run()
+        defer { victim.terminate() }
+
         let script = """
         import { readFileSync, writeFileSync } from "node:fs";
         const out: string[] = ["ok"];
@@ -463,6 +471,25 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         await probe("home", () => readFileSync(\(json(secret.path)), "utf8"));
         await probe("pluginwrite", () => writeFileSync(\(json(plugin.path))+"/evil.txt", "x"));
         await probe("spawn", () => { const r = Bun.spawnSync(["/bin/echo", "hi"]); if (r.exitCode !== 0 || !r.success) throw 1; });
+        // sysctl through bun:ffi (plain libSystem calls): the process list, the host name, and
+        // another process's arguments (KERN_PROCARGS2, of a `sleep` the test starts).
+        const { dlopen, FFIType, ptr } = await import("bun:ffi");
+        const libc = dlopen("/usr/lib/libSystem.B.dylib", {
+          sysctl: { args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
+          sysctlbyname: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
+        }).symbols;
+        const sysctl = (mib: number[], bytes = 1 << 21) => {
+          const buf = new Uint8Array(bytes);
+          const size = new BigUint64Array([BigInt(bytes)]);
+          if (libc.sysctl(ptr(new Int32Array(mib)), mib.length, ptr(buf), ptr(size), null, 0) !== 0) throw 1;
+        };
+        await probe("proclist", () => sysctl([1, 14, 0]));                 // CTL_KERN, KERN_PROC, KERN_PROC_ALL
+        await probe("procargs", () => sysctl([1, 49, \(victim.processIdentifier)], 1 << 16)); // KERN_PROCARGS2
+        await probe("hostname", () => {
+          const buf = new Uint8Array(256);
+          const size = new BigUint64Array([BigInt(buf.length)]);
+          if (libc.sysctlbyname(ptr(Buffer.from("kern.hostname\\0")), ptr(buf), ptr(size), null, 0) !== 0) throw 1;
+        });
         console.log(out.join("\\n"));
         """
         try script.write(to: plugin.appending(path: "t.ts"), atomically: true, encoding: .utf8)
@@ -484,6 +511,8 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         // Control: the same script without a sandbox proves the probes work (network is not asserted: may be offline).
         let control = Set(try run(bunPath.path, ["run", scriptPath]).split(separator: "\n").map(String.init))
         #expect(control.contains("home:allowed") && control.contains("spawn:allowed"), Comment(rawValue: "\(control)"))
+        #expect(control.contains("proclist:allowed") && control.contains("procargs:allowed")
+                && control.contains("hostname:allowed"), Comment(rawValue: "\(control)"))
         try? FileManager.default.removeItem(at: plugin.appending(path: "evil.txt"))
 
         let profile = SandboxProfile.make(pluginFolder: plugin, dataFolder: data, runtime: bunPath)
@@ -495,6 +524,15 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(lines.contains("home:denied"), Comment(rawValue: output))
         #expect(lines.contains("pluginwrite:denied"), Comment(rawValue: output))
         #expect(lines.contains("spawn:denied"), Comment(rawValue: output))
+        #expect(lines.contains("proclist:denied"), Comment(rawValue: output))
+        #expect(lines.contains("hostname:denied"), Comment(rawValue: output))
+        // macOS checks named sysctls against the profile, but KERN_PROCARGS2 (another process's
+        // argv, same user) is not routed through that check: even `(deny default)` with no
+        // sysctl-read rule at all lets it through, so no SBPL rule can block it. Kept as a known
+        // issue so this test tells us if a macOS update ever closes it.
+        withKnownIssue("KERN_PROCARGS2 is not covered by sysctl-read rules") {
+            #expect(lines.contains("procargs:denied"), Comment(rawValue: output))
+        }
     }
 
     private func json(_ s: String) -> String {

@@ -17,8 +17,18 @@ public enum SandboxProfile {
             "(allow file-read* (literal \"/\"))",
             // The plugin's own files, read-only: it cannot rewrite itself.
             "(allow file-read* (subpath \(quote(pluginFolder))))",
-            // Bun crashes at startup without reading sysctl values.
-            "(allow sysctl-read)",
+            // Bun crashes (panics) when a sysctl it needs is denied, so the ones Bun 1.4.4 was seen
+            // reading are allowed, found with `(allow sysctl-read (with report))` and the system log:
+            // at startup (hardware and OS version facts) and in node:os (cpus, uptime, loadavg,
+            // release, version). hw.optional.* (CPU features) and hw.perflevel* (core clusters) differ
+            // per chip, hence prefixes. Everything else is denied, notably the process list
+            // (kern.proc.*), the host name (os.hostname() returns "unknown") and kern.uuid.
+            #"(allow sysctl-read (sysctl-name"#
+                + #" "hw.activecpu" "hw.memsize" "hw.ncpu" "hw.pagesize_compat""#
+                + #" "kern.bootargs" "kern.boottime" "kern.iossupportversion" "kern.osproductversion""#
+                + #" "kern.osrelease" "kern.osvariant_status" "kern.version""#
+                + #" "security.mac.lockdown_mode_state" "vm.loadavg")"#
+                + #" (sysctl-name-prefix "hw.optional.") (sysctl-name-prefix "hw.perflevel"))"#,
         ]
         // Read-only extras, e.g. the folder with the app's plugin host script.
         for url in extraReadable { rules.append("(allow file-read* (subpath \(quote(url))))") }

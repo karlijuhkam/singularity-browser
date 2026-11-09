@@ -1,0 +1,2 @@
+# Intentionally empty. Singularity starts plugins with `bun --config=<this file>`, so a bunfig.toml
+# inside a plugin's folder (preload scripts, [define], ...) is never read.

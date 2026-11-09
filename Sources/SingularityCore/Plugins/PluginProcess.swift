@@ -16,14 +16,24 @@ import Foundation
 /// Callbacks run on background threads, one at a time per stream but not on the main thread.
 /// A `PluginProcess` runs once; to restart, make a new one (`PluginSupervisor` does that).
 ///
-/// `@unchecked Sendable`: the mutable state (callbacks, the Process, flags) is only touched while
-/// holding `lock`, and stdin writes go through the serial `writeQueue`, so it is safe to use from
-/// any thread even though the compiler can't prove it.
+/// Limits that keep a misbehaving plugin from wedging the app: at most 16 MB of input waiting to
+/// be written (a plugin that stops reading is stopped), at most 4 commands running at once, stdout
+/// lines up to 1 MB, log messages up to 8 KB.
+///
+/// `@unchecked Sendable`: the mutable state (callbacks, the Process, flags, counters) is only
+/// touched while holding `lock`, and stdin has its own thread-safe `PluginInput`, so it is safe to
+/// use from any thread even though the compiler can't prove it.
 public final class PluginProcess: @unchecked Sendable {
     /// Longest stdout line accepted from a plugin (1 MB); longer ones are dropped with a log entry.
     static let maxLineLength = 1_000_000
     /// How long a command may run before it is stopped.
     static let commandTimeout: Duration = .seconds(60)
+    /// Most bytes of messages waiting for the plugin to read them (16 MB).
+    static let maxPendingInput = 16 << 20
+    /// Most commands one plugin may have running at the same time.
+    static let maxConcurrentCommands = 4
+    /// Longest log message kept (8 KB); longer ones are cut.
+    static let maxLogMessageBytes = 8192
 
     public let manifest: PluginManifest
     private let folder: URL
@@ -40,11 +50,14 @@ public final class PluginProcess: @unchecked Sendable {
     private var started = false
     private var stopping = false
     private var exitReported = false
+    private var inputOverflowed = false
+    private var runningCommands = 0
 
-    /// Writes to the plugin's stdin happen here, in order, so `send` never blocks its caller
-    /// (a plugin that stops reading would otherwise freeze the app once the 64 KB pipe is full).
-    private let writeQueue = DispatchQueue(label: "dev.roosa.singularity.plugin-stdin")
-    private var stdinHandle: FileHandle?   // only touched on writeQueue
+    /// The plugin's stdin (writes happen on a queue of their own, so `send` never blocks).
+    private let input = PluginInput()
+
+    /// Bytes sent but not yet written to the plugin (for tests and diagnostics).
+    var pendingInputBytes: Int { input.pendingBytes }
 
     /// Called with (requestID, payload) when the plugin answers a page message.
     public var onReply: (@Sendable (Int, JSONValue) -> Void)? {
@@ -74,7 +87,7 @@ public final class PluginProcess: @unchecked Sendable {
 
     /// If the owner lets go of a running plugin, don't leave Bun running on its own.
     deinit {
-        if let process, process.isRunning { process.terminate() }
+        terminateNow()
     }
 
     // MARK: - Start and stop
@@ -110,7 +123,14 @@ public final class PluginProcess: @unchecked Sendable {
         // sandbox-exec applies the profile to itself and then exec()s Bun, so the pid we get is
         // Bun's and signals reach it directly.
         process.executableURL = URL(filePath: "/usr/bin/sandbox-exec")
-        process.arguments = ["-p", profile, runtimePath, "run", hostPath, backgroundPath]
+        // Bun's flags come before "run":
+        //   --config: our own (empty) bunfig.toml, so a bunfig.toml in the plugin folder (which could
+        //             preload code before host.ts, or rewrite identifiers with [define]) is not read;
+        //   --no-env-file: don't load the plugin folder's .env files into process.env;
+        //   --no-install: never try to auto-install a missing package (it would fail anyway: no network).
+        let bunfig = (hostPath as NSString).deletingLastPathComponent + "/bunfig.toml"
+        process.arguments = ["-p", profile, runtimePath, "--config=" + bunfig, "--no-env-file", "--no-install",
+                             "run", hostPath, backgroundPath]
         process.currentDirectoryURL = URL(filePath: folderPath, directoryHint: .isDirectory)
         process.environment = Self.environment(dataFolder: dataPath)
 
@@ -142,7 +162,7 @@ public final class PluginProcess: @unchecked Sendable {
             for _ in 0..<3 { finished.leave() }
             throw error
         }
-        writeQueue.async { self.stdinHandle = stdinPipe.fileHandleForWriting }
+        input.attach(stdinPipe.fileHandleForWriting)
         // stop() may have been called while we were starting; it couldn't see the process then.
         let stoppedMeanwhile = lock.withLock {
             self.process = process
@@ -166,9 +186,20 @@ public final class PluginProcess: @unchecked Sendable {
         if let process { end(process) }
     }
 
+    /// Kills the process at once (SIGKILL) and closes its stdin; for app termination, where
+    /// there is no time to wait for a polite exit. Safe to call any time, more than once.
+    public func terminateNow() {
+        let process: Process? = lock.withLock {
+            stopping = true
+            return self.process
+        }
+        input.close()
+        if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
+    }
+
     /// Closes stdin, SIGTERM, and SIGKILL 2 s later if needed.
     private func end(_ process: Process) {
-        writeQueue.async { try? self.stdinHandle?.close(); self.stdinHandle = nil }
+        input.close()
         guard process.isRunning else { return }
         process.terminate()   // SIGTERM
         let pid = process.processIdentifier
@@ -182,19 +213,20 @@ public final class PluginProcess: @unchecked Sendable {
     // MARK: - Sending
 
     /// Queues a message for the plugin's stdin. Dropped silently before `start()` and once the
-    /// process is gone.
+    /// process is gone. If more than 16 MB is already waiting (the plugin has stopped reading),
+    /// the message is dropped and the plugin is stopped.
     public func send(_ message: PluginWire) {
-        guard var encoded = try? JSONEncoder().encode(message) else { return }
-        encoded.append(0x0A)   // JSONEncoder never emits a raw newline, so one message = one line
-        let line = encoded
-        writeQueue.async {
-            guard let handle = self.stdinHandle else { return }
-            do { try handle.write(contentsOf: line) } catch {
-                // EPIPE: the plugin has exited. Stop writing; onExit reports the rest.
-                try? handle.close()
-                self.stdinHandle = nil
-            }
+        guard var line = try? JSONEncoder().encode(message) else { return }
+        line.append(0x0A)   // JSONEncoder never emits a raw newline, so one message = one line
+        guard !input.enqueue(line, limit: Self.maxPendingInput) else { return }
+        let first: Bool = lock.withLock {
+            defer { inputOverflowed = true }
+            return !inputOverflowed
         }
+        if first { log("error", "plugin is not reading its input") }
+        // SIGTERM (then SIGKILL) ends the process; the blocked write then fails with EPIPE and the
+        // queue drains.
+        stop()
     }
 
     // MARK: - Receiving
@@ -231,7 +263,7 @@ public final class PluginProcess: @unchecked Sendable {
         case let .reply(requestID, payload):
             lock.withLock { _onReply }?(requestID, payload)
         case let .log(level, text):
-            log(level, text)
+            log(level, text)   // log() maps unknown levels to "info"
         case let .runCommand(callID, command, arguments):
             runCommand(callID: callID, command: command, arguments: arguments)
         case .pageMessage, .commandResult:
@@ -247,24 +279,44 @@ public final class PluginProcess: @unchecked Sendable {
         }
     }
 
+    /// Passes a log line on: the level is one of debug/info/warn/error (anything else becomes
+    /// info) and the message is cut to 8 KB.
     private func log(_ level: String, _ message: String) {
-        lock.withLock { _onLog }?(level, message)
+        let level = ["debug", "info", "warn", "error"].contains(level) ? level : "info"
+        var text = message
+        if text.utf8.count > Self.maxLogMessageBytes {
+            // Cut on bytes; a character split in half becomes U+FFFD. "…" is 3 bytes.
+            text = String(decoding: text.utf8.prefix(Self.maxLogMessageBytes - 3), as: UTF8.self) + "…"
+        }
+        lock.withLock { _onLog }?(level, text)
     }
 
     /// Runs a command the manifest declares, at its pinned path; anything else gets status 126.
-    /// Several commands may run at the same time; each answers with its own callID.
+    /// Up to 4 commands may run at the same time, each answering with its own callID; more are
+    /// refused at once (status 126, "too many commands running"), not queued.
     private func runCommand(callID: Int, command: String, arguments: [String]) {
+        func refuse(_ reason: String) {
+            send(.commandResult(callID: callID, result: CommandResult(status: 126, stdout: "", stderr: reason, timedOut: false)))
+        }
         let allowed = CommandPolicy.allows(command: command, arguments: arguments,
                                            declared: manifest.permissions.commands)
-        let path = allowed ? commandPaths[command] : nil
+        guard allowed, let path = commandPaths[command] else { return refuse("not allowed by the manifest") }
+        let admitted: Bool = lock.withLock {
+            guard runningCommands < Self.maxConcurrentCommands else { return false }
+            runningCommands += 1
+            return true
+        }
+        guard admitted else { return refuse("too many commands running") }
         Task.detached { [weak self] in
-            let result: CommandResult
-            if let path {
-                result = await CommandBroker.run(path: path, arguments: arguments, timeout: Self.commandTimeout)
-            } else {
-                result = CommandResult(status: 126, stdout: "", stderr: "not allowed by the manifest", timedOut: false)
+            let result = await CommandBroker.run(path: path, arguments: arguments, timeout: Self.commandTimeout)
+            guard let self else { return }
+            // A PluginProcess runs once, so "stopping" marks its only generation as over: results
+            // that come back after stop() are dropped.
+            let deliver: Bool = self.lock.withLock {
+                self.runningCommands -= 1
+                return !self.stopping
             }
-            self?.send(.commandResult(callID: callID, result: result))
+            if deliver { self.send(.commandResult(callID: callID, result: result)) }
         }
     }
 
@@ -274,7 +326,7 @@ public final class PluginProcess: @unchecked Sendable {
             exitReported = true
             return _onExit
         }
-        writeQueue.async { try? self.stdinHandle?.close(); self.stdinHandle = nil }
+        input.close()
         callback?(status)
     }
 
@@ -300,6 +352,52 @@ public final class PluginProcess: @unchecked Sendable {
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
         guard realpath(url.path, &buffer) != nil else { throw PluginError.missingFile(url.path) }
         return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
+}
+
+/// A plugin's stdin: writes run in order on a serial queue of their own, so callers never block
+/// (a plugin that stops reading would otherwise freeze the app once the 64 KB pipe is full), and
+/// the bytes still waiting are counted so the queue can be capped.
+/// `@unchecked Sendable`: `handle` is only touched on `queue`, `pending` only while holding `lock`.
+private final class PluginInput: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "dev.roosa.singularity.plugin-stdin")
+    private let lock = NSLock()
+    private var pending = 0
+    private var handle: FileHandle?
+
+    var pendingBytes: Int { lock.withLock { pending } }
+
+    func attach(_ handle: FileHandle) {
+        queue.async { self.handle = handle }
+    }
+
+    /// Queues `data` for writing. Returns false, queueing nothing, when that would leave more than
+    /// `limit` bytes waiting.
+    func enqueue(_ data: Data, limit: Int) -> Bool {
+        let accepted: Bool = lock.withLock {
+            guard pending + data.count <= limit else { return false }
+            pending += data.count
+            return true
+        }
+        guard accepted else { return false }
+        queue.async {
+            defer { self.lock.withLock { self.pending -= data.count } }
+            guard let handle = self.handle else { return }   // not started yet, or already closed
+            // Blocks while the pipe is full. EPIPE (the plugin exited): stop writing for good.
+            do { try handle.write(contentsOf: data) } catch {
+                try? handle.close()
+                self.handle = nil
+            }
+        }
+        return true
+    }
+
+    /// Closes stdin after the writes already queued (host.ts exits when its input ends).
+    func close() {
+        queue.async {
+            try? self.handle?.close()
+            self.handle = nil
+        }
     }
 }
 
@@ -348,6 +446,8 @@ public final class PluginSupervisor: @unchecked Sendable {
     private let lock = NSLock()
     private var _state: State = .stopped
     private var wanted = false   // between start() and stop()
+    /// A launch (first start or restart) is under way or scheduled; start() then does nothing.
+    private var launchPending = false
     private var current: PluginProcess?
     /// Bumped on every launch and on stop, so a late exit from an old process is ignored.
     private var generation = 0
@@ -385,22 +485,24 @@ public final class PluginSupervisor: @unchecked Sendable {
         set { lock.withLock { _onStateChange = newValue } }
     }
 
-    /// Starts the plugin (also after `.crashedRepeatedly`: the crash count starts over).
-    /// Does nothing while a process is running.
+    /// Starts the plugin. Does nothing while a process is running or a restart is pending.
+    /// The crash count is kept: after `.crashedRepeatedly`, start() alone allows one more try
+    /// (the next crash gives up again); `stop()` then `start()` starts the count over.
     public func start() {
         let ready: Bool = lock.withLock {
-            guard current == nil else { return false }
+            guard current == nil, !launchPending else { return false }
             wanted = true
-            crashTimes = []
             return true
         }
         if ready { launch(ifGeneration: nil) }
     }
 
-    /// Stops the plugin for good; it is not restarted.
+    /// Stops the plugin for good; it is not restarted. Also forgets earlier crashes.
     public func stop() {
         let process: PluginProcess? = lock.withLock {
             wanted = false
+            launchPending = false
+            crashTimes = []
             generation += 1   // the coming exit belongs to an old generation: no restart
             defer { current = nil }
             return current
@@ -426,6 +528,7 @@ public final class PluginSupervisor: @unchecked Sendable {
         let generation: Int? = lock.withLock {
             guard allowed() else { return nil }
             self.generation += 1
+            launchPending = true
             return self.generation
         }
         guard let generation else { return }
@@ -435,14 +538,17 @@ public final class PluginSupervisor: @unchecked Sendable {
         do {
             try process.start()
         } catch {
+            lock.withLock { if self.generation == generation { launchPending = false } }
             record("error", "could not start: \(error)")
             setState(.failedToStart(String(describing: error)), ifGeneration: generation)
             return
         }
         // A stop() (or an exit) while it was starting changed the generation: don't keep it.
         let keep = lock.withLock {
-            if self.generation == generation { current = process }
-            return self.generation == generation
+            guard self.generation == generation else { return false }
+            current = process
+            launchPending = false
+            return true
         }
         if keep { setState(.running, ifGeneration: generation) } else { process.stop() }
     }
@@ -455,7 +561,9 @@ public final class PluginSupervisor: @unchecked Sendable {
             self.generation += 1   // so a late setState(.running) of the dead process is ignored
             let time = now()
             crashTimes = crashTimes.filter { time.timeIntervalSince($0) < Self.window } + [time]
-            return (crashTimes.count <= Self.maxRestarts, self.generation)
+            let restart = crashTimes.count <= Self.maxRestarts
+            launchPending = restart   // start() must not jump in (or reset anything) meanwhile
+            return (restart, self.generation)
         }
         guard let decision else { return }
         record("error", "exited with status \(status)")
@@ -467,7 +575,7 @@ public final class PluginSupervisor: @unchecked Sendable {
         let delay = restartDelay
         Task.detached { [weak self] in
             if delay > .zero { try? await Task.sleep(for: delay) }
-            // A stop() or start() during the delay changes the generation, and launch then does nothing.
+            // A stop() during the delay changes the generation, and launch then does nothing.
             self?.launch(ifGeneration: decision.generation)
         }
     }

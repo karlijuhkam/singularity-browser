@@ -3,7 +3,10 @@
 // Singularity starts every plugin's background program like this (inside a macOS sandbox:
 // no network, no starting other programs, files only in the plugin's own folder and its data folder):
 //
-//     bun run host.ts <plugin folder>/<background file>
+//     bun --config=bunfig.toml --no-env-file --no-install run host.ts <plugin folder>/<background file>
+//
+// (bunfig.toml is the empty one next to this file, so a plugin's own bunfig.toml and .env files are
+// not used, and Bun never tries to download missing packages.)
 //
 // This file runs first. It gives the plugin its API, then loads the plugin's background file.
 // Plugins use the API like this:
@@ -74,6 +77,18 @@ process.stdout.write = ((chunk: unknown) => {
   return true;
 }) as typeof process.stdout.write;
 
+// A forgotten promise rejection or an error thrown in a timer callback is logged (with its stack)
+// and the plugin keeps running.
+function describeError(error: unknown): string {
+  return error instanceof Error ? (error.stack ?? error.message) : Bun.inspect(error);
+}
+process.on("unhandledRejection", (reason: unknown) => {
+  log("error", ["unhandled promise rejection: " + describeError(reason)]);
+});
+process.on("uncaughtException", (error: unknown) => {
+  log("error", ["uncaught exception: " + describeError(error)]);
+});
+
 // ---- The `singularity` API --------------------------------------------------------------------
 
 type PageMessage = { tabID: string; frameHost: string; payload: unknown };
@@ -135,7 +150,7 @@ const backgroundFile = process.argv[2];
 const pluginLoaded: Promise<void> = import(pathToFileURL(backgroundFile).href).then(
   () => {},
   (error) => {
-    log("error", ["could not load " + backgroundFile + ": " + (error instanceof Error ? error.stack ?? error.message : String(error))]);
+    log("error", ["could not load " + backgroundFile + ": " + describeError(error)]);
     process.exit(1);
   },
 );

@@ -17,6 +17,19 @@ singularity.onPageMessage(async ({ payload }) => {
     }
   }
   if (payload === "crash") process.exit(1);
+  // Ten commands at once: at most 4 may run at the same time, the rest are refused right away.
+  if (payload === "burst") {
+    return await Promise.all(Array.from({ length: 10 }, () => singularity.run("echo", ["hello"])));
+  }
+  // Errors nobody catches are logged by host.ts; the plugin keeps running.
+  if (payload === "reject") {
+    Promise.reject(new Error("forgotten rejection"));
+    return { echo: payload };
+  }
+  if (payload === "uncaught") {
+    setTimeout(() => { throw new Error("thrown in a timer"); }, 0);
+    return { echo: payload };
+  }
   if (payload === "throw") throw new Error("boom");
   // console output must not break the wire (host.ts turns it into log messages).
   if (payload === "console") {

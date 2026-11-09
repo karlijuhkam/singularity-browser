@@ -43,9 +43,15 @@ private func waitFor<T>(_ what: String, timeout: Duration = .seconds(20),
     throw CancellationError()
 }
 
+/// A test's temp folder: `<root>/echo` (a copy of the fixture) and `<root>/data`.
+private struct Workspace {
+    let root: URL, plugin: URL, data: URL
+    func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
 /// A temp folder (real path, so it matches what the sandbox sees) with a copy of the `echo`
-/// fixture at `<root>/echo` and an empty `<root>/data`.
-private func makeWorkspace(background: String? = nil) throws -> (root: URL, plugin: URL, data: URL) {
+/// fixture at `<root>/echo` and an empty `<root>/data`. Callers `defer { ws.remove() }`.
+private func makeWorkspace(background: String? = nil) throws -> Workspace {
     let temp = FileManager.default.temporaryDirectory.appending(path: "sing-proc-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
     var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
@@ -57,12 +63,12 @@ private func makeWorkspace(background: String? = nil) throws -> (root: URL, plug
     if let background {
         try background.write(to: plugin.appending(path: "background.ts"), atomically: true, encoding: .utf8)
     }
-    return (root, plugin, root.appending(path: "data", directoryHint: .isDirectory))
+    return Workspace(root: root, plugin: plugin, data: root.appending(path: "data", directoryHint: .isDirectory))
 }
 
-private func makeProcess(_ ws: (root: URL, plugin: URL, data: URL)) throws -> PluginProcess {
+private func makeProcess(_ ws: Workspace, commandPaths: [String: String] = ["echo": "/bin/echo"]) throws -> PluginProcess {
     PluginProcess(manifest: try PluginManifest.load(from: ws.plugin), folder: ws.plugin, dataFolder: ws.data,
-                  runtime: bunPath, host: hostScript, commandPaths: ["echo": "/bin/echo"])
+                  runtime: bunPath, host: hostScript, commandPaths: commandPaths)
 }
 
 private func message(_ id: Int, _ payload: JSONValue) -> PluginWire {
@@ -118,6 +124,7 @@ private func message(_ id: Int, _ payload: JSONValue) -> PluginWire {
 struct PluginProcessTests {
     @Test(.timeLimit(.minutes(1))) func roundTripsPageMessages() async throws {
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -135,6 +142,7 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func repliesNoHandler() async throws {
         let ws = try makeWorkspace(background: #"console.log("no handler here");"#)
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -146,6 +154,7 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func runsDeclaredCommandOnly() async throws {
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -165,6 +174,7 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func networkIsBlocked() async throws {
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -182,6 +192,7 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func cannotReadOutsideItsFolder() async throws {
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         // A file next to (not inside) the plugin and data folders.
         let outside = ws.root.appending(path: "outside", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
@@ -212,6 +223,7 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func consoleLogDoesNotBreakTheWire() async throws {
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -230,6 +242,7 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func environmentIsMinimal() async throws {
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -253,6 +266,7 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func stopEndsTheProcessOnce() async throws {
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -269,6 +283,7 @@ struct PluginProcessTests {
     @Test(.timeLimit(.minutes(1))) func sendingToAnExitedPluginIsHarmless() async throws {
         // Writing to a pipe nobody reads any more must not kill the app (SIGPIPE).
         let ws = try makeWorkspace()
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -290,6 +305,7 @@ struct PluginProcessTests {
             process.on("SIGTERM", () => {});
             singularity.onPageMessage(() => { while (true) {} });
             """)
+        defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
@@ -301,6 +317,164 @@ struct PluginProcessTests {
         let status = try await waitFor("exit") { recorder.exitStatuses.first }
         #expect(status == SIGKILL)
         #expect(ContinuousClock.now - stopped >= .seconds(1.5))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func stopsAPluginThatDoesNotReadItsInput() async throws {
+        // Blocks its only thread forever, so it never reads stdin.
+        let ws = try makeWorkspace(background: "while (true) {}")
+        defer { ws.remove() }
+        let process = try makeProcess(ws)
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+        defer { process.stop() }
+
+        let big = message(1, .string(String(repeating: "x", count: 100_000)))
+        let messageSize = try JSONEncoder().encode(big).count + 1
+        var maxPending = 0
+        // Up to 40 MB: far more than the 16 MB cap.
+        for _ in 0..<400 where recorder.exitStatuses.isEmpty {
+            process.send(big)
+            maxPending = max(maxPending, process.pendingInputBytes)
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        _ = try await waitFor("exit") { recorder.exitStatuses.first }
+        #expect(maxPending <= PluginProcess.maxPendingInput + messageSize)
+        #expect(maxPending > PluginProcess.maxPendingInput / 2, "the test should have filled the queue")
+        #expect(recorder.logLines.contains { $0.level == "error" && $0.message == "plugin is not reading its input" })
+        // Once the process is gone the queued messages are dropped.
+        _ = try await waitFor("queue drained") { process.pendingInputBytes == 0 ? true : nil }
+    }
+
+    @Test(.timeLimit(.minutes(1))) func capsConcurrentCommands() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        // A slow stand-in for "echo", so the ten calls really overlap.
+        let slow = ws.root.appending(path: "slow-echo")
+        try "#!/bin/sh\nsleep 1\necho \"$@\"\n".write(to: slow, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: slow.path)
+        let process = try makeProcess(ws, commandPaths: ["echo": slow.path])
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+        defer { process.stop() }
+
+        process.send(message(1, .string("burst")))
+        guard case .array(let results) = try await recorder.reply(1) else {
+            Issue.record("expected an array of results")
+            return
+        }
+        #expect(results.count == 10)   // every promise settled
+        let tooMany = results.filter {
+            $0 == .object(["status": .number(126), "stdout": .string(""),
+                           "stderr": .string("too many commands running"), "timedOut": .bool(false)])
+        }
+        let ran = results.filter {
+            $0 == .object(["status": .number(0), "stdout": .string("hello\n"), "stderr": .string(""), "timedOut": .bool(false)])
+        }
+        #expect(tooMany.count >= 6, Comment(rawValue: "\(results)"))
+        #expect(ran.count >= 1 && ran.count <= 4, Comment(rawValue: "\(results)"))
+        #expect(tooMany.count + ran.count == 10)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func pluginBunfigAndEnvFilesAreIgnored() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        // Without --config/--no-env-file, Bun (started in the plugin folder) would run the preload
+        // before host.ts and load the .env file.
+        try #"preload = ["./preload.ts"]"#.write(to: ws.plugin.appending(path: "bunfig.toml"), atomically: true, encoding: .utf8)
+        try #"process.stdout.write("PRELOAD\n");"#.write(to: ws.plugin.appending(path: "preload.ts"), atomically: true, encoding: .utf8)
+        try "PLUGIN_ENV_LEAK=1\n".write(to: ws.plugin.appending(path: ".env"), atomically: true, encoding: .utf8)
+        let process = try makeProcess(ws)
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+        defer { process.stop() }
+
+        process.send(message(1, .string("env")))
+        guard case .object(let fields) = try await recorder.reply(1), case .array(let keys)? = fields["keys"] else {
+            Issue.record("unexpected env reply")
+            return
+        }
+        #expect(!keys.contains(.string("PLUGIN_ENV_LEAK")))
+        #expect(!recorder.logLines.contains { $0.message.contains("PRELOAD") }, Comment(rawValue: "\(recorder.logLines)"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func uncaughtErrorsAreLoggedAndThePluginKeepsRunning() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        let process = try makeProcess(ws)
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+        defer { process.stop() }
+
+        process.send(message(1, .string("reject")))
+        process.send(message(2, .string("uncaught")))
+        _ = try await recorder.reply(1)
+        _ = try await recorder.reply(2)
+        let logs = try await waitFor("both errors logged") { () -> [(level: String, message: String)]? in
+            let errors = recorder.logLines.filter { $0.level == "error" }
+            let both = errors.contains { $0.message.contains("forgotten rejection") }
+                && errors.contains { $0.message.contains("thrown in a timer") }
+            return both ? errors : nil
+        }
+        // One entry each, with the stack.
+        #expect(logs.filter { $0.message.contains("forgotten rejection") }.count == 1, Comment(rawValue: "\(logs)"))
+        #expect(logs.filter { $0.message.contains("thrown in a timer") }.count == 1, Comment(rawValue: "\(logs)"))
+        #expect(logs.allSatisfy { $0.message.contains("background.ts") }, Comment(rawValue: "\(logs)"))
+        // Still alive.
+        process.send(message(3, .string("still here?")))
+        #expect(try await recorder.reply(3) == .object(["echo": .string("still here?")]))
+        #expect(recorder.exitStatuses.isEmpty)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func logMessagesAreCutAndLevelsMapped() async throws {
+        // writeSync(1, …) bypasses host.ts's console redirection, like a plugin forging lines would.
+        let ws = try makeWorkspace(background: #"""
+            import { singularity } from "singularity";
+            import { writeSync } from "node:fs";
+            singularity.onPageMessage(() => {
+              console.log("y".repeat(20000));
+              writeSync(1, JSON.stringify({ kind: "log", level: "fatal", message: "odd level" }) + "\n");
+              writeSync(1, "z".repeat(20000) + "\n");
+              return "done";
+            });
+            """#)
+        defer { ws.remove() }
+        let process = try makeProcess(ws)
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+        defer { process.stop() }
+
+        process.send(message(1, .string("go")))
+        #expect(try await recorder.reply(1) == .string("done"))
+        let logs = try await waitFor("three log lines") { () -> [(level: String, message: String)]? in
+            let lines = recorder.logLines
+            return lines.count >= 3 ? lines : nil
+        }
+        #expect(logs.contains { $0.level == "info" && $0.message == "odd level" })
+        for long in logs where long.message.hasPrefix("y") || long.message.hasPrefix("z") {
+            #expect(long.message.utf8.count <= PluginProcess.maxLogMessageBytes)
+            #expect(long.message.hasSuffix("…"))
+        }
+        #expect(logs.filter { $0.message.hasPrefix("y") || $0.message.hasPrefix("z") }.count == 2)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func terminateNowKillsAtOnce() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        let process = try makeProcess(ws)
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+        process.send(message(1, .string("hi")))
+        _ = try await recorder.reply(1)
+        let started = ContinuousClock.now
+        process.terminateNow()
+        #expect(try await waitFor("exit") { recorder.exitStatuses.first } == SIGKILL)
+        #expect(ContinuousClock.now - started < .seconds(1.5))
     }
 
     // MARK: Supervisor
@@ -321,14 +495,16 @@ struct PluginProcessTests {
     }
 
     /// Starts a supervisor on the echo plugin; every call of the factory is counted.
-    private func supervise(_ clock: FakeClock, _ starts: Counter) throws -> PluginSupervisor {
+    private func supervise(_ clock: FakeClock, _ starts: Counter,
+                           restartDelay: Duration = .zero) throws -> (PluginSupervisor, Workspace) {
         let ws = try makeWorkspace()
         let manifest = try PluginManifest.load(from: ws.plugin)
-        return PluginSupervisor(restartDelay: .zero, now: { clock.now }) {
+        let supervisor = PluginSupervisor(restartDelay: restartDelay, now: { clock.now }) {
             starts.increment()
             return PluginProcess(manifest: manifest, folder: ws.plugin, dataFolder: ws.data,
                                  runtime: bunPath, host: hostScript, commandPaths: [:])
         }
+        return (supervisor, ws)
     }
 
     /// Sends "crash" to the running plugin and waits until the supervisor has dealt with it:
@@ -359,7 +535,8 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func restartBackoffStopsAfterThreeCrashes() async throws {
         let clock = FakeClock(), starts = Counter()
-        let supervisor = try supervise(clock, starts)
+        let (supervisor, ws) = try supervise(clock, starts)
+        defer { ws.remove() }
         defer { supervisor.stop() }
         supervisor.start()
         #expect(supervisor.state == .running)
@@ -381,7 +558,8 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func crashesOutsideTheWindowDoNotCount() async throws {
         let clock = FakeClock(), starts = Counter()
-        let supervisor = try supervise(clock, starts)
+        let (supervisor, ws) = try supervise(clock, starts)
+        defer { ws.remove() }
         defer { supervisor.stop() }
         supervisor.start()
         // Five crashes 25 s apart: never more than three within 60 s.
@@ -395,11 +573,45 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func deliberateStopDoesNotRestart() async throws {
         let clock = FakeClock(), starts = Counter()
-        let supervisor = try supervise(clock, starts)
+        let (supervisor, ws) = try supervise(clock, starts)
+        defer { ws.remove() }
         supervisor.start()
         supervisor.stop()
         try await Task.sleep(for: .milliseconds(800))
         #expect(starts.value == 1)
         #expect(supervisor.state == .stopped)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func startDuringAPendingRestartDoesNotResetTheCrashCount() async throws {
+        let clock = FakeClock(), starts = Counter()
+        let (supervisor, ws) = try supervise(clock, starts, restartDelay: .milliseconds(300))
+        defer { ws.remove() }
+        defer { supervisor.stop() }
+        supervisor.start()
+        for round in 1...4 {
+            clock.advance(5)
+            let exits = supervisor.recentLogs.filter { $0.message.hasPrefix("exited") }.count
+            supervisor.send(message(99, .string("crash")))
+            _ = try await waitFor("exit") {
+                supervisor.recentLogs.filter { $0.message.hasPrefix("exited") }.count > exits ? true : nil
+            }
+            if round == 4 { break }
+            // A restart is pending: start() must neither launch another process nor forget the crashes.
+            supervisor.start()
+            let replies = Replies()
+            supervisor.onReply = { id, payload in replies.add(id, payload) }
+            _ = try await waitFor("restarted plugin answers") { () -> Bool? in
+                if replies.has(1) { return true }
+                supervisor.send(message(1, .string("ping")))
+                return nil
+            }
+        }
+        _ = try await waitFor("give up") { supervisor.state == .crashedRepeatedly ? true : nil }
+        #expect(starts.value == 4)
+        // stop() then start() starts the count over.
+        supervisor.stop()
+        supervisor.start()
+        #expect(supervisor.state == .running)
+        #expect(starts.value == 5)
     }
 }
