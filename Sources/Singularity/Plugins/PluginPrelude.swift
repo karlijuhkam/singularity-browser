@@ -87,6 +87,8 @@ enum PluginPrelude {
       const getPropertyValue = CSSStyleDeclaration.prototype.getPropertyValue;
       const parentNodeOf = Object.getOwnPropertyDescriptor(Node.prototype, "parentNode").get;
       const documentElementOf = Object.getOwnPropertyDescriptor(Document.prototype, "documentElement").get;
+      const bodyOf = Object.getOwnPropertyDescriptor(Document.prototype, "body").get;
+      const RealWeakSet = WeakSet;
       const appendChild = Node.prototype.appendChild;
       const removeElement = Element.prototype.remove;
       const getRect = Element.prototype.getBoundingClientRect;
@@ -111,6 +113,7 @@ enum PluginPrelude {
       const styleOf = (el, name) => apply(getPropertyValue, apply(getComputedStyle, window, [el]), [name]);
       const parentOf = (node) => apply(parentNodeOf, node, []);
       const rootElement = () => apply(documentElementOf, document, []);
+      const bodyElement = () => apply(bodyOf, document, []);
 
       // ---- 2. Is this page one of the plugin's sites? ----------------------------------------------
       // The patterns were parsed by Singularity (SitePattern.browserMatcher). Singularity checks
@@ -232,8 +235,11 @@ enum PluginPrelude {
       };
       // Writes the host's style only when it differs, so our own write doesn't start another round
       // through the MutationObserver below (which puts the style back whenever the page changes it).
+      // Returns whether it wrote.
       const setStyle = (host, style) => {
-        if (apply(getAttribute, host, ["style"]) !== style) apply(setAttribute, host, ["style", style]);
+        if (apply(getAttribute, host, ["style"]) === style) return false;
+        apply(setAttribute, host, ["style", style]);
+        return true;
       };
       const placedStyle = (left, top, width, height) => HOST_STYLE +
         ` left: ${left}px !important; top: ${top}px !important; width: ${width}px !important; height: ${height}px !important;`;
@@ -242,7 +248,20 @@ enum PluginPrelude {
       // Our hosts are direct children of <html>; put one back there if the page moved or removed it.
       const ensureInPage = (host) => {
         const root = rootElement();
-        if (root && parentOf(host) !== root) apply(appendChild, root, [host]);
+        if (!root || parentOf(host) === root) return false;
+        apply(appendChild, root, [host]);
+        return true;
+      };
+      // A page that keeps undoing our repairs (moving, restyling or removing our elements) shouldn't
+      // keep us busy: each element gets at most 10 repairs per second, then we give it up.
+      const repairBudget = () => {
+        const times = [];
+        return () => {
+          const t = now();
+          while (times.length > 0 && t - times[0] >= 1000) times.shift();
+          times.push(t);
+          return times.length <= 10;
+        };
       };
       // Only data:image URLs: loading an icon from elsewhere would be a network request.
       const safeIcon = (url) => (typeof url === "string" && /^data:image\//i.test(url) ? url : null);
@@ -251,20 +270,30 @@ enum PluginPrelude {
       // stops click-jacking: the page can restyle our host <div> (move it under a lure, fade it out,
       // blow it up) to collect a click the user meant for something else. So at click time:
       //   - the event is trusted (not a script's click() or dispatchEvent);
-      //   - the host is still a child of <html> and its rectangle is where we computed it (±2 px);
+      //   - the host is still a child of <html>, its style attribute is exactly the one we wrote (our
+      //     inline `all: initial !important` can't be beaten by a stylesheet, so any visual trick on
+      //     the host itself has to go through that attribute), and its rectangle is where we put it
+      //     (±2 px);
       //   - the click point lies inside that rectangle (except Return on a focused menu item, which
       //     has no point; the page can't focus inside our closed shadow root);
-      //   - a field button is small (≤ 64 px); the clicked element is visible (checkVisibility), and the host and
-      //     <html> have opacity ≥ 0.9, visibility "visible", and the host has no filter.
+      //   - a field button is small (≤ 64 px); the clicked element is visible (checkVisibility); the
+      //     host and <html> have opacity ≥ 0.9 and visibility "visible"; and the host, <html> and
+      //     <body> have no filter, mask, clip-path or blend mode (each can hide a clickable button).
       // Remaining risk we can't see from here: an overlay with `pointer-events: none` drawn over our
       // button lets a click through while the user sees the overlay. The authoring guide therefore
       // recommends a menu pick before releasing passwords.
       const near = (a, b) => Math.abs(a - b) <= 2;
+      const unblended = (el) =>
+        styleOf(el, "filter") === "none" && styleOf(el, "mask-image") === "none" &&
+        styleOf(el, "-webkit-mask-image") === "none" && styleOf(el, "clip-path") === "none" &&
+        styleOf(el, "mix-blend-mode") === "normal";
       const genuineClick = (event, host, element, expected, isMenuItem) => {
         const allowKeyboard = isMenuItem;
         if (event.isTrusted !== true || !expected) return false;
         const root = rootElement();
         if (!root || parentOf(host) !== root) return false;
+        if (apply(getAttribute, host, ["style"]) !==
+            placedStyle(expected.left, expected.top, expected.width, expected.height)) return false;
         const r = rectOf(host);
         if (!near(r.left, expected.left) || !near(r.top, expected.top) ||
             !near(r.width, expected.width) || !near(r.height, expected.height)) return false;
@@ -278,7 +307,10 @@ enum PluginPrelude {
         for (const el of [host, root]) {
           if (!(Number(styleOf(el, "opacity")) >= 0.9) || styleOf(el, "visibility") !== "visible") return false;
         }
-        if (styleOf(host, "filter") !== "none") return false;
+        const body = bodyElement();
+        for (const el of body ? [host, root, body] : [host, root]) {
+          if (!unblended(el)) return false;
+        }
         return true;
       };
 
@@ -306,18 +338,32 @@ enum PluginPrelude {
         const size = Math.max(12, Math.min(22, r.height - 6));
         return { left: Math.round(r.right - size - 4), top: Math.round(r.top + (r.height - size) / 2), width: size, height: size };
       };
+      const samePlace = (a, b) => (a === null && b === null) ||
+        (!!a && !!b && a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height);
+      const givenUp = new RealWeakSet(); // inputs whose button the page kept tampering with
+      const removeButton = (input, entry) => {
+        apply(removeElement, entry.host, []);
+        entry.resizeObserver.disconnect();
+        buttons.delete(input);
+      };
       const layoutButtons = () => {
         framePending = false;
         for (const [input, entry] of buttons) {
           if (!connected(input)) {
-            apply(removeElement, entry.host, []);
-            entry.resizeObserver.disconnect();
-            buttons.delete(input);
+            removeButton(input, entry);
             continue;
           }
           const at = placement(input);
-          ensureInPage(entry.host);
-          if (at) place(entry.host, at.left, at.top, at.width, at.height); else hide(entry.host);
+          const inputMoved = !samePlace(at, entry.placed);
+          const wrote = ensureInPage(entry.host) |
+            (at ? place(entry.host, at.left, at.top, at.width, at.height) : hide(entry.host));
+          entry.placed = at;
+          // A write although the input didn't move means the page changed our element: a repair.
+          if (wrote && !inputMoved && !entry.mayRepair()) {
+            removeButton(input, entry);
+            givenUp.add(input);
+            console.warn(`Plugin ${config.pluginID}: the page keeps moving or removing a field button; it was removed.`);
+          }
         }
       };
       const scheduleLayout = () => {
@@ -329,7 +375,9 @@ enum PluginPrelude {
       // style, say) puts our style back. Writing the same style again is skipped (setStyle), so our
       // own writes end there.
       const pageObserver = new RealMutationObserver((records) => {
-        if (openMenu && records.some((r) => r.target === openMenu.host || r.target === rootElement())) openMenu.restore();
+        if (openMenu && records.some((r) => r.target === openMenu.host || r.target === rootElement())) {
+          openMenu.scheduleRestore();
+        }
         scheduleLayout();
       });
       let watching = false;
@@ -345,6 +393,7 @@ enum PluginPrelude {
        *  the existing button instead of adding another. `onClick(input)` runs only for real clicks. */
       const addFieldButton = (input, options) => {
         if (!(input instanceof HTMLInputElement)) throw new TypeError("addFieldButton needs an <input> element");
+        if (givenUp.has(input)) return;
         const title = String(options && options.title ? options.title : "").slice(0, 200);
         const onClick = options && options.onClick;
         if (typeof onClick !== "function") throw new TypeError("addFieldButton needs an onClick function");
@@ -376,14 +425,20 @@ enum PluginPrelude {
         apply(appendChild, root, [style]);
         apply(appendChild, root, [button]);
 
-        const entry = { input, host, button, options: { onClick }, resizeObserver: new RealResizeObserver(scheduleLayout) };
+        const entry = { input, host, button, options: { onClick }, placed: undefined, mayRepair: repairBudget(),
+                        resizeObserver: new RealResizeObserver(scheduleLayout) };
         // Keep the field focused when the button is pressed (some forms validate on blur).
         on(button, "mousedown", (event) => event.preventDefault());
         on(button, "click", (event) => {
           event.preventDefault();
           event.stopPropagation();
           const input = entry.input;
-          if (!genuineClick(event, host, button, placement(input), false)) {
+          // Where we drew it must still be where the input wants it, and the click must pass the checks.
+          const placed = entry.placed;
+          const wanted = placement(input);
+          const inPlace = placed && wanted && near(placed.left, wanted.left) && near(placed.top, wanted.top) &&
+            near(placed.width, wanted.width) && near(placed.height, wanted.height);
+          if (!inPlace || !genuineClick(event, host, button, placed, false)) {
             layoutButtons(); // put it back where it belongs; no action, no token
             return;
           }
@@ -436,7 +491,7 @@ enum PluginPrelude {
           apply(setAttribute, menu, ["role", "menu"]);
           const itemButtons = [];
           let menuRect = null;      // where we put the menu (checked at click time)
-          let restore = () => {};   // puts the menu back if the page moves or restyles it
+          let scheduleRestore = () => {};   // puts the menu back (next frame) if the page moves or restyles it
 
           const finish = (value) => {
             if (openMenu && openMenu.host === host) openMenu = null;
@@ -481,7 +536,7 @@ enum PluginPrelude {
               event.stopPropagation();
               // Return on a focused item also produces a real click (with no click point).
               if (!genuineClick(event, host, button, menuRect, true)) {
-                restore();
+                scheduleRestore();
                 return;
               }
               realClickHappened();
@@ -506,12 +561,25 @@ enum PluginPrelude {
           const left = Math.max(4, Math.min(r.left, innerWidth - 364));
           menuRect = { left: Math.round(left), top: Math.round(top), width: 360, height };
           const menuStyle = placedStyle(menuRect.left, menuRect.top, menuRect.width, menuRect.height);
-          restore = () => {
-            setStyle(host, menuStyle);
-            ensureInPage(host);
+          const restore = () => {
+            const moved = ensureInPage(host);
+            return setStyle(host, menuStyle) || moved;
+          };
+          // Repairs happen once per frame at most; a page that undoes them more than 10 times in a
+          // second gets the menu closed (resolving null) instead of a fight.
+          const mayRepair = repairBudget();
+          let restorePending = false;
+          scheduleRestore = () => {
+            if (restorePending) return;
+            restorePending = true;
+            requestFrame(() => {
+              restorePending = false;
+              if (!openMenu || openMenu.host !== host) return;
+              if (restore() && !mayRepair()) finish(null);
+            });
           };
           restore();
-          openMenu = { host, finish, restore };
+          openMenu = { host, finish, scheduleRestore };
           watchPage();
           on(window, "pointerdown", outside, true);
           on(window, "keydown", keys, true);

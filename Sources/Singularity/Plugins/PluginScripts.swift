@@ -13,7 +13,8 @@ import WebKit
 /// variables or message handler. Per plugin, a content controller holds:
 /// - the prelude (`PluginPrelude.source`) at document start, in every frame;
 /// - the plugin's transpiled page.ts (`PluginPrelude.wrap`) at document end, in every frame;
-/// - a `PluginPageBridge` as message handler "singularityPlugin" in the plugin's world.
+/// - a `PluginPageBridge` as message handler "singularityPlugin" in the plugin's world (kept, with
+///   its secret, for as long as the plugin's version doesn't change: open pages depend on it).
 ///
 /// WebKit can't remove a single user script, so any change rebuilds a controller's scripts: all
 /// removed, then the app's own scripts (the page agent, and the artifact bridge in artifact tabs)
@@ -213,41 +214,53 @@ final class PluginScripts {
         guard signature != entry.signature else { return }
         let spaceID = entry.spaceID
         var bridges: [String: (fingerprint: String, secret: String, bridge: PluginPageBridge)] = [:]
-        entry.pluginScripts = Self.rebuild(controller, plugins: plugins, baseScripts: entry.baseScripts,
-                                           previousPluginIDs: entry.pluginIDs) { [weak self] prepared in
-            // Same plugin version as before: same secret and bridge (open pages keep their tokens).
-            if let kept = entry.bridges[prepared.pluginID], kept.fingerprint == prepared.fingerprint {
-                bridges[prepared.pluginID] = kept
-                return (kept.secret, kept.bridge)
+        var kept: Set<String> = []
+        for prepared in plugins {
+            // Same plugin version as before: same secret and the same, still registered, handler, so
+            // pages already open (whose prelude holds both) keep working.
+            if let old = entry.bridges[prepared.pluginID], old.fingerprint == prepared.fingerprint {
+                bridges[prepared.pluginID] = old
+                kept.insert(prepared.pluginID)
+                continue
             }
             let secret = PluginPageRequest.makeSecret()
             let bridge = PluginPageBridge(pluginID: prepared.pluginID, spaceID: spaceID, access: prepared.access,
-                                          secret: secret, manager: self?.manager,
+                                          secret: secret, manager: manager,
                                           tabID: { [weak self] in self?.tabID($0) })
             bridges[prepared.pluginID] = (prepared.fingerprint, secret, bridge)
-            return (secret, bridge)
         }
+        entry.pluginScripts = Self.rebuild(
+            controller,
+            plugins: plugins.map { ($0, bridges[$0.pluginID]!.secret, bridges[$0.pluginID]!.bridge) },
+            baseScripts: entry.baseScripts, previousPluginIDs: entry.pluginIDs, keepHandlers: kept)
         entry.bridges = bridges
         entry.signature = signature
         entry.pluginIDs = plugins.map(\.pluginID)
     }
 
     /// Replaces a content controller's scripts: removes all user scripts, re-adds `baseScripts` (the
-    /// app's own: page agent, artifact bridge), and adds each plugin's prelude and page script in the
-    /// plugin's world, with its secret and message handler from `bridgeFor`. Only the plugin worlds'
-    /// handlers are touched; the agent's and the artifact bridge's stay. Returns the scripts added.
-    static func rebuild(_ controller: WKUserContentController, plugins: [Prepared], baseScripts: [WKUserScript],
-                        previousPluginIDs: [String],
-                        bridgeFor: (Prepared) -> (secret: String, bridge: PluginPageBridge)) -> [WKUserScript] {
+    /// app's own: page agent, artifact bridge), and adds each plugin's prelude (with its secret) and
+    /// page script in the plugin's world. Returns the plugin scripts added.
+    ///
+    /// Message handlers are separate from user scripts (`removeAllUserScripts` leaves them alone),
+    /// and an open page talks to the handler that was registered when it loaded: removing it breaks
+    /// that page, even if an identical one is added back. So handlers are only changed where needed:
+    /// plugins in `keepHandlers` (same version, same bridge) keep theirs; plugins that are gone get
+    /// theirs removed; new or changed plugins get their new bridge. The agent's and the artifact
+    /// bridge's handlers are never touched.
+    static func rebuild(_ controller: WKUserContentController,
+                        plugins: [(prepared: Prepared, secret: String, bridge: PluginPageBridge)],
+                        baseScripts: [WKUserScript], previousPluginIDs: [String],
+                        keepHandlers: Set<String>) -> [WKUserScript] {
         controller.removeAllUserScripts()
         for script in baseScripts { controller.addUserScript(script) }
-        for id in previousPluginIDs {
+        let current = Set(plugins.map(\.prepared.pluginID))
+        for id in previousPluginIDs where !current.contains(id) {
             controller.removeScriptMessageHandler(forName: handlerName, contentWorld: world(id))
         }
         var added: [WKUserScript] = []
-        for plugin in plugins {
+        for (plugin, secret, bridge) in plugins {
             let world = world(plugin.pluginID)
-            let (secret, bridge) = bridgeFor(plugin)
             // forMainFrameOnly: false: login forms also live in frames (each frame is checked on its own).
             let prelude = WKUserScript(source: PluginPrelude.source(configJSON: plugin.configJSON, secret: secret),
                                        injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world)
@@ -256,8 +269,9 @@ final class PluginScripts {
             controller.addUserScript(prelude)
             controller.addUserScript(code)
             added += [prelude, code]
-            // Adding a second handler with the same name in the same world raises an exception, so
-            // make sure there is none (removing a missing one does nothing).
+            if keepHandlers.contains(plugin.pluginID) { continue }
+            // A new version: replace the old handler (adding a second one with the same name in the
+            // same world raises an exception; removing a missing one does nothing).
             controller.removeScriptMessageHandler(forName: handlerName, contentWorld: world)
             controller.addScriptMessageHandler(bridge, contentWorld: world, name: handlerName)
         }

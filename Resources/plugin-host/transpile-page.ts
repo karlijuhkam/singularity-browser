@@ -40,9 +40,10 @@ function transpile(source: string): Outcome {
   if (/\bimport\s*\(/.test(javascript)) {
     return { ok: false, problem: "page.ts can't import other files in round 1 (it uses import())" };
   }
-  // In the page the code runs as the body of an async function (PluginPrelude.wrap). Compile it
-  // exactly like that (compiling doesn't run it): module-only syntax that scan() lets through,
-  // such as `export {}` or `import.meta`, fails here.
+  // In the page the code runs inside an async arrow function (PluginPrelude.wrap). Compiling it as
+  // an AsyncFunction body (which doesn't run it) checks the same grammar: module-only syntax that
+  // scan() lets through, such as `export {}` or `import.meta`, fails here. (The one difference,
+  // `new.target`, is allowed here but is a syntax error in the arrow, so it fails closed in the page.)
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   try {
     new AsyncFunction(javascript);
