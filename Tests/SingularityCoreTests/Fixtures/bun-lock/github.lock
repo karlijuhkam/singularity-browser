@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "g",
+      "dependencies": {
+        "is-number": "github:jonschlinkert/is-number#98e8ff1",
+      },
+    },
+  },
+  "packages": {
+    "is-number": ["is-number@github:jonschlinkert/is-number#98e8ff1", {}, "jonschlinkert-is-number-98e8ff1", "sha512-VRiId6WxXNzVNsf8kootsozLJ3nE+6fNmpwihMjEudNZbnSjqsRZDgvAIgzdsl5qk714XNJqG6QzO4cQ/WhULQ=="],
+  }
+}

@@ -228,9 +228,15 @@ public enum PluginStatus: Equatable, Sendable {
     case invalid(PluginError)
 
     /// Precedence: broken manifest, never approved, wider permissions (even in development
-    /// mode), edited files (unless development mode), otherwise approved.
+    /// mode), edited files, otherwise approved.
+    ///
+    /// Development mode lets edits to the plugin's own code through, but not changes to its
+    /// packages (package.json, bun.lock, anything in node_modules: `PluginPackages.isPackagePath`):
+    /// those were installed by Singularity at approval, outside the sandbox, and need a new one.
+    /// To tell the two apart it compares `fileHashes` (the current per-file hashes) with the ones
+    /// recorded at approval; when either is missing it can't, so any change counts (fail closed).
     public static func evaluate(manifest: Result<PluginManifest, PluginError>, fingerprint: String,
-                                approval: PluginApproval?) -> PluginStatus {
+                                fileHashes: [String: String]? = nil, approval: PluginApproval?) -> PluginStatus {
         let m: PluginManifest
         switch manifest {
         case .failure(let error): return .invalid(error)
@@ -238,7 +244,12 @@ public enum PluginStatus: Equatable, Sendable {
         }
         guard let approval else { return .new }
         if m.permissions.widens(approval.permissions) { return .permissionsWidened }
-        if fingerprint != approval.fingerprint && !approval.developmentMode { return .changed }
+        if fingerprint != approval.fingerprint {
+            guard approval.developmentMode, let fileHashes, !approval.fileHashes.isEmpty,
+                  !PluginPackages.packageFilesDiffer(approved: approval.fileHashes, current: fileHashes) else {
+                return .changed
+            }
+        }
         return .approved
     }
 }

@@ -42,6 +42,8 @@ enum PluginManagerError: LocalizedError, Equatable {
     case couldNotSave(String)
     case addFailed(PluginInstaller.AddError)
     case removeFailed(String)
+    /// `bun install` failed; the text is one plain sentence (Bun's output is in the plugin's log).
+    case installFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -52,6 +54,7 @@ enum PluginManagerError: LocalizedError, Equatable {
         case .couldNotSave(let why): return "Couldn't save the approval: \(why)"
         case .addFailed(let error): return error.userMessage
         case .removeFailed(let why): return "Couldn't move the plugin to the Trash: \(why)"
+        case .installFailed(let why): return "Not approved. \(why)"
         }
     }
 }
@@ -403,8 +406,15 @@ final class PluginManager {
     /// Approves what the sheet showed (`prepareReview`), if it is still exactly that: the files are
     /// scanned again, and a different fingerprint or different permissions throw
     /// `.changedWhileReviewing` (the sheet then loads the current version). Pins the command paths
-    /// the sheet showed, creates the data folder (0700), records the fingerprint and per-file
-    /// hashes, saves, and starts the plugin.
+    /// the sheet showed, creates the data folder (0700), installs the plugin's npm packages
+    /// (`installPackages`), records the fingerprint and per-file hashes *after* the install,
+    /// saves, and starts the plugin.
+    ///
+    /// The install writes node_modules, so the file watcher reports the plugin as changed while it
+    /// runs. Those events queue a refresh in this plugin's queue (`enqueue`), so it can only run
+    /// after this approval has finished; by then the recorded fingerprint is the post-install one,
+    /// the refresh's fresh scan matches it (status `.approved`), and as `scans[id]` already holds
+    /// that same fingerprint it doesn't restart the plugin either.
     func approve(_ id: String, expectedFingerprint: String, enabledSpaces: Set<UUID>, developmentMode: Bool) async throws {
         try await enqueue(id) { [weak self] in
             try await self?.performApprove(id, expectedFingerprint: expectedFingerprint,
@@ -434,19 +444,93 @@ final class PluginManager {
         let dataFolder = paths.pluginsDataDirectory(id)
         try await Task.detached { try PluginInstaller.makeDataFolder(dataFolder) }.value
 
-        // Task 9: install packages here, then fingerprint (node_modules is part of the fingerprint,
-        // so the approval must record the folder as it is after installing).
+        // node_modules is part of the fingerprint, so the approval records the folder as it is
+        // after installing (the check above compared the folder the sheet showed: before it).
+        let (installed, installedSnapshot) = try await installPackages(id, folder: folder, review: review, before: scan,
+                                                                       snapshot: snapshot)
 
         let approval = PluginApproval(
-            fingerprint: snapshot.fingerprint, permissions: manifest.permissions, commandPaths: review.commandPaths,
-            enabledSpaces: enabledSpaces, developmentMode: developmentMode, approvedAt: Date(),
-            fileHashes: snapshot.fileHashes)
+            fingerprint: installedSnapshot.fingerprint, permissions: manifest.permissions,
+            commandPaths: review.commandPaths, enabledSpaces: enabledSpaces, developmentMode: developmentMode,
+            approvedAt: Date(), fileHashes: installedSnapshot.fileHashes)
         try setApproval(id, approval)
         reviews[id] = nil
         appendLog(id, "info", "approved")
         // A process of an earlier approval (re-review while running) gives way to a fresh one.
         stopSupervisor(id, reason: nil)
-        await apply(scan, to: id, restart: false)
+        await apply(installed, to: id, restart: false)
+    }
+
+    /// Part of `performApprove` (so it runs inside the plugin's queue). Deletes any node_modules
+    /// the plugin shipped and installs its declared packages with the bundled Bun, outside the
+    /// sandbox (`PluginPackages.install`: exactly the package.json and bun.lock the sheet showed,
+    /// in a staging folder; frozen lockfile, no install scripts, npm registry only, minimal
+    /// environment, 180 s limit). Returns the scan of the folder afterwards.
+    ///
+    /// Nothing to do (no packages, no node_modules): returns `before` as it is. Otherwise the
+    /// running process (if any) is stopped first, since its packages are about to be replaced.
+    /// Throws `.installFailed` when the install fails (node_modules is then gone, nothing is
+    /// recorded, and the plugin shows as changed until it is approved again), and
+    /// `.changedWhileReviewing` when anything outside node_modules differs from what the sheet
+    /// showed once the install is done (e.g. edited while it ran).
+    private func installPackages(_ id: String, folder: URL, review: PluginReview, before: PluginScan,
+                                 snapshot: PluginFingerprint.Snapshot) async throws -> (PluginScan, PluginFingerprint.Snapshot) {
+        let shipsNodeModules = snapshot.fileHashes.keys.contains { $0.hasPrefix("node_modules/") }
+            || (try? FileManager.default.attributesOfItem(atPath: folder.appending(path: "node_modules").path)) != nil
+        guard !review.packages.packages.isEmpty || shipsNodeModules else { return (before, snapshot) }
+
+        stopSupervisor(id, reason: "installing its packages")
+        let count = review.packages.packages.count
+        if count > 0 { appendLog(id, "info", "installing \(count) \(count == 1 ? "package" : "packages") with bun install") }
+        let runtime = runtime
+        let hostFolder = host.deletingLastPathComponent()
+        let cache = paths.bunInstallCacheDirectory
+        // install() deletes node_modules first, then runs Bun in a staging folder and moves the
+        // result in; all of it off the main thread.
+        // Only installs the package.json and bun.lock the sheet showed (same hashes).
+        let expected = snapshot.fileHashes
+        let result = await Task.detached {
+            await PluginPackages.install(folder: folder, expectedFileHashes: expected, runtime: runtime,
+                                         hostFolder: hostFolder, cacheFolder: cache)
+        }.value
+        // Bun's output, line by line, at most the last 100 lines.
+        for line in result.output.split(whereSeparator: \.isNewline).suffix(100) {
+            appendLog(id, result.succeeded ? "info" : "error", "bun install: " + line)
+        }
+
+        /// Leaves no unapproved packages behind, shows the plugin as it now is, and throws.
+        func giveUp(_ error: PluginManagerError) async throws -> Never {
+            _ = await Task.detached { PluginPackages.removeNodeModules(in: folder) }.value
+            reviews[id] = nil
+            await apply(await Task.detached { PluginScan.scan(folder: folder) }.value, to: id, restart: false)
+            throw error
+        }
+        switch result.outcome {
+        case .installed, .nothingToInstall: break
+        case .filesChanged:
+            appendLog(id, "warn", "not approved: its package.json or bun.lock changed during the review")
+            try await giveUp(.changedWhileReviewing)
+        case .failed:
+            appendLog(id, "error", "not approved: \(result.message)")
+            try await giveUp(.installFailed(result.message))
+        }
+        let after = await Task.detached { PluginScan.scan(folder: folder) }.value
+        let installedSnapshot: PluginFingerprint.Snapshot
+        switch after.files {
+        case .success(let s): installedSnapshot = s
+        case .failure(let error):
+            // E.g. a package that contains a symbolic link.
+            let message = "The installed packages can't be used: \(error.userMessage)."
+            appendLog(id, "error", "not approved: \(message)")
+            try await giveUp(.installFailed(message))
+        }
+        guard let manifest = after.validManifest, manifest.permissions == review.manifest.permissions,
+              PluginPackages.sameOutsideNodeModules(snapshot.fileHashes, installedSnapshot.fileHashes) else {
+            appendLog(id, "warn", "not approved: its files changed while its packages were installed")
+            try await giveUp(.changedWhileReviewing)
+        }
+        if count > 0 { appendLog(id, "info", result.message.lowercased()) }
+        return (after, installedSnapshot)
     }
 
     /// Switches a plugin on or off in one Space. Writes the approval; no new review needed.

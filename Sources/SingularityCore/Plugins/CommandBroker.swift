@@ -109,13 +109,18 @@ public enum CommandBroker {
 
     // MARK: - run
 
-    /// Runs `path` with `arguments` (no shell), empty stdin, the app's own environment. Collects
-    /// stdout and stderr (each capped at 10 MB). After `timeout` it sends SIGTERM, then SIGKILL 2 s
-    /// later, and reports `timedOut`. Never blocks a thread while waiting.
-    public static func run(path: String, arguments: [String], timeout: Duration) async -> CommandResult {
+    /// Runs `path` with `arguments` (no shell), empty stdin, and the app's own environment unless
+    /// `environment` is given (then exactly that, nothing inherited). `currentDirectory`: the
+    /// working directory (default: the app's). Collects stdout and stderr (each capped at 10 MB).
+    /// After `timeout` it sends SIGTERM, then SIGKILL 2 s later, and reports `timedOut`. Never
+    /// blocks a thread while waiting.
+    public static func run(path: String, arguments: [String], timeout: Duration,
+                           environment: [String: String]? = nil, currentDirectory: URL? = nil) async -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
+        if let environment { process.environment = environment }
+        if let currentDirectory { process.currentDirectoryURL = currentDirectory }
         process.standardInput = FileHandle.nullDevice   // /dev/null: programs that read stdin see EOF at once
         let outPipe = Pipe(), errPipe = Pipe()
         process.standardOutput = outPipe

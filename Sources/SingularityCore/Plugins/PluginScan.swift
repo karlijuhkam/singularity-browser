@@ -53,7 +53,8 @@ public struct PluginScan: Sendable {
         switch files {
         case .failure(let error): return .invalid(error)
         case .success(let snapshot):
-            return PluginStatus.evaluate(manifest: manifest, fingerprint: snapshot.fingerprint, approval: approval)
+            return PluginStatus.evaluate(manifest: manifest, fingerprint: snapshot.fingerprint,
+                                         fileHashes: snapshot.fileHashes, approval: approval)
         }
     }
 }
@@ -190,11 +191,14 @@ public struct PluginReview: Equatable, Sendable {
     public let commandPaths: [String: String]
     /// Declared programs that couldn't be found (approval is impossible until they are installed).
     public let missingCommands: [String]
+    /// The npm packages Singularity installs on approval (`PluginPackages.check`).
+    public let packages: PluginPackages.Summary
 
     public static let readmeLimit = 20_000
 
     public init(id: String, manifest: PluginManifest, fingerprint: String, fileHashes: [String: String],
-                readme: String?, commandPaths: [String: String], missingCommands: [String]) {
+                readme: String?, commandPaths: [String: String], missingCommands: [String],
+                packages: PluginPackages.Summary = PluginPackages.Summary(packages: [], lockedCount: 0)) {
         self.id = id
         self.manifest = manifest
         self.fingerprint = fingerprint
@@ -202,6 +206,7 @@ public struct PluginReview: Equatable, Sendable {
         self.readme = readme
         self.commandPaths = commandPaths
         self.missingCommands = missingCommands
+        self.packages = packages
     }
 
     /// Builds the review from a scan. `resolve` finds a program's path (blocking; the app passes
@@ -217,6 +222,9 @@ public struct PluginReview: Equatable, Sendable {
         case .failure(let error): return .failure(error)
         case .success(let s): snapshot = s
         }
+        // The manifest check already validated these; read them again for the list on the sheet.
+        let packages: PluginPackages.Summary
+        do { packages = try PluginPackages.check(folder: scan.folder) } catch { return .failure(error) }
         var paths: [String: String] = [:]
         var missing: [String] = []
         for name in manifest.permissions.commands.keys.sorted() {
@@ -224,13 +232,13 @@ public struct PluginReview: Equatable, Sendable {
         }
         return .success(PluginReview(
             id: manifest.id, manifest: manifest, fingerprint: snapshot.fingerprint, fileHashes: snapshot.fileHashes,
-            readme: readReadme(in: scan.folder), commandPaths: paths, missingCommands: missing))
+            readme: readReadme(in: scan.folder), commandPaths: paths, missingCommands: missing, packages: packages))
     }
 
     public var canApprove: Bool { missingCommands.isEmpty }
 
     public var permissionLines: [String] {
-        PermissionDescriptions.lines(for: manifest.permissions, commandPaths: commandPaths)
+        PermissionDescriptions.lines(for: manifest.permissions, commandPaths: commandPaths, packages: packages)
     }
 
     /// Files changed since `approval`; nil for a first approval, or for an approval recorded

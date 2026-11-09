@@ -20,6 +20,13 @@ public enum PluginError: Error, Equatable, Sendable {
     /// The plugin's files couldn't be read (permissions, a file vanished mid-read, …); the text
     /// is the underlying error.
     case unreadable(String)
+    /// A package Singularity won't install: not an exact version from the npm registry (a range,
+    /// tag, `file:`, `git…`, URL, `npm:` alias…), a dependency group other than `dependencies`,
+    /// or a `bun.lock` entry that isn't a registry package or doesn't match package.json. The
+    /// text is the package name (or the package.json key / bun.lock entry at fault).
+    case unsupportedPackage(String)
+    /// A file plugins may not contain (e.g. `.npmrc`, which would configure the package install).
+    case forbiddenFile(String)
 }
 
 /// Host comparison helpers shared by site patterns and the 1Password fill guard.

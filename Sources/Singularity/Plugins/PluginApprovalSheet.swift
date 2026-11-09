@@ -121,6 +121,24 @@ struct PluginApprovalSheet: View {
                 }
             }
 
+            // Declared npm packages (package.json `dependencies`, pinned by bun.lock). Singularity
+            // installs them from the npm registry when you approve.
+            section("Packages") {
+                if review.packages.packages.isEmpty {
+                    Text("No packages").foregroundStyle(.secondary)
+                }
+                ForEach(review.packages.packages.prefix(100), id: \.name) { package in
+                    Text(verbatim: PluginText.line(package.name, max: 214) + " " + PluginText.line(package.version, max: 60))
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+                }
+                if review.packages.packages.count > 100 {
+                    Text(verbatim: "and \(review.packages.packages.count - 100) more")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if let readme = review.readme, !readme.isEmpty {
                 section("README") {
                     ScrollView {

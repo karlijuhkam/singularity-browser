@@ -62,7 +62,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
 
     /// Reads and validates `<folder>/plugin.json`. Check order: JSON shape, id format, id equals
     /// folder name, permission keys (during decoding), site patterns, network, commands, files,
-    /// lockfile. The first problem found is thrown.
+    /// packages (.npmrc, package.json, bun.lock). The first problem found is thrown.
     public static func load(from folder: URL) throws(PluginError) -> PluginManifest {
         let manifest: PluginManifest
         do {
@@ -120,52 +120,10 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         try Self.checkPackages(in: folder)
     }
 
-    /// Packages must be pinned: any non-empty dependency group needs a `bun.lock` file.
-    /// A package.json that can't be understood is an error (fail closed).
+    /// No `.npmrc`; packages only as exact npm registry versions, pinned by a matching `bun.lock`
+    /// (see `PluginPackages.check`). Anything that can't be understood is an error (fail closed).
     private static func checkPackages(in folder: URL) throws(PluginError) {
-        let url = folder.appending(path: "package.json")
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let object: Any
-        do {
-            let data = try Data(contentsOf: url)
-            // Foundation's parser tolerates trailing commas; real JSON (and Bun) does not.
-            if hasTrailingComma(data) { throw CocoaError(.propertyListReadCorrupt) }
-            object = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            throw .invalidJSON("package.json: not readable or not valid JSON")
-        }
-        guard let root = object as? [String: Any] else { throw .invalidJSON("package.json: not an object") }
-        var hasDependencies = false
-        for key in ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] {
-            guard let value = root[key] else { continue }
-            guard let group = value as? [String: Any] else { throw .invalidJSON("package.json: \(key) is not an object") }
-            if !group.isEmpty { hasDependencies = true }
-        }
-        guard hasDependencies else { return }
-        var isDir: ObjCBool = false
-        let lock = folder.appending(path: "bun.lock").path
-        guard FileManager.default.fileExists(atPath: lock, isDirectory: &isDir), !isDir.boolValue else {
-            throw .missingLockfile
-        }
-    }
-
-    /// True when a "," is followed (ignoring whitespace) by "}" or "]", outside of strings.
-    private static func hasTrailingComma(_ data: Data) -> Bool {
-        var inString = false, escaped = false, pendingComma = false
-        for b in data {
-            if inString {
-                if escaped { escaped = false } else if b == 0x5C { escaped = true } else if b == 0x22 { inString = false }
-                continue
-            }
-            switch b {
-            case 0x20, 0x09, 0x0A, 0x0D: continue
-            case 0x7D, 0x5D: if pendingComma { return true }
-            default: break
-            }
-            pendingComma = (b == 0x2C)
-            if b == 0x22 { inString = true }
-        }
-        return false
+        _ = try PluginPackages.check(folder: folder)
     }
 
     /// A relative path, no `..` component, that is a regular file still inside `folder`

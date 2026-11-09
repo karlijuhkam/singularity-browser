@@ -9,7 +9,9 @@ extension PluginError {
         case .invalidSitePattern(let site): return "“\(site)” isn't a valid site pattern"
         case .invalidJSON(let text):
             // package.json problems carry a short text of their own; plugin.json ones a decoder dump.
-            return text.hasPrefix("package.json") ? "package.json isn't valid" : "plugin.json isn't valid JSON"
+            if text.hasPrefix("package.json") { return "package.json isn't valid" }
+            if text.hasPrefix("bun.lock") { return "bun.lock isn't valid" }
+            return "plugin.json isn't valid JSON"
         case .invalidID(let id): return "“\(id)” isn't a valid plugin id (lowercase letters, digits and dashes)"
         case let .idDoesNotMatchFolder(id, folder): return "its id “\(id)” doesn't match its folder name “\(folder)”"
         case .missingFile(let path): return "the file \(path) is missing"
@@ -22,6 +24,9 @@ extension PluginError {
             return path == "." ? "its folder is a symbolic link" : "it contains a symbolic link (\(path))"
         case .unsupportedFile(let path): return "it contains a special file (\(path))"
         case .unreadable: return "its files can't be read"
+        case .unsupportedPackage(let name):
+            return "it uses “\(name)”, which isn't an exact npm registry version matching bun.lock"
+        case .forbiddenFile(let name): return "it contains \(name), which plugins may not have"
         }
     }
 

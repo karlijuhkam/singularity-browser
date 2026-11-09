@@ -200,8 +200,10 @@ import Testing
         if case .invalidJSON? = try load(package: #"{"dependencies":{"a":"1"},}"#) {} else { Issue.record("trailing comma") }
         if case .invalidJSON? = try load(package: #"[]"#) {} else { Issue.record("not object") }
         if case .invalidJSON? = try load(package: #"{"dependencies":[]}"#) {} else { Issue.record("deps not object") }
-        #expect(try load(package: #"{"devDependencies":{"a":"1"}}"#) == .missingLockfile)
-        #expect(try load(package: #"{"dependencies":{"a":"1"}}"#, lockAsDirectory: true) == .missingLockfile)
+        #expect(try load(package: #"{"devDependencies":{"a":"1.0.0"}}"#) == .unsupportedPackage("devDependencies"))
+        #expect(try load(package: #"{"dependencies":{"a":"1.0.0"}}"#, lockAsDirectory: true) == .missingLockfile)
+        // Duplicate keys: which one would Bun use? Refused rather than guessed.
+        if case .invalidJSON? = try load(package: #"{"dependencies":{"a":"1.0.0","a":"2.0.0"}}"#) {} else { Issue.record("duplicate key") }
         #expect(try load(package: #"{"dependencies":{}}"#) == nil)
         #expect(try load(package: nil) == nil)
     }
@@ -248,9 +250,11 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         try PluginManifest.load(from: fixtures.appending(path: "ok-1password", directoryHint: .isDirectory))
     }
 
-    private func approval(_ p: PluginManifest.Permissions, fingerprint: String = "aa", dev: Bool = false) -> PluginApproval {
+    private func approval(_ p: PluginManifest.Permissions, fingerprint: String = "aa", dev: Bool = false,
+                          hashes: [String: String] = [:]) -> PluginApproval {
         PluginApproval(fingerprint: fingerprint, permissions: p, commandPaths: [:],
-                       enabledSpaces: [], developmentMode: dev, approvedAt: Date(timeIntervalSince1970: 0))
+                       enabledSpaces: [], developmentMode: dev, approvedAt: Date(timeIntervalSince1970: 0),
+                       fileHashes: hashes)
     }
 
     // MARK: Fingerprint
@@ -342,10 +346,45 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
 
     @Test func changedFilesPauseWithoutDevelopmentMode() throws {
         let m = try onePassword()
+        let approved = ["background.ts": "1"], edited = ["background.ts": "2"]
+        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb", fileHashes: edited,
+                                      approval: approval(m.permissions, dev: false, hashes: approved)) == .changed)
+        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb", fileHashes: edited,
+                                      approval: approval(m.permissions, dev: true, hashes: approved)) == .approved)
+        // Without per-file hashes on either side, development mode can't tell code from packages.
         #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb",
-                                      approval: approval(m.permissions, dev: false)) == .changed)
-        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb",
-                                      approval: approval(m.permissions, dev: true)) == .approved)
+                                      approval: approval(m.permissions, dev: true, hashes: approved)) == .changed)
+        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb", fileHashes: edited,
+                                      approval: approval(m.permissions, dev: true)) == .changed)
+    }
+
+    /// Package changes need a new approval even in development mode (Singularity installed them,
+    /// outside the sandbox); edits to the plugin's own code don't.
+    @Test func packageChangesNeedApprovalEvenInDevelopmentMode() throws {
+        let m = try onePassword()
+        let approved = ["background.ts": "1", "package.json": "p", "bun.lock": "l",
+                        "node_modules/a/index.js": "a", "lib/node_modules/b/index.js": "b"]
+        func status(_ change: (inout [String: String]) -> Void) -> PluginStatus {
+            var now = approved
+            change(&now)
+            return PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb", fileHashes: now,
+                                         approval: approval(m.permissions, dev: true, hashes: approved))
+        }
+        #expect(status { $0["background.ts"] = "2" } == .approved)
+        #expect(status { $0["new.ts"] = "n" } == .approved)
+        #expect(status { $0["package.json"] = "p2" } == .changed)
+        #expect(status { $0["bun.lock"] = "l2" } == .changed)
+        #expect(status { $0["bun.lock"] = nil } == .changed)
+        #expect(status { $0["package.json"] = nil } == .changed)
+        #expect(status { $0["node_modules/a/index.js"] = "a2" } == .changed)
+        #expect(status { $0["node_modules/b/index.js"] = "new" } == .changed)
+        #expect(status { $0["node_modules/a/index.js"] = nil } == .changed)
+        #expect(status { $0["lib/node_modules/b/index.js"] = "b2" } == .changed)
+        // Widening still wins over a package change.
+        var wider = m.permissions; wider.commands["gh"] = ["pr list"]
+        var now = approved; now["bun.lock"] = "l2"
+        #expect(PluginStatus.evaluate(manifest: .success(plugin(m, wider)), fingerprint: "bb", fileHashes: now,
+                                      approval: approval(m.permissions, dev: true, hashes: approved)) == .permissionsWidened)
     }
 
     @Test func widenedPermissionsAlwaysAsk() throws {
@@ -682,3 +721,363 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(kill(pid, 0) == -1 && errno == ESRCH)
     }
 }
+
+// MARK: - npm packages (Task 9)
+
+/// `Fixtures/bun-lock/*.lock` were generated by Bun 1.4.4 (`bun install`) for one dependency of
+/// each kind: registry (registry.lock: @types/node, chalk, is-number), file:, link:, github:,
+/// git+file: (git.lock; path shortened), remote tarball URL, local tarball, npm: alias,
+/// workspace:, and a registry other than npmjs (mirror.lock, BUN_CONFIG_REGISTRY=npmmirror).
+@Suite struct PluginPackagesTests {
+    private var fixtures: URL {
+        URL(filePath: #filePath).deletingLastPathComponent().appending(path: "Fixtures")
+    }
+
+    private func tempPlugin(id: String = "t") throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "sing-pkg-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: id, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("// stub".utf8).write(to: dir.appending(path: "background.ts"))
+        try Data("""
+        {"id":"\(id)","name":"T","version":"1","description":"d","author":"a","background":"background.ts","permissions":{}}
+        """.utf8).write(to: dir.appending(path: "plugin.json"))
+        return dir
+    }
+
+    private func copyWithDeps() throws -> URL {
+        let dest = FileManager.default.temporaryDirectory
+            .appending(path: "sing-pkg-\(UUID().uuidString)", directoryHint: .isDirectory)
+            .appending(path: "with-deps", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: fixtures.appending(path: "plugins/with-deps"), to: dest)
+        return dest
+    }
+
+    /// A plugin folder with `dependencies` and, optionally, a lockfile from the fixtures.
+    private func error(dependencies: String, lock: String?) throws -> PluginError? {
+        let dir = try tempPlugin()
+        try Data(#"{"name":"t","dependencies":\#(dependencies)}"#.utf8).write(to: dir.appending(path: "package.json"))
+        if let lock {
+            try FileManager.default.copyItem(at: fixtures.appending(path: "bun-lock/\(lock).lock"),
+                                             to: dir.appending(path: "bun.lock"))
+        }
+        do { _ = try PluginManifest.load(from: dir); return nil } catch { return error }
+    }
+
+    @Test func packagesListed() throws {
+        let folder = fixtures.appending(path: "plugins/with-deps", directoryHint: .isDirectory)
+        #expect(try PluginPackages.list(folder: folder) == [PluginPackage(name: "is-number", version: "7.0.0"),
+                                                             PluginPackage(name: "is-odd", version: "3.0.1")])
+        // is-odd brings its own is-number 6.0.0 (nested "is-odd/is-number").
+        #expect(try PluginPackages.check(folder: folder).lockedCount == 3)
+        #expect(try PluginManifest.load(from: folder).id == "with-deps")
+    }
+
+    @Test func lockfileRequired() throws {
+        let folder = try copyWithDeps()
+        try FileManager.default.removeItem(at: folder.appending(path: "bun.lock"))
+        #expect(throws: PluginError.missingLockfile) { try PluginPackages.list(folder: folder) }
+        #expect(throws: PluginError.missingLockfile) { _ = try PluginManifest.load(from: folder) }
+    }
+
+    @Test func noPackageJSONMeansNoPackages() throws {
+        let folder = try tempPlugin()
+        #expect(try PluginPackages.list(folder: folder) == [])
+        #expect(try PluginPackages.check(folder: folder) == PluginPackages.Summary(packages: [], lockedCount: 0))
+        try Data(#"{"name":"t","dependencies":{}}"#.utf8).write(to: folder.appending(path: "package.json"))
+        #expect(try PluginPackages.list(folder: folder) == [])
+    }
+
+    @Test func onlyExactRegistryVersions() throws {
+        for spec in ["^7.0.0", "~7.0.0", ">=7.0.0", "7.x", "7", "7.0", "*", "", "latest", "next", "v7.0.0", "=7.0.0",
+                     "7.0.0 - 8.0.0", "7.0.0 || 8.0.0", "07.0.0", "7.0.0-", "7.0.0-01",
+                     "file:../../..", "link:../x", "workspace:*", "git+https://github.com/a/b.git", "git://x/y",
+                     "github:a/b", "a/b", "https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz",
+                     "npm:is-number@7.0.0", "catalog:", "portal:../x"] {
+            #expect(try error(dependencies: #"{"is-number":"\#(spec)"}"#, lock: "registry") == .unsupportedPackage("is-number"),
+                    "\(spec)")
+        }
+        for version in ["7.0.0", "0.0.1", "10.20.30", "1.0.0-beta.1", "1.0.0-rc.0+build.5", "1.0.0+20130313144700"] {
+            #expect(PluginPackages.isExactVersion(version), "\(version)")
+        }
+        // Not a string, or not a package name.
+        #expect(try error(dependencies: #"{"is-number":7}"#, lock: "registry") == .unsupportedPackage("is-number"))
+        for name in ["../x", "a/b", ".x", "_x", "@s", "@s/", "@/x", "@s/x/y", "a b"] {
+            #expect(try error(dependencies: #"{"\#(name)":"1.0.0"}"#, lock: "registry") == .unsupportedPackage(name), "\(name)")
+        }
+    }
+
+    @Test func otherDependencyGroupsRefused() throws {
+        for key in ["devDependencies", "optionalDependencies", "peerDependencies", "overrides", "resolutions",
+                    "patchedDependencies"] {
+            let dir = try tempPlugin()
+            try Data(#"{"name":"t","\#(key)":{"is-number":"7.0.0"}}"#.utf8).write(to: dir.appending(path: "package.json"))
+            #expect(throws: PluginError.unsupportedPackage(key)) { _ = try PluginManifest.load(from: dir) }
+        }
+        let dir = try tempPlugin()
+        try Data(#"{"name":"t","workspaces":["packages/*"]}"#.utf8).write(to: dir.appending(path: "package.json"))
+        #expect(throws: PluginError.unsupportedPackage("workspaces")) { _ = try PluginManifest.load(from: dir) }
+        // Empty groups are fine.
+        try Data(#"{"name":"t","devDependencies":{},"workspaces":[],"dependencies":null}"#.utf8)
+            .write(to: dir.appending(path: "package.json"))
+        #expect(try PluginPackages.list(folder: dir) == [])
+    }
+
+    @Test func npmrcForbidden() throws {
+        let folder = try copyWithDeps()
+        try Data("registry=https://evil.example/\n".utf8).write(to: folder.appending(path: ".npmrc"))
+        #expect(throws: PluginError.forbiddenFile(".npmrc")) { _ = try PluginManifest.load(from: folder) }
+        // Even without any packages, and even as a link.
+        let plain = try tempPlugin()
+        try FileManager.default.createSymbolicLink(atPath: plain.appending(path: ".npmrc").path, withDestinationPath: "/nonexistent")
+        #expect(throws: PluginError.forbiddenFile(".npmrc")) { _ = try PluginManifest.load(from: plain) }
+        #expect(PluginError.forbiddenFile(".npmrc").userMessage.contains(".npmrc"))
+    }
+
+    @Test func registryLockfileAccepted() throws {
+        #expect(try error(dependencies: #"{"@types/node":"20.11.0","chalk":"4.1.2","is-number":"7.0.0"}"#,
+                          lock: "registry") == nil)
+    }
+
+    /// Each lockfile has one non-registry entry; package.json names an exact version so only the
+    /// lockfile check can catch it.
+    @Test func nonRegistryLockfileEntriesRefused() throws {
+        let cases: [(lock: String, name: String, key: String)] = [
+            ("file", "localpkg", "localpkg"), ("link", "localpkg", "localpkg"), ("github", "is-number", "is-number"),
+            ("git", "gitpkg", "gitpkg"), ("tarball", "is-number", "is-number"), ("local-tarball", "gitpkg", "gitpkg"),
+            ("alias", "isnum", "isnum"), ("workspace", "inner", "inner"), ("mirror", "is-number", "is-number"),
+        ]
+        for c in cases {
+            #expect(try error(dependencies: #"{"\#(c.name)":"7.0.0"}"#, lock: c.lock) == .unsupportedPackage(c.key), "\(c.lock)")
+        }
+    }
+
+    @Test func lockfileMustMatchPackageJSON() throws {
+        let deps = #"{"@types/node":"20.11.0","chalk":"4.1.2","is-number":"7.0.0"}"#
+        // package.json asks for another version than the lockfile has.
+        #expect(try error(dependencies: #"{"@types/node":"20.11.0","chalk":"4.1.1","is-number":"7.0.0"}"#,
+                          lock: "registry") == .unsupportedPackage("chalk"))
+        // A dependency the lockfile doesn't have, or one it has that package.json doesn't.
+        #expect(try error(dependencies: #"{"@types/node":"20.11.0","chalk":"4.1.2","is-number":"7.0.0","x":"1.0.0"}"#,
+                          lock: "registry") == .unsupportedPackage("x"))
+        #expect(try error(dependencies: #"{"chalk":"4.1.2","is-number":"7.0.0"}"#, lock: "registry")
+                == .unsupportedPackage("@types/node"))
+
+        // Root section agrees with package.json, but the package entry is locked at another version.
+        func edited(_ change: (String) -> String) throws -> PluginError? {
+            let dir = try tempPlugin()
+            try Data(#"{"name":"t","dependencies":\#(deps)}"#.utf8).write(to: dir.appending(path: "package.json"))
+            let text = try String(contentsOf: fixtures.appending(path: "bun-lock/registry.lock"), encoding: .utf8)
+            try Data(change(text).utf8).write(to: dir.appending(path: "bun.lock"))
+            do { _ = try PluginManifest.load(from: dir); return nil } catch { return error }
+        }
+        #expect(try edited { $0.replacingOccurrences(of: #""chalk@4.1.2""#, with: #""chalk@4.1.3""#) } == .unsupportedPackage("chalk"))
+        // A key that doesn't name a package, or names a path out of node_modules.
+        #expect(try edited { $0.replacingOccurrences(of: #""has-flag": ["has-flag@4.0.0""#, with: #""../../x": ["has-flag@4.0.0""#) }
+                == .unsupportedPackage("../../x"))
+        #expect(try edited { $0.replacingOccurrences(of: #""has-flag": ["#, with: #""supports-color/../has-flag": ["#) }
+                == .unsupportedPackage("supports-color/../has-flag"))
+        // Extra top-level sections and extra workspaces.
+        #expect(try edited { $0.replacingOccurrences(of: #""packages": {"#, with: #""overrides": { "x": "1.0.0" }, "packages": {"#) }
+                == .unsupportedPackage("bun.lock: overrides"))
+        #expect(try edited { $0.replacingOccurrences(of: #""workspaces": {"#, with: #""workspaces": { "../other": { "name": "o" },"#) }
+                == .unsupportedPackage("bun.lock: workspace ../other"))
+        #expect(try edited { $0.replacingOccurrences(of: #""name": "registry","#, with: #""name": "registry", "devDependencies": { "a": "1.0.0" },"#) }
+                == .unsupportedPackage("devDependencies"))
+        // Not parseable, or a format version we don't know.
+        if case .invalidJSON(let text)? = try edited({ String($0.dropLast(3)) }) {
+            #expect(text.hasPrefix("bun.lock:"))
+            #expect(PluginError.invalidJSON(text).userMessage == "bun.lock isn't valid")
+        } else { Issue.record("truncated lockfile") }
+        if case .invalidJSON? = try edited({ $0.replacingOccurrences(of: #""lockfileVersion": 2"#, with: #""lockfileVersion": 9"#) }) {} else {
+            Issue.record("unknown version")
+        }
+        // A duplicate key: Singularity could check one entry while Bun installs the other.
+        if case .invalidJSON? = try edited({ $0.replacingOccurrences(of: #""packages": {"#, with: #""packages": { "chalk": ["chalk@9.9.9", "", {}, "sha512-x"],"#) }) {} else {
+            Issue.record("duplicate key")
+        }
+        #expect(try edited { $0 } == nil)
+    }
+
+    @Test func jsonText() throws {
+        #expect(try JSONText.parse(Data(#"{"a":[1,-2.5e3,true,false,null,"é😀\n"]}"#.utf8))
+                == .object(["a": .array([.number(1), .number(-2500), .bool(true), .bool(false), .null, .string("é😀\n")])]))
+        // JSONC: trailing commas and comments, only when allowed.
+        let jsonc = Data("{ // c\n \"a\": [1, 2,], /* b */ \"b\": {},\n}".utf8)
+        #expect(try JSONText.parse(jsonc, allowJSONC: true) == .object(["a": .array([.number(1), .number(2)]), "b": .object([:])]))
+        #expect(throws: JSONText.ParseError.self) { try JSONText.parse(jsonc) }
+        #expect(throws: JSONText.ParseError.self) { try JSONText.parse(Data(#"{"a":1,}"#.utf8)) }
+        for bad in [#"{"a":1,"a":2}"#, #"{"a":01}"#, #"{'a':1}"#, #"{a:1}"#, #"[1 2]"#, #""\x""#, "\"a\u{1}\"", #""\ud800""#,
+                    #"{"a":1} x"#, "", "/* open", #"[,]"#, #"{,}"#, "NaN"] {
+            #expect(throws: JSONText.ParseError.self, "\(bad)") { try JSONText.parse(Data(bad.utf8), allowJSONC: true) }
+        }
+        #expect(throws: JSONText.ParseError.self) { try JSONText.parse(Data([0x22, 0xFF, 0x22])) }  // invalid UTF-8
+        let deep = String(repeating: "[", count: 100) + String(repeating: "]", count: 100)
+        #expect(throws: JSONText.ParseError.self) { try JSONText.parse(Data(deep.utf8)) }
+        // Every generated lockfile parses.
+        for name in try FileManager.default.contentsOfDirectory(atPath: fixtures.appending(path: "bun-lock").path) {
+            _ = try JSONText.parse(Data(contentsOf: fixtures.appending(path: "bun-lock/\(name)")), allowJSONC: true)
+        }
+    }
+
+    @Test func sheetLinesMentionPackages() throws {
+        let folder = fixtures.appending(path: "plugins/with-deps", directoryHint: .isDirectory)
+        let review = try PluginReview.prepare(scan: PluginScan.scan(folder: folder)) { _ in nil }.get()
+        #expect(review.packages.packages.map(\.name) == ["is-number", "is-odd"])
+        #expect(review.permissionLines == ["Installs 2 packages from the npm registry (3 with the packages they use)",
+                                           "Never uses the internet"])
+        let one = PluginPackages.Summary(packages: [PluginPackage(name: "a", version: "1.0.0")], lockedCount: 1)
+        #expect(PermissionDescriptions.lines(for: .init(), commandPaths: [:], packages: one)
+                == ["Installs 1 package from the npm registry", "Never uses the internet"])
+        #expect(PermissionDescriptions.lines(for: .init(), commandPaths: [:]) == ["Never uses the internet"])
+    }
+
+    /// What `PluginManager.approve` relies on: the approval records the folder as it is after the
+    /// install, so the refresh the file watcher queues for the install's own writes (it runs after
+    /// approve, in the plugin's queue) finds it approved, in or out of development mode; the
+    /// folder before the install no longer matches; and code edited while installing is noticed.
+    @Test func approvalRecordsTheInstalledFolder() throws {
+        let folder = try copyWithDeps()
+        let before = PluginScan.scan(folder: folder)
+        let pre = try before.files.get()
+        // Pretend to install.
+        for (path, text) in ["node_modules/is-number/index.js": "n", "node_modules/is-odd/index.js": "o",
+                             "node_modules/is-odd/node_modules/is-number/index.js": "n6"] {
+            let url = folder.appending(path: path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        let after = PluginScan.scan(folder: folder)
+        let post = try after.files.get()
+        #expect(PluginPackages.sameOutsideNodeModules(pre.fileHashes, post.fileHashes))
+        let manifest = try #require(after.validManifest)
+        for dev in [false, true] {
+            let approval = PluginApproval(fingerprint: post.fingerprint, permissions: manifest.permissions, commandPaths: [:],
+                                          enabledSpaces: [UUID()], developmentMode: dev, approvedAt: Date(),
+                                          fileHashes: post.fileHashes)
+            #expect(PluginScan.scan(folder: folder).status(approval: approval) == .approved)
+            #expect(before.status(approval: approval) == .changed)
+        }
+        // Code changed during the install: not what the sheet showed.
+        try Data("// changed".utf8).write(to: folder.appending(path: "background.ts"))
+        #expect(!PluginPackages.sameOutsideNodeModules(pre.fileHashes, try PluginFingerprint.fileHashes(folder: folder)))
+    }
+
+    @Test func installWithoutPackagesDeletesShippedNodeModules() async throws {
+        let folder = try tempPlugin()
+        let file = folder.appending(path: "node_modules/x/index.js")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("shipped".utf8).write(to: file)
+        let result = await PluginPackages.install(folder: folder, runtime: URL(filePath: "/nonexistent/bun"),
+                                                  hostFolder: URL(filePath: "/nonexistent"), cacheFolder: folder.appending(path: "c"))
+        #expect(result.outcome == .nothingToInstall)
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "node_modules").path))
+    }
+
+    /// Only the package.json and bun.lock the approval sheet showed are installed.
+    @Test func installRefusesFilesOtherThanTheReviewedOnes() async throws {
+        let folder = try copyWithDeps()
+        let shown = try PluginFingerprint.fileHashes(folder: folder)
+        let lock = folder.appending(path: "bun.lock")
+        try Data((try String(contentsOf: lock, encoding: .utf8) + "\n").utf8).write(to: lock)
+        try FileManager.default.createDirectory(at: folder.appending(path: "node_modules/x"), withIntermediateDirectories: true)
+        let result = await PluginPackages.install(folder: folder, expectedFileHashes: shown, runtime: URL(filePath: "/nonexistent/bun"),
+                                                  hostFolder: URL(filePath: "/nonexistent"),
+                                                  cacheFolder: folder.deletingLastPathComponent().appending(path: "cache"))
+        #expect(result.outcome == .filesChanged)
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "node_modules").path))
+        // A package.json that appeared after the review counts too.
+        let plain = try tempPlugin()
+        let shownPlain = try PluginFingerprint.fileHashes(folder: plain)
+        try Data(#"{"dependencies":{}}"#.utf8).write(to: plain.appending(path: "package.json"))
+        let second = await PluginPackages.install(folder: plain, expectedFileHashes: shownPlain, runtime: URL(filePath: "/nonexistent/bun"),
+                                                  hostFolder: URL(filePath: "/nonexistent"), cacheFolder: plain.appending(path: "c"))
+        #expect(second.outcome == .filesChanged)
+    }
+
+    @Test func installFailureLeavesNoNodeModules() async throws {
+        let folder = try copyWithDeps()
+        try FileManager.default.createDirectory(at: folder.appending(path: "node_modules/x"), withIntermediateDirectories: true)
+        let result = await PluginPackages.install(folder: folder, runtime: URL(filePath: "/nonexistent/bun"),
+                                                  hostFolder: URL(filePath: "/nonexistent"),
+                                                  cacheFolder: folder.deletingLastPathComponent().appending(path: "cache"))
+        #expect(result.outcome == .failed)
+        #expect(!result.message.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "node_modules").path))
+    }
+
+    @Test func installCommandIsLockedDown() {
+        let args = PluginPackages.installArguments(hostFolder: "/App/plugin-host")
+        #expect(Array(args.prefix(3)) == ["--config=/App/plugin-host/bunfig.toml", "--no-env-file", "install"])
+        for flag in ["--frozen-lockfile", "--ignore-scripts", "--production", "--registry=https://registry.npmjs.org/",
+                     "--linker=hoisted", "--backend=clonefile"] {
+            #expect(args.contains(flag), "\(flag)")
+        }
+        let env = PluginPackages.installEnvironment(home: "/tmp/h", cache: "/S/.cache/bun-install")
+        #expect(Set(env.keys) == ["HOME", "TMPDIR", "LANG", "NO_COLOR", "BUN_INSTALL_CACHE_DIR", "BUN_CONFIG_REGISTRY"])
+        #expect(env["BUN_INSTALL_CACHE_DIR"] == "/S/.cache/bun-install")
+    }
+
+    @Test func removeBinFoldersKeepsEverythingElse() throws {
+        let nm = try tempPlugin().appending(path: "node_modules", directoryHint: .isDirectory)
+        let fm = FileManager.default
+        for dir in [".bin", "a/node_modules/.bin", "a/lib/.bin"] {
+            try fm.createDirectory(at: nm.appending(path: dir), withIntermediateDirectories: true)
+        }
+        try fm.createSymbolicLink(atPath: nm.appending(path: ".bin/semver").path, withDestinationPath: "../semver/bin/semver.js")
+        try PluginPackages.removeBinFolders(in: nm)
+        #expect(!fm.fileExists(atPath: nm.appending(path: ".bin").path))
+        #expect(!fm.fileExists(atPath: nm.appending(path: "a/node_modules/.bin").path))
+        #expect(fm.fileExists(atPath: nm.appending(path: "a/lib/.bin").path))   // not directly in node_modules
+    }
+
+    @Test func runUsesGivenEnvironmentAndDirectory() async throws {
+        let dir = try tempPlugin()
+        let result = await CommandBroker.run(path: "/bin/sh", arguments: ["-c", "pwd -P; echo \"$ONLY\"; env | wc -l"],
+                                             timeout: .seconds(5), environment: ["ONLY": "yes"], currentDirectory: dir)
+        let lines = result.stdout.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        _ = realpath(dir.path, &buffer)
+        #expect(lines.first == String(cString: buffer))
+        #expect(lines.dropFirst().first == "yes")
+        // sh adds PWD, SHLVL and _ of its own; nothing from the test runner's environment.
+        #expect((Int(lines.last ?? "") ?? 99) <= 4)
+    }
+
+    /// Real `bun install` against registry.npmjs.org. Needs the network, so it only runs with
+    /// SINGULARITY_NETWORK_TESTS=1. The plugin folder also holds a bunfig.toml and a .env that
+    /// point the registry at a closed port: the install only works if neither is used.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SINGULARITY_NETWORK_TESTS"] == "1"
+                   && FileManager.default.isExecutableFile(atPath: installBun.path)),
+          .timeLimit(.minutes(4)))
+    func installFromRegistry() async throws {
+        let folder = try copyWithDeps()
+        try Data("[install]\nregistry = \"http://127.0.0.1:9/\"\n".utf8).write(to: folder.appending(path: "bunfig.toml"))
+        try Data("BUN_CONFIG_REGISTRY=http://127.0.0.1:9/\nNPM_CONFIG_REGISTRY=http://127.0.0.1:9/\n".utf8)
+            .write(to: folder.appending(path: ".env"))
+        let lockBefore = try Data(contentsOf: folder.appending(path: "bun.lock"))
+        let cache = folder.deletingLastPathComponent().appending(path: "cache", directoryHint: .isDirectory)
+        let result = await PluginPackages.install(folder: folder, expectedFileHashes: try PluginFingerprint.fileHashes(folder: folder),
+                                                  runtime: installBun,
+                                                  hostFolder: installRepo.appending(path: "Resources/plugin-host"),
+                                                  cacheFolder: cache)
+        #expect(result.outcome == .installed, "\(result.message)\n\(result.output)")
+        #expect(result.message == "Installed 2 packages")
+        // The staging folder is gone; only the plugin and the cache are left.
+        #expect(Set(try FileManager.default.contentsOfDirectory(atPath: folder.deletingLastPathComponent().path))
+                == ["with-deps", "cache"])
+        let fm = FileManager.default
+        #expect(fm.fileExists(atPath: folder.appending(path: "node_modules/is-odd/index.js").path))
+        #expect(fm.fileExists(atPath: folder.appending(path: "node_modules/is-odd/node_modules/is-number/index.js").path))
+        #expect(try Data(contentsOf: folder.appending(path: "bun.lock")) == lockBefore)
+        #expect(try fm.contentsOfDirectory(atPath: cache.path).isEmpty == false)
+        // No symlinks left, so the folder can be fingerprinted and approved.
+        let scan = PluginScan.scan(folder: folder)
+        #expect(scan.validManifest != nil)
+    }
+}
+
+private let installRepo = URL(filePath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+private let installBun = installRepo.appending(path: "Vendor/bun/bun")

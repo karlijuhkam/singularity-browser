@@ -1,0 +1,9 @@
+{
+  "id": "with-deps",
+  "name": "With packages",
+  "version": "0.1.0",
+  "description": "Test plugin for PluginTests: declares two npm packages, pinned in bun.lock.",
+  "author": "Singularity tests",
+  "background": "background.ts",
+  "permissions": {}
+}

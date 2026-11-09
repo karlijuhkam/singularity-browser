@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "t",
+      "dependencies": {
+        "gitpkg": "file:../pkg.tgz",
+      },
+    },
+  },
+  "packages": {
+    "gitpkg": ["gitpkg@../pkg.tgz", {}, "sha512-jP9i18FG53LScilHn8h3KsOeMXn05NkQuOA2q4n3J65MUJqriY43EDhxqzIHSkxR3hhquIc3xrThCT3dgBGn3g=="],
+  }
+}

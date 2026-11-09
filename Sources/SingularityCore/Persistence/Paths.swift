@@ -9,6 +9,7 @@ import Foundation
 ///     ├─ plugins/<id>/              one folder per plugin (plugin.json, sources)
 ///     ├─ plugins-data/<id>/         a plugin's own data folder
 ///     ├─ plugins-state.json         plugin approvals and per-Space switches
+///     ├─ .cache/bun-install/        Bun's package cache for installing plugins' npm packages
 ///     └─ spaces/<slug>/
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
@@ -37,6 +38,12 @@ public struct Paths: Sendable {
     public var pluginsDirectory: URL { root.appending(path: "plugins", directoryHint: .isDirectory) }
     /// Plugin approvals and per-Space switches.
     public var pluginStateFile: URL { root.appending(path: "plugins-state.json") }
+
+    /// Bun's package cache for `bun install` at plugin approval. Deliberately not inside any
+    /// plugin's data folder (plugins can write there, so they could plant cache entries).
+    public var bunInstallCacheDirectory: URL {
+        root.appending(path: ".cache/bun-install", directoryHint: .isDirectory)
+    }
 
     /// The one folder a plugin's background program may write to.
     public func pluginsDataDirectory(_ id: String) -> URL {

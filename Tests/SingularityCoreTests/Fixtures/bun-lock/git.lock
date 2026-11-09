@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "g",
+      "dependencies": {
+        "gitpkg": "git+file:///tmp/gitrepo",
+      },
+    },
+  },
+  "packages": {
+    "gitpkg": ["gitpkg@git+file:///tmp/gitrepo#a71232509d879946a223f9296f52ff31823b9fe5", {}, "a71232509d879946a223f9296f52ff31823b9fe5"],
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "ws",
+      "dependencies": {
+        "inner": "workspace:*",
+      },
+    },
+    "packages/inner": {
+      "name": "inner",
+      "version": "1.0.0",
+    },
+  },
+  "packages": {
+    "inner": ["inner@workspace:packages/inner"],
+  }
+}
