@@ -15,6 +15,8 @@ public enum PluginError: Error, Equatable, Sendable {
     case pageSiteNotPermitted(String)
     /// A symlink inside a plugin folder (it could point outside the plugin); the path is relative.
     case symlinkNotAllowed(String)
+    /// A FIFO, socket or device inside a plugin folder; the path is relative.
+    case unsupportedFile(String)
 }
 
 /// Host comparison helpers shared by site patterns and the 1Password fill guard.

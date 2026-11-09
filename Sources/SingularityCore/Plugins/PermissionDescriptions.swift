@@ -4,7 +4,7 @@ import Foundation
 public enum PermissionDescriptions {
     public static func lines(for permissions: PluginManifest.Permissions, commandPaths: [String: String]) -> [String] {
         func sites(_ list: [String]) -> String {
-            list == ["<all_urls>"] ? "on all sites" : "on " + list.joined(separator: ", ")
+            list.contains("<all_urls>") ? "on all sites" : "on " + list.joined(separator: ", ")
         }
         var out: [String] = []
         if !permissions.pageAdditions.isEmpty { out.append("Adds buttons to pages " + sites(permissions.pageAdditions)) }

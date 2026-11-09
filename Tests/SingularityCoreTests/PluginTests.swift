@@ -261,16 +261,45 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(before.count == 64)
         #expect(before == (try PluginFingerprint.compute(folder: folder)))
 
-        let nm = folder.appending(path: "node_modules/x", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: nm, withIntermediateDirectories: true)
-        try "junk".write(to: nm.appending(path: "index.js"), atomically: true, encoding: .utf8)
         try "x".write(to: folder.appending(path: ".DS_Store"), atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(at: folder.appending(path: ".git"), withIntermediateDirectories: true)
         try "x".write(to: folder.appending(path: ".git/HEAD"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: folder.appending(path: "lib"), withIntermediateDirectories: true)
+        try "x".write(to: folder.appending(path: "lib/.DS_Store"), atomically: true, encoding: .utf8)
+        // Top-level .git and .DS_Store files never count.
+        #expect(try PluginFingerprint.compute(folder: folder) == before)
+
+        // node_modules counts at every depth, and a nested .git counts.
+        let nm = folder.appending(path: "node_modules/x", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: nm, withIntermediateDirectories: true)
+        try "junk".write(to: nm.appending(path: "index.js"), atomically: true, encoding: .utf8)
+        try "// edit".write(to: nm.appending(path: "index.js"), atomically: true, encoding: .utf8)
+        let afterTop = try PluginFingerprint.compute(folder: folder)
+        #expect(afterTop != before)
+        let nested = folder.appending(path: "lib/node_modules/x", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try "a".write(to: nested.appending(path: "index.js"), atomically: true, encoding: .utf8)
+        let afterNested = try PluginFingerprint.compute(folder: folder)
+        #expect(afterNested != afterTop)
+        try FileManager.default.createDirectory(at: folder.appending(path: "lib/.git"), withIntermediateDirectories: true)
+        try "p".write(to: folder.appending(path: "lib/.git/p.js"), atomically: true, encoding: .utf8)
+        #expect(try PluginFingerprint.compute(folder: folder) != afterNested)
+        try? FileManager.default.removeItem(at: nm)
+        try? FileManager.default.removeItem(at: folder.appending(path: "lib"))
         #expect(try PluginFingerprint.compute(folder: folder) == before)
 
         try "// edited".write(to: folder.appending(path: "page.ts"), atomically: true, encoding: .utf8)
         #expect(try PluginFingerprint.compute(folder: folder) != before)
+    }
+
+    @Test func fingerprintRefusesSymlinkedRootAndSpecialFiles() throws {
+        let folder = try copyFixture("ok-1password")
+        let link = try tempDir().appending(path: "ok-1password")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
+        #expect(throws: PluginError.symlinkNotAllowed(".")) { _ = try PluginFingerprint.compute(folder: link) }
+
+        #expect(Darwin.mkfifo(folder.appending(path: "pipe").path, 0o600) == 0)
+        #expect(throws: PluginError.unsupportedFile("pipe")) { _ = try PluginFingerprint.compute(folder: folder) }
     }
 
     @Test func fingerprintCountsDotfilesAndNewFiles() throws {
@@ -369,10 +398,13 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         let store = PluginStateStore(file: file)
         #expect(store.load().isEmpty) // missing
         let a = PluginApproval(fingerprint: "ff", permissions: try onePassword().permissions,
-                               commandPaths: ["op": "/opt/homebrew/bin/op"], enabledSpaces: [UUID()],
-                               developmentMode: true, approvedAt: Date(timeIntervalSince1970: 1_700_000_000))
+                               commandPaths: ["op": "/opt/homebrew/bin/op"], enabledSpaces: [UUID(), UUID(), UUID()],
+                               developmentMode: true, approvedAt: Date())
         try store.save(["ok-1password": a])
         #expect(store.load() == ["ok-1password": a])
+        let first = try Data(contentsOf: file)
+        try store.save(store.load())
+        #expect(try Data(contentsOf: file) == first) // stable bytes
         try "{ not json".write(to: file, atomically: true, encoding: .utf8)
         #expect(store.load().isEmpty) // corrupt
     }
@@ -435,17 +467,27 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         """
         try script.write(to: plugin.appending(path: "t.ts"), atomically: true, encoding: .utf8)
 
+        func run(_ exe: String, _ args: [String]) throws -> String {
+            let proc = Process()
+            proc.executableURL = URL(filePath: exe)
+            proc.arguments = args
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = pipe
+            proc.currentDirectoryURL = data
+            try proc.run()
+            let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            proc.waitUntilExit()
+            return text
+        }
+        let scriptPath = plugin.appending(path: "t.ts").path
+        // Control: the same script without a sandbox proves the probes work (network is not asserted: may be offline).
+        let control = Set(try run(bunPath.path, ["run", scriptPath]).split(separator: "\n").map(String.init))
+        #expect(control.contains("home:allowed") && control.contains("spawn:allowed"), Comment(rawValue: "\(control)"))
+        try? FileManager.default.removeItem(at: plugin.appending(path: "evil.txt"))
+
         let profile = SandboxProfile.make(pluginFolder: plugin, dataFolder: data, runtime: bunPath)
-        let proc = Process()
-        proc.executableURL = URL(filePath: "/usr/bin/sandbox-exec")
-        proc.arguments = ["-p", profile, bunPath.path, "run", plugin.appending(path: "t.ts").path]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
-        proc.currentDirectoryURL = data
-        try proc.run()
-        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        proc.waitUntilExit()
+        let output = try run("/usr/bin/sandbox-exec", ["-p", profile, bunPath.path, "run", scriptPath])
         let lines = Set(output.split(separator: "\n").map(String.init))
         #expect(lines.contains("ok"), Comment(rawValue: output))
         #expect(lines.contains("data:allowed"), Comment(rawValue: output))
@@ -468,6 +510,8 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
                           "Fills login forms on all sites",
                           "Runs /opt/homebrew/bin/op (only: item list, item get)",
                           "Never uses the internet"])
+        let mixed = PermissionDescriptions.lines(for: .init(pageAdditions: ["https://a.com/*", "<all_urls>"]), commandPaths: [:])
+        #expect(mixed.first == "Adds buttons to pages on all sites")
         let some = PermissionDescriptions.lines(
             for: .init(pageAdditions: ["https://a.com/*", "https://b.com/*"], commands: ["gh": ["pr list"]], network: ["x.com"]),
             commandPaths: [:])

@@ -3,28 +3,35 @@ import Foundation
 
 /// A hash of everything in a plugin folder that could change what it does.
 public enum PluginFingerprint {
-    /// Skipped at any depth: installed packages (pinned by bun.lock, which IS hashed), git data, Finder noise.
-    private static let skipped: Set<String> = ["node_modules", ".git", ".DS_Store"]
-
     /// SHA-256 (lowercase hex) over every file, sorted by relative path (byte order).
+    /// Everything counts, including dotfiles, bun.lock and `node_modules` at every depth: Bun
+    /// resolves `lib/node_modules/x` and imports `./.git/p.js`, so skipping them would let
+    /// unreviewed code run. (Singularity records the fingerprint after installing packages, so
+    /// tampering with installed packages counts as a change.) Only a top-level `.git/` and
+    /// `.DS_Store` files at any depth are skipped.
     /// Each file contributes: path length, path bytes, content length, content bytes (lengths are
     /// 8-byte big-endian), so no two different folders can produce the same byte stream.
-    /// Dotfiles (.npmrc, bunfig.toml...) count. Throws `symlinkNotAllowed` for any symlink,
-    /// because it could point outside the plugin.
+    /// Throws `symlinkNotAllowed` for a symlink (also the folder itself, reported as "."), and
+    /// `unsupportedFile` for anything but regular files and directories (a FIFO would hang the read).
     public static func compute(folder: URL) throws -> String {
         let fm = FileManager.default
         var files: [(path: String, url: URL)] = []
 
+        // attributesOfItem does not follow symlinks, so a link reports .typeSymbolicLink.
+        if try fm.attributesOfItem(atPath: folder.path)[.type] as? FileAttributeType == .typeSymbolicLink {
+            throw PluginError.symlinkNotAllowed(".")
+        }
         func walk(_ dir: URL, _ prefix: String) throws {
-            for name in try fm.contentsOfDirectory(atPath: dir.path) where !skipped.contains(name) {
+            for name in try fm.contentsOfDirectory(atPath: dir.path) {
+                if name == ".DS_Store" || (prefix.isEmpty && name == ".git") { continue }
                 let url = dir.appending(path: name)
                 let rel = prefix.isEmpty ? name : prefix + "/" + name
-                // attributesOfItem does not follow symlinks, so a link reports .typeSymbolicLink.
                 let type = try fm.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType
                 switch type {
                 case .typeSymbolicLink: throw PluginError.symlinkNotAllowed(rel)
                 case .typeDirectory: try walk(url, rel)
-                default: files.append((rel, url))
+                case .typeRegular: files.append((rel, url))
+                default: throw PluginError.unsupportedFile(rel)
                 }
             }
         }
@@ -64,7 +71,42 @@ public struct PluginApproval: Codable, Equatable, Sendable {
         self.commandPaths = commandPaths
         self.enabledSpaces = enabledSpaces
         self.developmentMode = developmentMode
-        self.approvedAt = approvedAt
+        // Stored with millisecond precision, so round here to make a saved value read back equal.
+        self.approvedAt = Date(timeIntervalSince1970: (approvedAt.timeIntervalSince1970 * 1000).rounded() / 1000)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fingerprint, permissions, commandPaths, enabledSpaces, developmentMode, approvedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fingerprint = try c.decode(String.self, forKey: .fingerprint)
+        permissions = try c.decode(PluginManifest.Permissions.self, forKey: .permissions)
+        commandPaths = try c.decode([String: String].self, forKey: .commandPaths)
+        enabledSpaces = Set(try c.decode([UUID].self, forKey: .enabledSpaces))
+        developmentMode = try c.decode(Bool.self, forKey: .developmentMode)
+        approvedAt = try c.decode(Date.self, forKey: .approvedAt)
+    }
+
+    /// `enabledSpaces` is written sorted so the file is stable between saves.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(fingerprint, forKey: .fingerprint)
+        try c.encode(permissions, forKey: .permissions)
+        try c.encode(commandPaths, forKey: .commandPaths)
+        try c.encode(enabledSpaces.sorted { $0.uuidString < $1.uuidString }, forKey: .enabledSpaces)
+        try c.encode(developmentMode, forKey: .developmentMode)
+        try c.encode(approvedAt, forKey: .approvedAt)
+    }
+}
+
+/// ISO-8601 with fractional seconds, so a saved date round-trips.
+private enum StateDates {
+    static func formatter() -> ISO8601DateFormatter {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
     }
 }
 
@@ -77,14 +119,25 @@ public struct PluginStateStore: Sendable {
     public func load() -> [String: PluginApproval] {
         guard let data = try? Data(contentsOf: file) else { return [:] }
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let formatter = StateDates.formatter()
+        decoder.dateDecodingStrategy = .custom { d in
+            let text = try d.singleValueContainer().decode(String.self)
+            guard let date = formatter.date(from: text) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "bad date"))
+            }
+            return date
+        }
         return (try? decoder.decode([String: PluginApproval].self, from: data)) ?? [:]
     }
 
     public func save(_ approvals: [String: PluginApproval]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        let formatter = StateDates.formatter()
+        encoder.dateEncodingStrategy = .custom { date, e in
+            var c = e.singleValueContainer()
+            try c.encode(formatter.string(from: date))
+        }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try encoder.encode(approvals).write(to: file, options: .atomic)
     }
