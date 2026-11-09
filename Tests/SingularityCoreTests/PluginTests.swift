@@ -219,3 +219,259 @@ import Testing
         _ = try PluginManifest.load(from: dir)
     }
 }
+
+// MARK: - Approvals, status, sandbox profile, permission texts
+
+private let repoRoot = URL(filePath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
+
+@Suite struct PluginApprovalTests {
+    private var fixtures: URL {
+        URL(filePath: #filePath).deletingLastPathComponent().appending(path: "Fixtures/plugins")
+    }
+
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "sing-plugin-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Copies a fixture to a temp folder so tests can edit it.
+    private func copyFixture(_ name: String) throws -> URL {
+        let dest = try tempDir().appending(path: name, directoryHint: .isDirectory)
+        try FileManager.default.copyItem(at: fixtures.appending(path: name, directoryHint: .isDirectory), to: dest)
+        return dest
+    }
+
+    private func onePassword() throws -> PluginManifest {
+        try PluginManifest.load(from: fixtures.appending(path: "ok-1password", directoryHint: .isDirectory))
+    }
+
+    private func approval(_ p: PluginManifest.Permissions, fingerprint: String = "aa", dev: Bool = false) -> PluginApproval {
+        PluginApproval(fingerprint: fingerprint, permissions: p, commandPaths: [:],
+                       enabledSpaces: [], developmentMode: dev, approvedAt: Date(timeIntervalSince1970: 0))
+    }
+
+    // MARK: Fingerprint
+
+    @Test func fingerprintChangesWithContent() throws {
+        let folder = try copyFixture("ok-1password")
+        let before = try PluginFingerprint.compute(folder: folder)
+        #expect(before.count == 64)
+        #expect(before == (try PluginFingerprint.compute(folder: folder)))
+
+        let nm = folder.appending(path: "node_modules/x", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: nm, withIntermediateDirectories: true)
+        try "junk".write(to: nm.appending(path: "index.js"), atomically: true, encoding: .utf8)
+        try "x".write(to: folder.appending(path: ".DS_Store"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: folder.appending(path: ".git"), withIntermediateDirectories: true)
+        try "x".write(to: folder.appending(path: ".git/HEAD"), atomically: true, encoding: .utf8)
+        #expect(try PluginFingerprint.compute(folder: folder) == before)
+
+        try "// edited".write(to: folder.appending(path: "page.ts"), atomically: true, encoding: .utf8)
+        #expect(try PluginFingerprint.compute(folder: folder) != before)
+    }
+
+    @Test func fingerprintCountsDotfilesAndNewFiles() throws {
+        let folder = try copyFixture("ok-1password")
+        let base = try PluginFingerprint.compute(folder: folder)
+        try "registry=evil".write(to: folder.appending(path: ".npmrc"), atomically: true, encoding: .utf8)
+        let withNpmrc = try PluginFingerprint.compute(folder: folder)
+        #expect(withNpmrc != base)
+        try "preload=x".write(to: folder.appending(path: "bunfig.toml"), atomically: true, encoding: .utf8)
+        #expect(try PluginFingerprint.compute(folder: folder) != withNpmrc)
+    }
+
+    @Test func fingerprintEncodingIsUnambiguous() throws {
+        // "a"+"bc" vs "ab"+"c" must not collide, and moving content between files changes it.
+        let one = try tempDir(), two = try tempDir()
+        try "bc".write(to: one.appending(path: "a"), atomically: true, encoding: .utf8)
+        try "c".write(to: two.appending(path: "ab"), atomically: true, encoding: .utf8)
+        #expect(try PluginFingerprint.compute(folder: one) != PluginFingerprint.compute(folder: two))
+    }
+
+    @Test func fingerprintRefusesSymlinks() throws {
+        let folder = try copyFixture("ok-1password")
+        try FileManager.default.createSymbolicLink(at: folder.appending(path: "link"),
+                                                   withDestinationURL: URL(filePath: "/etc/hosts"))
+        #expect(throws: PluginError.symlinkNotAllowed("link")) { _ = try PluginFingerprint.compute(folder: folder) }
+    }
+
+    // MARK: Status
+
+    @Test func statusEvaluation() throws {
+        let m = try onePassword()
+        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "aa", approval: nil) == .new)
+        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "aa",
+                                      approval: approval(m.permissions)) == .approved)
+        #expect(PluginStatus.evaluate(manifest: .failure(.missingLockfile), fingerprint: "aa",
+                                      approval: approval(m.permissions)) == .invalid(.missingLockfile))
+        #expect(PluginStatus.evaluate(manifest: .failure(.missingLockfile), fingerprint: "aa", approval: nil)
+                == .invalid(.missingLockfile))
+    }
+
+    @Test func changedFilesPauseWithoutDevelopmentMode() throws {
+        let m = try onePassword()
+        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb",
+                                      approval: approval(m.permissions, dev: false)) == .changed)
+        #expect(PluginStatus.evaluate(manifest: .success(m), fingerprint: "bb",
+                                      approval: approval(m.permissions, dev: true)) == .approved)
+    }
+
+    @Test func widenedPermissionsAlwaysAsk() throws {
+        let m = try onePassword()
+        let approved = m.permissions
+        var newCommand = approved; newCommand.commands["curl2"] = ["x"]
+        var newSub = approved; newSub.commands["op"] = ["item list", "item get", "item delete"]
+        var narrowApproved = approved; narrowApproved.pageAdditions = ["https://a.com/*"]
+        var wideNow = approved; wideNow.pageAdditions = ["https://a.com/*", "https://b.com/*"]
+        for (now, was) in [(newCommand, approved), (newSub, approved), (wideNow, narrowApproved)] {
+            for dev in [false, true] {
+                #expect(PluginStatus.evaluate(manifest: .success(plugin(m, now)), fingerprint: "aa",
+                                              approval: approval(was, dev: dev)) == .permissionsWidened)
+            }
+        }
+        // Fewer permissions is not widening.
+        var fewer = approved; fewer.commands["op"] = ["item list"]; fewer.fillForms = []
+        #expect(!fewer.widens(approved))
+        var none = PluginManifest.Permissions()
+        #expect(!none.widens(approved))
+        none.commands = [:]
+        #expect(PluginStatus.evaluate(manifest: .success(plugin(m, fewer)), fingerprint: "aa",
+                                      approval: approval(approved)) == .approved)
+    }
+
+    @Test func wideningDetails() {
+        let base = PluginManifest.Permissions(pageAdditions: ["https://a.com/*"], fillForms: [],
+                                              commands: ["op": ["item get"]], network: [])
+        // <all_urls> already approved covers any site.
+        let all = PluginManifest.Permissions(pageAdditions: ["<all_urls>"])
+        #expect(!PluginManifest.Permissions(pageAdditions: ["https://z.com/*"]).widens(all))
+        #expect(PluginManifest.Permissions(pageAdditions: ["<all_urls>"]).widens(base))
+        #expect(PluginManifest.Permissions(fillForms: ["https://a.com/*"]).widens(base))
+        #expect(PluginManifest.Permissions(network: ["x.com"]).widens(base))
+        #expect(!PluginManifest.Permissions(network: ["x.com"]).widens(
+            PluginManifest.Permissions(network: ["x.com", "y.com"])))
+        #expect(PluginManifest.Permissions(commands: ["gh": ["pr list"]]).widens(base))
+        #expect(!base.widens(base))
+    }
+
+    private func plugin(_ m: PluginManifest, _ p: PluginManifest.Permissions) -> PluginManifest {
+        var copy = m; copy.permissions = p; return copy
+    }
+
+    // MARK: State store
+
+    @Test func stateStoreRoundTripAndTolerance() throws {
+        let dir = try tempDir()
+        let file = dir.appending(path: "sub/plugins-state.json")
+        let store = PluginStateStore(file: file)
+        #expect(store.load().isEmpty) // missing
+        let a = PluginApproval(fingerprint: "ff", permissions: try onePassword().permissions,
+                               commandPaths: ["op": "/opt/homebrew/bin/op"], enabledSpaces: [UUID()],
+                               developmentMode: true, approvedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        try store.save(["ok-1password": a])
+        #expect(store.load() == ["ok-1password": a])
+        try "{ not json".write(to: file, atomically: true, encoding: .utf8)
+        #expect(store.load().isEmpty) // corrupt
+    }
+
+    // MARK: Sandbox profile
+
+    @Test func sandboxProfile() {
+        let p = SandboxProfile.make(pluginFolder: URL(filePath: "/tmp/sbx-test/plugins/a"),
+                                    dataFolder: URL(filePath: "/tmp/sbx-test/data/a"),
+                                    runtime: URL(filePath: "/Applications/S.app/Contents/Helpers/bun"),
+                                    extraReadable: [URL(filePath: "/tmp/sbx-test/host")])
+        #expect(p.contains("(deny default)"))
+        #expect(p.contains("(deny network*)"))
+        #expect(!p.contains("process-fork"))
+        #expect(p.contains("(allow process-exec (literal \"/Applications/S.app/Contents/Helpers/bun\"))"))
+        #expect(p.contains("(allow file-read* (subpath \"/private/tmp/sbx-test/plugins/a\"))"))
+        #expect(p.contains("(allow file-read* file-write* (subpath \"/private/tmp/sbx-test/data/a\"))"))
+        #expect(p.contains("(allow file-read* (subpath \"/private/tmp/sbx-test/host\"))"))
+        #expect(!p.contains("~/Library"))
+        #expect(!p.contains("Singularity/spaces"))
+        // No write access to anything but the data folder.
+        let writes = p.split(separator: "\n").filter { $0.contains("file-write*") }
+        #expect(writes.count == 1)
+    }
+
+    @Test func sandboxProfileEscapesPaths() {
+        let p = SandboxProfile.make(pluginFolder: URL(filePath: "/tmp/we\"ird\\name/plugin"),
+                                    dataFolder: URL(filePath: "/tmp/data"), runtime: URL(filePath: "/tmp/bun"))
+        #expect(p.contains("(subpath \"/private/tmp/we\\\"ird\\\\name/plugin\")"))
+    }
+
+    @Test(.enabled(if: FileManager.default.isExecutableFile(atPath: bunPath.path)), .timeLimit(.minutes(1)))
+    func sandboxProfileConfinesBun() throws {
+        // Real path: the sandbox matches real paths, and bun opens the script by the path it is given.
+        let temp = try tempDir()
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        #expect(realpath(temp.path, &buffer) != nil) // not resolvingSymlinksInPath: it maps /private/var back to /var
+        let root = URL(filePath: String(cString: buffer), directoryHint: .isDirectory)
+        let plugin = root.appending(path: "plugin", directoryHint: .isDirectory)
+        let data = root.appending(path: "data", directoryHint: .isDirectory)
+        for d in [plugin, data] { try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true) }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        // A file in the home dir outside the folders (created by us so the test does not depend on dotfiles).
+        let secret = home.appending(path: ".sing-sandbox-probe-\(UUID().uuidString)")
+        try "secret".write(to: secret, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: secret) }
+
+        let script = """
+        import { readFileSync, writeFileSync } from "node:fs";
+        const out: string[] = ["ok"];
+        const probe = async (name: string, fn: () => unknown) => {
+          try { await fn(); out.push(name + ":allowed"); } catch { out.push(name + ":denied"); }
+        };
+        await probe("data", () => { writeFileSync(\(json(data.path))+"/f.txt", "hi"); if (readFileSync(\(json(data.path))+"/f.txt","utf8") !== "hi") throw 1; });
+        await probe("net", async () => { await fetch("https://example.com", { signal: AbortSignal.timeout(5000) }); });
+        await probe("home", () => readFileSync(\(json(secret.path)), "utf8"));
+        await probe("pluginwrite", () => writeFileSync(\(json(plugin.path))+"/evil.txt", "x"));
+        await probe("spawn", () => { const r = Bun.spawnSync(["/bin/echo", "hi"]); if (r.exitCode !== 0 || !r.success) throw 1; });
+        console.log(out.join("\\n"));
+        """
+        try script.write(to: plugin.appending(path: "t.ts"), atomically: true, encoding: .utf8)
+
+        let profile = SandboxProfile.make(pluginFolder: plugin, dataFolder: data, runtime: bunPath)
+        let proc = Process()
+        proc.executableURL = URL(filePath: "/usr/bin/sandbox-exec")
+        proc.arguments = ["-p", profile, bunPath.path, "run", plugin.appending(path: "t.ts").path]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        proc.currentDirectoryURL = data
+        try proc.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        proc.waitUntilExit()
+        let lines = Set(output.split(separator: "\n").map(String.init))
+        #expect(lines.contains("ok"), Comment(rawValue: output))
+        #expect(lines.contains("data:allowed"), Comment(rawValue: output))
+        #expect(lines.contains("net:denied"), Comment(rawValue: output))
+        #expect(lines.contains("home:denied"), Comment(rawValue: output))
+        #expect(lines.contains("pluginwrite:denied"), Comment(rawValue: output))
+        #expect(lines.contains("spawn:denied"), Comment(rawValue: output))
+    }
+
+    private func json(_ s: String) -> String {
+        String(decoding: (try? JSONEncoder().encode(s)) ?? Data(), as: UTF8.self)
+    }
+
+    // MARK: Permission texts
+
+    @Test func permissionDescriptions() throws {
+        let lines = PermissionDescriptions.lines(for: try onePassword().permissions,
+                                                 commandPaths: ["op": "/opt/homebrew/bin/op"])
+        #expect(lines == ["Adds buttons to pages on all sites",
+                          "Fills login forms on all sites",
+                          "Runs /opt/homebrew/bin/op (only: item list, item get)",
+                          "Never uses the internet"])
+        let some = PermissionDescriptions.lines(
+            for: .init(pageAdditions: ["https://a.com/*", "https://b.com/*"], commands: ["gh": ["pr list"]], network: ["x.com"]),
+            commandPaths: [:])
+        #expect(some == ["Adds buttons to pages on https://a.com/*, https://b.com/*",
+                         "Runs gh (only: pr list)", "Connects to x.com"])
+    }
+}
