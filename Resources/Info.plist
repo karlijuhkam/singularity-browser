@@ -30,6 +30,20 @@
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
+	<!-- Private drag-and-drop type for dragging a tab from the sidebar onto the page (split view). -->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.roosa.singularity.tab</string>
+			<key>UTTypeDescription</key>
+			<string>Singularity tab</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Let web pages load plain http:// sites, like any browser. Applies to WKWebView content only. -->

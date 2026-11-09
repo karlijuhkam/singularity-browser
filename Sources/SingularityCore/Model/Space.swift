@@ -19,6 +19,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     /// Whether external agents may see and control this Space through the MCP server.
     /// Off by default; switched on per Space in the Space settings.
     public var agentsEnabled: Bool
+    /// Remembered split views (see SplitLayout.swift). A tab is in at most one.
+    public var splits: [SplitGroup]
 
     public init(
         id: UUID = UUID(),
@@ -29,7 +31,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         folders: [Folder] = [],
         tabs: [BrowserTab] = [],
         selectedTabID: UUID? = nil,
-        agentsEnabled: Bool = false
+        agentsEnabled: Bool = false,
+        splits: [SplitGroup] = []
     ) {
         self.id = id
         self.name = name
@@ -40,6 +43,7 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         self.tabs = tabs
         self.selectedTabID = selectedTabID
         self.agentsEnabled = agentsEnabled
+        self.splits = splits
     }
 
     /// Decoding by hand so that space.json files written before a field existed still load
@@ -55,6 +59,7 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         tabs = try container.decodeIfPresent([BrowserTab].self, forKey: .tabs) ?? []
         selectedTabID = try container.decodeIfPresent(UUID.self, forKey: .selectedTabID)
         agentsEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentsEnabled) ?? false
+        splits = try container.decodeIfPresent([SplitGroup].self, forKey: .splits) ?? []
     }
 
     // MARK: - Reading
@@ -105,9 +110,16 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     /// Removes a tab. If it was selected, selects its neighbour in sidebar order
     /// (the next one, or the previous one when it was last).
     public mutating func closeTab(_ id: UUID) {
+        // A tab in a split hands its selection to a neighbouring pane, so the split stays on screen.
+        let splitNeighbour = splitGroup(containing: id)?.root.tabIDs.first { $0 != id }
+        removeFromSplit(id)
         let order = tabsInSidebarOrder.map(\.id)
         tabs.removeAll { $0.id == id }
         guard selectedTabID == id else { return }
+        if let splitNeighbour {
+            selectedTabID = splitNeighbour
+            return
+        }
         guard let position = order.firstIndex(of: id) else {
             selectedTabID = nil
             return

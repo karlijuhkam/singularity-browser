@@ -168,6 +168,8 @@ final class AgentToolbox {
             case .folder(let id): entry["section"] = "folder: " + (folders[id] ?? "?")
             }
             if tab.id == space.selectedTabID { entry["selected"] = true }
+            // On screen right now: the selected tab, or any pane of its split (in the Space being shown).
+            if state?.selectedSpaceID == space.id, space.visibleTabIDs.contains(tab.id) { entry["visible"] = true }
             return entry
         }
         // Titles come from pages, so the whole list counts as page content.

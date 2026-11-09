@@ -123,13 +123,13 @@ private struct TabList: View {
         )
 
         List(selection: selection) {
-            let pinned = space.tabs(in: .pinned)
+            let pinned = space.sidebarItems(in: .pinned)
             if !pinned.isEmpty {
                 Section("Pinned") {
-                    ForEach(pinned) { tab in
-                        TabRow(tab: tab, space: space).tag(tab.id)
+                    ForEach(pinned) { item in
+                        SidebarItemRow(item: item, space: space)
                     }
-                    .onMove { state.moveTabs(in: .pinned, fromOffsets: $0, toOffset: $1) }
+                    .onMove { state.moveSidebarItems(in: .pinned, fromOffsets: $0, toOffset: $1) }
                 }
             }
 
@@ -142,14 +142,76 @@ private struct TabList: View {
             }
 
             Section("Tabs") {
-                ForEach(space.tabs(in: .open)) { tab in
-                    TabRow(tab: tab, space: space).tag(tab.id)
+                ForEach(space.sidebarItems(in: .open)) { item in
+                    SidebarItemRow(item: item, space: space)
                 }
-                .onMove { state.moveTabs(in: .open, fromOffsets: $0, toOffset: $1) }
+                .onMove { state.moveSidebarItems(in: .open, fromOffsets: $0, toOffset: $1) }
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+    }
+}
+
+/// A sidebar row: a single tab (selectable List row), or a split shown as one row of chips.
+private struct SidebarItemRow: View {
+    let item: SidebarItem
+    let space: Space
+
+    var body: some View {
+        switch item {
+        case .tab(let id):
+            if let tab = space.tab(id) {
+                TabRow(tab: tab, space: space).tag(id)
+            }
+        case .split(_, let tabIDs):
+            // Not tagged: the chips handle selection themselves, so a click on one chip isn't
+            // overridden by the List selecting "the row".
+            SplitRow(tabIDs: tabIDs, space: space)
+        }
+    }
+}
+
+/// A split in the sidebar: its tabs side by side, like the panes on screen. Clicking a chip
+/// shows the split with that pane focused.
+private struct SplitRow: View {
+    @Environment(AppState.self) private var state
+    let tabIDs: [UUID]
+    let space: Space
+
+    var body: some View {
+        let compact = tabIDs.count >= 4
+        let splitIsShown = space.selectedTabID.map(tabIDs.contains) ?? false
+        HStack(spacing: 3) {
+            ForEach(tabIDs, id: \.self) { id in
+                if let tab = space.tab(id) {
+                    let focused = splitIsShown && space.selectedTabID == id
+                    HStack(spacing: 5) {
+                        TabIcon(tab: tab, space: space)
+                            .frame(width: 14, height: 14)
+                        if !compact {
+                            Text(tab.displayTitle)
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .frame(maxWidth: .infinity, minHeight: 22, alignment: compact ? .center : .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.primary.opacity(focused ? 0.14 : (splitIsShown ? 0.07 : 0.04)))
+                    )
+                    .contentShape(Rectangle())
+                    .onTapGesture { state.selectTab(id) }
+                    .contextMenu { TabContextMenu(tab: tab, space: space) }
+                    // No drag source here: dragging the row reorders the whole split in the
+                    // sidebar. Panes are rearranged by dragging their header on the page.
+                    .help(tab.displayTitle)
+                }
+            }
+        }
+        .padding(.vertical, 1)
     }
 }
 
@@ -164,10 +226,10 @@ private struct FolderGroup: View {
             set: { state.setFolderExpanded(folder.id, $0) }
         )
         DisclosureGroup(isExpanded: expanded) {
-            ForEach(space.tabs(in: .folder(folder.id))) { tab in
-                TabRow(tab: tab, space: space).tag(tab.id)
+            ForEach(space.sidebarItems(in: .folder(folder.id))) { item in
+                SidebarItemRow(item: item, space: space)
             }
-            .onMove { state.moveTabs(in: .folder(folder.id), fromOffsets: $0, toOffset: $1) }
+            .onMove { state.moveSidebarItems(in: .folder(folder.id), fromOffsets: $0, toOffset: $1) }
         } label: {
             Label(folder.name, systemImage: folder.isExpanded ? "folder" : "folder.fill")
                 .contextMenu {

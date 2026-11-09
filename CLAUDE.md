@@ -9,7 +9,9 @@ If you want to add something that is not in the brief, write it to `IDEAS.md` in
 
 ## Explicitly out of scope for v1
 Do not build, scaffold, or leave TODOs for:
-sync of any kind · browser extensions (including WKWebExtension) · any built-in AI or chat UI · Windows/Linux/iOS · split view · Peek/Little Arc-style windows · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
+sync of any kind · browser extensions (including WKWebExtension) · any built-in AI or chat UI · Windows/Linux/iOS · Peek/Little Arc-style windows · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
+
+**Scope change (owner decision, after Phase 4):** tiling / split view is *in* v1, built before Phase 5: nested splits (any pane splits right or down), Arc-style split groups, created via context menu, drag and drop, keyboard and palette.
 
 ## Hard constraints
 - Swift + SwiftUI (AppKit where SwiftUI falls short). No Electron, no web-based app chrome.
@@ -28,6 +30,7 @@ Sources/
     Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath
     Artifacts/       ArtifactFiles (path containment, MIME types, page listing), ArtifactAuth (token checks)
     Agent/           AgentToolName (<slug>.<tool> naming), UntrustedContent (wrapping page text for agents)
+    Model/SplitLayout.swift  SplitNode tree, SplitGroup, split/remove/swap/neighbour ops, sidebar rows (SidebarItem)
   Singularity/       The app executable.
     App/             @main app, AppState (@Observable, the single source of truth), menu commands
     Sidebar/         Space rail, tab list (pinned / folders / open), editors
@@ -38,6 +41,8 @@ Sources/
                      ArtifactHost(s) (per-Space token + server + watcher), ArtifactBridge (window.singularity)
     MCP/             MCPSocketListener (Unix socket), MCPHub (one MCP SDK Server per connection),
                      AgentToolbox (tool definitions + implementations), PageAgentScript (read_page/find/click/type JS)
+    Split/           SplitViews (recursive panes + draggable gaps), PaneContainerView (hosts a tab's view; drop
+                     overlay during tab drags; click-to-focus monitor), PaneDragHandle (pane header drag source)
   singularity-mcp/   Stdio launcher agents start: relays bytes to ~/Singularity/.run/mcp.sock, starts the app if needed
 Tests/SingularityCoreTests/   Swift Testing
 ```
@@ -51,6 +56,10 @@ Key decisions:
 - `window.singularity` exists only on the Space's artifact origin (the script checks `location.origin`, and the native handler checks the message's `securityOrigin`). `prompt()` always asks (native sheet), then bracketed-pastes into the Space's most recently used running terminal and presses Return. Phase 5 replaces "always ask" with the Space policy.
 - **MCP.** Agents run `Singularity.app/Contents/MacOS/singularity-mcp` (stdio). It contains no MCP logic: the app runs an MCP `Server` (official Swift SDK) per socket connection, reusing the SDK's `StdioTransport` on the socket's file descriptor. Tools: `list_spaces` plus `<slug>.<tool>` for Spaces with `agentsEnabled` (per-Space toggle in Edit Space, off by default); `tools/list_changed` is sent when that set changes. Claude Code shows `work.read_page` as `mcp__singularity__work_read_page` (dots become underscores; verified). The socket folder is 0700, the socket 0600, and peers must have the same uid.
 - **Page agent.** `PageAgentScript` is injected at document start into every web/artifact tab in an isolated `WKContentWorld`, so pages can't see or tamper with it. Refs come from a WeakMap (element → number) and are stable for the life of a page load. Everything page-derived that is returned to an agent goes through `UntrustedContent.wrap`. Agent-opened tabs load in the background (not selected) at 1280×800.
+- **Split view.** `Space.splits: [SplitGroup]`; a tab is in at most one. Arc-style: the content area shows the selected tab's whole split, or the tab alone; the sidebar shows a split as one row of chips. Every tab of a visible split is loaded. Things that bit us, keep them:
+  - A tab's web/terminal view can only be in one place. During layout changes SwiftUI may update an outgoing pane next to the new one, so `HostedView` lets only the *newest* `PaneContainerView` own a view.
+  - WKWebView takes almost any drop, so panes put a transparent `PaneDropOverlay` on top only while a tab is dragged (private UTI `dev.roosa.singularity.tab`, declared in Info.plist).
+  - Pane headers sit in the window's invisible title-bar strip, where macOS starts a window drag before asking the view (`mouseDownCanMoveWindow` is not enough). `PaneDragHandleView` switches `window.isMovable` off while hovered. Never put SwiftUI `.help()` on chrome in that strip: it adds an overlay view that eats the click.
 - WKWebViews are created lazily (only when a tab is first shown) and kept alive across Space switches.
 - Later phases (see the brief): per-Space artifact server on 127.0.0.1 with a bearer token; MCP via a `singularity-mcp` stdio launcher → Unix socket at `~/Singularity/.run/mcp.sock`; approval policy + `agent-log.jsonl`.
 

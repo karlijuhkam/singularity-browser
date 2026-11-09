@@ -11,7 +11,7 @@ struct CommandPaletteView: View {
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        let items = PaletteResults.items(for: query, state: state)
+        let items = PaletteResults.items(for: query, mode: mode, state: state)
 
         ZStack(alignment: .top) {
             // Dim the window; clicking outside the palette closes it.
@@ -64,6 +64,7 @@ struct CommandPaletteView: View {
         switch mode {
         case .newTab: "Search tabs, history, commands, or enter a URL"
         case .navigateCurrent: state.selectedTab?.url?.absoluteString ?? "Enter a URL"
+        case .splitWith: "Choose a tab, or enter a URL, to show beside this one"
         }
     }
 
@@ -98,9 +99,14 @@ struct CommandPaletteView: View {
             switch mode {
             case .newTab: state.openInNewTab(url)
             case .navigateCurrent: state.navigateSelectedTab(to: url)
+            case .splitWith(let edge, let beside): state.openInSplit(url, edge: edge, beside: beside)
             }
         case .selectTab(let id):
-            state.selectTab(id)
+            if case .splitWith(let edge, let beside) = mode {
+                state.splitTab(id, beside: beside, edge: edge)
+            } else {
+                state.selectTab(id)
+            }
         case .run(let action):
             action()
         }

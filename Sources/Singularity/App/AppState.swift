@@ -35,6 +35,8 @@ final class AppState {
     @ObservationIgnored private var historyCache: [UUID: [HistoryEntry]] = [:]
     /// Per Space: the terminal tab that was selected most recently (target of `singularity.prompt`).
     @ObservationIgnored private var activeTerminalBySpace: [UUID: UUID] = [:]
+    /// Per Space: the tab selected before the current one (⌘\ splits the current tab with it).
+    @ObservationIgnored private var previousTabBySpace: [UUID: UUID] = [:]
     /// Per Space: artifact pages we already know about, so only genuinely new files open a tab.
     @ObservationIgnored private var knownArtifactPages: [UUID: Set<String>] = [:]
 
@@ -177,6 +179,9 @@ final class AppState {
 
     func selectTab(_ tabID: UUID) {
         guard let spaceID = selectedSpaceID else { return }
+        if let current = space(spaceID)?.selectedTabID, current != tabID {
+            previousTabBySpace[spaceID] = current
+        }
         mutateSpace(spaceID) { $0.selectedTabID = tabID }
         loadSelectedTab()
     }
@@ -250,9 +255,10 @@ final class AppState {
         mutateSpace(spaceID) { $0.moveTab(tabID, to: section) }
     }
 
-    func moveTabs(in section: SidebarSection, fromOffsets offsets: IndexSet, toOffset destination: Int) {
+    /// Reorders sidebar rows (a split's row moves all its tabs).
+    func moveSidebarItems(in section: SidebarSection, fromOffsets offsets: IndexSet, toOffset destination: Int) {
         guard let spaceID = selectedSpaceID else { return }
-        mutateSpace(spaceID) { $0.moveTabs(in: section, fromOffsets: offsets, toOffset: destination) }
+        mutateSpace(spaceID) { $0.moveSidebarItems(in: section, fromOffsets: offsets, toOffset: destination) }
     }
 
     // MARK: - Folders
@@ -396,13 +402,21 @@ final class AppState {
         if artifacts.host(space.id) == nil {
             Task { _ = await ensureArtifactHost(space) }
         }
-        guard let tab = space.selectedTab else { return }
+        // In a split, every pane is on screen, so every pane's tab must be live.
+        for tabID in space.visibleTabIDs {
+            if let tab = space.tab(tabID) { loadTab(tab, in: space) }
+        }
+        if let selected = space.selectedTab, selected.isTerminal {
+            activeTerminalBySpace[space.id] = selected.id
+        }
+    }
+
+    private func loadTab(_ tab: BrowserTab, in space: Space) {
         switch tab.kind {
         case .web:
             _ = web.controller(for: tab, in: space)
         case .terminal:
             _ = terminals.session(for: tab, in: space)
-            activeTerminalBySpace[space.id] = tab.id
         case .artifact(let path):
             guard web.existingController(tab.id) == nil else { return }
             // The page can only load once the Space's server runs.
@@ -414,6 +428,109 @@ final class AppState {
                 _ = web.artifactController(for: tab, in: space, host: host, request: request)
             }
         }
+    }
+
+    // MARK: - Split view
+
+    /// Shows `tabID` next to `target` (and focuses it). Beeps if the split is full.
+    func splitTab(_ tabID: UUID, beside target: UUID, edge: SplitEdge) {
+        guard let spaceID = selectedSpaceID else { return }
+        var didSplit = false
+        mutateSpace(spaceID) { space in
+            didSplit = space.split(tabID, beside: target, edge: edge)
+            if didSplit { space.selectedTabID = tabID }
+        }
+        guard didSplit else {
+            NSSound.beep()
+            return
+        }
+        previousTabBySpace[spaceID] = target
+        loadSelectedTab()
+    }
+
+    /// Takes a tab out of its split; the tab stays open in the sidebar. If it was the focused
+    /// pane, focus moves to another pane so the rest of the split stays on screen.
+    func removeFromSplit(_ tabID: UUID) {
+        guard let space = selectedSpace, let group = space.splitGroup(containing: tabID) else { return }
+        let neighbour = group.root.tabIDs.first { $0 != tabID }
+        mutateSpace(space.id) { space in
+            space.removeFromSplit(tabID)
+            if space.selectedTabID == tabID, let neighbour { space.selectedTabID = neighbour }
+        }
+        loadSelectedTab()
+    }
+
+    /// A tab from the sidebar was dropped on a pane (or on the single visible tab).
+    func handleTabDrop(_ dropped: UUID, onto paneTab: UUID, zone: PaneDropZone) {
+        guard dropped != paneTab, let space = selectedSpace, space.tab(dropped) != nil else { return }
+        switch zone {
+        case .edge(let edge):
+            splitTab(dropped, beside: paneTab, edge: edge)
+        case .center:
+            if space.splitGroup(containing: paneTab) != nil {
+                mutateSpace(space.id) { space in
+                    space.replaceInSplit(paneTab, with: dropped)
+                    space.selectedTabID = dropped
+                }
+                loadSelectedTab()
+            } else {
+                selectTab(dropped)
+            }
+        }
+    }
+
+    /// A click landed in a pane: make it the focused (selected) tab.
+    func focusPane(_ tabID: UUID) {
+        guard selectedSpace?.selectedTabID != tabID else { return }
+        selectTab(tabID)
+    }
+
+    /// ⌥⌘ + arrow: focus the neighbouring pane and give it the keyboard.
+    func moveFocus(_ direction: PaneDirection) {
+        guard let space = selectedSpace, let current = space.selectedTabID,
+              let next = space.splitGroup(containing: current)?.root.neighbour(of: current, direction) else {
+            NSSound.beep()
+            return
+        }
+        selectTab(next)
+        let view: NSView? = web.existingController(next)?.webView ?? terminals.existingSession(next)?.view
+        view?.window?.makeFirstResponder(view)
+    }
+
+    /// ⌘\: split the current tab with the previously selected one; without one, ask which tab.
+    func splitWithPrevious() {
+        guard let space = selectedSpace, let current = space.selectedTabID else { return }
+        let sameGroup = space.splitGroup(containing: current)?.root.tabIDs ?? [current]
+        if let previous = previousTabBySpace[space.id], space.tab(previous) != nil, !sameGroup.contains(previous) {
+            splitTab(previous, beside: current, edge: .right)
+        } else {
+            showSplitPalette(.right, beside: current)
+        }
+    }
+
+    func showSplitPalette(_ edge: SplitEdge, beside tabID: UUID) {
+        palette = .splitWith(edge: edge, beside: tabID)
+    }
+
+    /// Opens a URL as a new tab and shows it in a split next to `target`.
+    func openInSplit(_ url: URL, edge: SplitEdge, beside target: UUID) {
+        guard let spaceID = selectedSpaceID else { return }
+        let tab = BrowserTab.web(url)
+        mutateSpace(spaceID) { $0.append(tab) }
+        splitTab(tab.id, beside: target, edge: edge)
+    }
+
+    /// Opens a new terminal and shows it in a split next to `target`.
+    func openTerminalInSplit(edge: SplitEdge, beside target: UUID) {
+        guard let space = selectedSpace else { return }
+        let tab = BrowserTab.terminal(workingDirectory: space.workingDirectory)
+        mutateSpace(space.id) { $0.append(tab) }
+        splitTab(tab.id, beside: target, edge: edge)
+    }
+
+    func setSplitFractions(groupID: UUID, path: [Int], fractions: [Double]) {
+        guard let spaceID = selectedSpaceID else { return }
+        mutateSpace(spaceID) { $0.setSplitFractions(groupID: groupID, path: path, fractions: fractions) }
     }
 
     // MARK: - For agents (MCP)
@@ -617,6 +734,8 @@ enum PaletteMode: Equatable {
     case newTab
     /// Clicking the address row: URLs load in the selected tab.
     case navigateCurrent
+    /// "Split with…": the chosen tab (or a new one) is shown next to `beside`.
+    case splitWith(edge: SplitEdge, beside: UUID)
 }
 
 struct SpaceEditorRequest: Identifiable {

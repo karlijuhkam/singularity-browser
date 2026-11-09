@@ -37,24 +37,27 @@ struct MainView: View {
         .sheet(item: $state.nameRequest) { request in
             NameSheet(request: request)
         }
-        .onAppear { state.loadSelectedTab() }
+        .onAppear {
+            state.loadSelectedTab()
+            // Clicking inside a pane (a web page or terminal) focuses it.
+            PaneContainerView.installFocusMonitor { [state] tabID in state.focusPane(tabID) }
+        }
     }
+
 }
 
-/// The selected tab's content (web page or terminal), or an empty state.
+/// The selected tab's content: the tab alone, or the whole split it belongs to (Arc-style:
+/// a split comes back whenever one of its tabs is selected).
 private struct ContentArea: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
-        if let tab = state.selectedTab, let controller = state.web.existingController(tab.id) {
-            HostedView(view: controller.webView)
-                .overlay(alignment: .top) { LoadingBar(controller: controller) }
-        } else if let tab = state.selectedTab, let session = state.terminals.existingSession(tab.id) {
-            HostedView(view: session.view, focusOnShow: true)
-                .padding(8)
-                .background(Color(nsColor: .textBackgroundColor))
-                // A new session (after a restart) gets a new view; `.id` makes SwiftUI rebuild the host.
-                .id(ObjectIdentifier(session))
+        if let space = state.selectedSpace, let tab = space.selectedTab {
+            if let group = space.splitGroup(containing: tab.id) {
+                SplitGroupView(group: group, space: space)
+            } else {
+                TabContentView(tab: tab)
+            }
         } else {
             ZStack {
                 Color(nsColor: .textBackgroundColor)
@@ -66,22 +69,6 @@ private struct ContentArea: View {
                 }
             }
         }
-    }
-}
-
-/// A thin progress bar at the top of the page while it loads.
-private struct LoadingBar: View {
-    let controller: WebTabController
-
-    var body: some View {
-        GeometryReader { geometry in
-            Rectangle()
-                .fill(Color.accentColor)
-                .frame(width: geometry.size.width * controller.estimatedProgress, height: 2)
-                .opacity(controller.isLoading ? 1 : 0)
-                .animation(.easeOut(duration: 0.2), value: controller.estimatedProgress)
-        }
-        .frame(height: 2)
     }
 }
 

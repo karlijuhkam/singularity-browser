@@ -1,6 +1,7 @@
 import AppKit
 import SingularityCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// One tab in the sidebar: favicon, title, and a close button on hover.
 struct TabRow: View {
@@ -11,7 +12,7 @@ struct TabRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            favicon
+            TabIcon(tab: tab, space: space)
                 .frame(width: 16, height: 16)
             Text(tab.displayTitle)
                 .lineLimit(1)
@@ -32,11 +33,19 @@ struct TabRow: View {
         }
         .onHover { isHovering = $0 }
         .help(tab.url?.absoluteString ?? "")
-        .contextMenu { menu }
+        .contextMenu { TabContextMenu(tab: tab, space: space) }
+        // Lets the row be dragged onto the page to build a split.
+        .itemProvider { TabDrag.provider(for: tab.id) }
     }
+}
 
-    @ViewBuilder
-    private var favicon: some View {
+/// A tab's icon: favicon for web pages, a symbol for terminals and artifacts.
+struct TabIcon: View {
+    @Environment(AppState.self) private var state
+    let tab: BrowserTab
+    let space: Space
+
+    var body: some View {
         if tab.isArtifact {
             Image(systemName: "doc.richtext")
                 .foregroundStyle(.secondary)
@@ -53,9 +62,31 @@ struct TabRow: View {
                 .foregroundStyle(.secondary)
         }
     }
+}
 
-    @ViewBuilder
-    private var menu: some View {
+/// Dragging a tab (from a sidebar row or a pane header) onto the page. The private type means
+/// only Singularity's panes accept it (a web page won't treat the drop as text).
+@MainActor
+enum TabDrag {
+    static func provider(for tabID: UUID) -> NSItemProvider {
+        // SwiftUI asks for this when the drag starts: time to put the panes' drop layers up.
+        TabDragSession.begin()
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.singularityTab.identifier, visibility: .ownProcess) { completion in
+            completion(Data(tabID.uuidString.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+}
+
+/// The right-click menu of a tab (sidebar rows and split chips).
+struct TabContextMenu: View {
+    @Environment(AppState.self) private var state
+    let tab: BrowserTab
+    let space: Space
+
+    var body: some View {
         if tab.folderID == nil {
             Button(tab.isPinned ? "Unpin Tab" : "Pin Tab") { state.togglePin(tab.id) }
         }
@@ -71,6 +102,20 @@ struct TabRow: View {
 
         if tab.folderID != nil {
             Button("Remove from Folder") { state.moveTab(tab.id, to: .open) }
+        }
+
+        Divider()
+
+        if let current = space.selectedTabID, current != tab.id {
+            Menu("Open in Split View") {
+                Button("Right of Current Tab") { state.splitTab(tab.id, beside: current, edge: .right) }
+                Button("Left of Current Tab") { state.splitTab(tab.id, beside: current, edge: .left) }
+                Button("Below Current Tab") { state.splitTab(tab.id, beside: current, edge: .bottom) }
+                Button("Above Current Tab") { state.splitTab(tab.id, beside: current, edge: .top) }
+            }
+        }
+        if space.splitGroup(containing: tab.id) != nil {
+            Button("Remove from Split") { state.removeFromSplit(tab.id) }
         }
 
         Divider()

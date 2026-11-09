@@ -26,19 +26,29 @@ struct PaletteItem: Identifiable {
 /// ranked by fuzzy score, with a "open URL" or "search" row derived from the text itself.
 @MainActor
 enum PaletteResults {
-    static func items(for query: String, state: AppState) -> [PaletteItem] {
+    static func items(for query: String, mode: PaletteMode, state: AppState) -> [PaletteItem] {
         guard let space = state.selectedSpace else { return [] }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let tabs = tabItems(space)
+        // "Split with…": only things that can go into a pane (other tabs, a new terminal, a URL).
+        var splitTarget: UUID?
+        if case .splitWith(_, let beside) = mode { splitTarget = beside }
+
+        let tabs = tabItems(space).filter { $0.id != "tab-\(splitTarget?.uuidString ?? "")" }
         let openURLs = Set(space.tabs.compactMap(\.url))
         let history = state.history(for: space.id)
             .filter { !openURLs.contains($0.url) }
             .prefix(500)
             .map(historyItem)
-        let commands = commandItems(state: state, space: space)
+        let commands: [PaletteItem]
+        if case .splitWith(let edge, let beside) = mode {
+            commands = [PaletteItem(id: "cmd-split-terminal", title: "New Terminal", subtitle: "", hint: "Command",
+                                    icon: .symbol("terminal"), action: .run { state.openTerminalInSplit(edge: edge, beside: beside) })]
+        } else {
+            commands = commandItems(state: state, space: space)
+        }
         let openArtifacts = Set(space.tabs.compactMap(\.artifactPath))
-        let artifacts = (state.artifacts.host(space.id)?.pages ?? [])
+        let artifacts = (splitTarget != nil ? [] : state.artifacts.host(space.id)?.pages ?? [])
             .filter { !openArtifacts.contains($0) }
             .map { path in
                 PaletteItem(id: "artifact-\(path)", title: (path as NSString).lastPathComponent, subtitle: "artifacts/\(path)",
@@ -134,6 +144,19 @@ enum PaletteResults {
             items.append(command("close", "Close Current Tab", "xmark") {
                 state.closeTab(tab.id)
             })
+        }
+        if let tab = space.selectedTab {
+            items.append(command("split-right", "Split Right with…", "rectangle.split.2x1") {
+                state.showSplitPalette(.right, beside: tab.id)
+            })
+            items.append(command("split-down", "Split Down with…", "rectangle.split.1x2") {
+                state.showSplitPalette(.bottom, beside: tab.id)
+            })
+            if space.splitGroup(containing: tab.id) != nil {
+                items.append(command("split-remove", "Remove Current Tab from Split", "rectangle") {
+                    state.removeFromSplit(tab.id)
+                })
+            }
         }
         items.append(command("new-folder", "New Folder…", "folder.badge.plus") { state.promptNewFolder() })
         items.append(command("artifacts-folder", "Show Artifacts Folder in Finder", "folder") { state.revealArtifactsFolder() })

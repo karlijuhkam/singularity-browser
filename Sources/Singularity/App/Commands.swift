@@ -27,6 +27,24 @@ struct SingularityCommands: Commands {
         }
 
         CommandGroup(before: .toolbar) {
+            Button("Split with Previous Tab") { state.splitWithPrevious() }
+                .keyboardShortcut("\\")
+                .disabled(state.selectedTab == nil)
+            Button("Remove from Split") { if let id = state.selectedTab?.id { state.removeFromSplit(id) } }
+                .keyboardShortcut("\\", modifiers: [.command, .shift])
+                .disabled(!isInSplit)
+            Menu("Focus Pane") {
+                Button("Left") { state.moveFocus(.left) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                Button("Right") { state.moveFocus(.right) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                Button("Up") { state.moveFocus(.up) }
+                    .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                Button("Down") { state.moveFocus(.down) }
+                    .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+            }
+            .disabled(!isInSplit)
+            Divider()
             Button("Reload Page") { selectedController?.reload() }
                 .keyboardShortcut("r")
                 .disabled(selectedController == nil)
@@ -38,6 +56,11 @@ struct SingularityCommands: Commands {
                 .disabled(selectedController?.canGoForward != true)
             Divider()
         }
+    }
+
+    private var isInSplit: Bool {
+        guard let space = state.selectedSpace, let id = space.selectedTabID else { return false }
+        return space.splitGroup(containing: id) != nil
     }
 
     private var selectedController: WebTabController? {
