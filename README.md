@@ -85,6 +85,16 @@ Tools, for each Space where agents are allowed (Claude Code shows `work.read_pag
 - **Approvals:** these are enforced inside the app, so they apply whatever client is connected.
 - **Agent log:** every action goes into `~/Singularity/spaces/<slug>/agent-log.jsonl`, with time, client, tool, arguments, your decision and the result. Text typed into password fields is never logged.
 
+### Plugins
+
+A plugin is a folder that adds something to web pages, such as a button in a field, with a background program that runs in a macOS sandbox with no network. You approve what each plugin may do before it runs, and any change to its files pauses it until you approve again.
+
+To add one: Settings → Plugins → Add Plugin…, choose the plugin's folder, read the approval sheet, approve, then switch it on for the Spaces you want.
+
+The **1Password** plugin (`Plugins/1password`) fills logins after you click its button and pick a login from a menu. It needs the 1Password app with Settings → Developer → "Integrate with 1Password CLI" switched on, and the `op` command line tool (`brew install 1password-cli`).
+
+To write your own (an agent can do it from the guide), see [docs/plugins/AUTHORING.md](docs/plugins/AUTHORING.md). `Plugins/template` is a minimal starting point.
+
 ### Keyboard shortcuts
 
 | Keys | Action |

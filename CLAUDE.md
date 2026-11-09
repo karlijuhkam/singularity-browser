@@ -9,7 +9,7 @@ If you want to add something that is not in the brief, write it to `IDEAS.md` in
 
 ## Explicitly out of scope for v1
 Do not build, scaffold, or leave TODOs for:
-sync of any kind · browser extensions (including WKWebExtension) · any built-in AI or chat UI · Windows/Linux/iOS · Peek/Little Arc-style windows · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
+sync of any kind · browser extensions (WebExtensions/WKWebExtension) — Singularity plugins replace them; AI only inside plugins (round 2), never built into the app · Windows/Linux/iOS · Peek/Little Arc-style windows · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
 
 **Scope change (owner decision, after Phase 4):** tiling / split view is *in* v1, built before Phase 5: nested splits (any pane splits right or down), Arc-style split groups, created via context menu, drag and drop, keyboard and palette.
 
@@ -31,6 +31,8 @@ Sources/
     Artifacts/       ArtifactFiles (path containment, MIME types, page listing), ArtifactAuth (token checks)
     Agent/           AgentToolName (<slug>.<tool> naming), UntrustedContent (wrapping page text for agents),
                      AgentPolicy (readOnly / ask / allowAll + the approval rules table), AgentLog (agent-log.jsonl)
+    Plugins/         PluginManifest, SitePattern, CommandPolicy, PluginPackages, PluginApproval (fingerprint, status,
+                     development mode), SandboxProfile, PluginProcess (supervised Bun), CommandBroker, FillGuard
     Model/SplitLayout.swift  SplitNode tree, SplitGroup, split/remove/swap/neighbour ops, sidebar rows (SidebarItem)
   Singularity/       The app executable.
     App/             @main app, AppState (@Observable, the single source of truth), menu commands
@@ -44,10 +46,16 @@ Sources/
                      AgentToolbox (tool definitions + implementations), PageAgentScript (read_page/find/click/type JS)
     Agent/           AgentApprovals (policy checks, one confirmation sheet at a time, "Allow on this site"),
                      AgentViews (agent badge, busy tint, Agent activity pane)
+    Plugins/         PluginManager (scan, approve, run), PluginPrelude (page API + click guards), PluginScripts,
+                     PluginPageBridge, PluginApprovalSheet; Settings → Plugins
     Split/           SplitViews (recursive panes + draggable gaps), PaneContainerView (hosts a tab's view; drop
                      overlay during tab drags; click-to-focus monitor), PaneDragHandle (pane header drag source)
   singularity-mcp/   Stdio launcher agents start: relays bytes to ~/Singularity/.run/mcp.sock, starts the app if needed
+Resources/plugin-host/  host.ts (background API), transpile-page.ts (page.ts compiler), empty bunfig.toml
+Plugins/             1password/ (reference plugin), template/ (copy this to start)
+docs/plugins/AUTHORING.md   the plugin authoring guide (agents first)
 Tests/SingularityCoreTests/   Swift Testing
+Tests/plugins/       Bun tests for plugin logic (1password)
 ```
 
 Key decisions:
@@ -64,6 +72,7 @@ Key decisions:
   - A tab's web/terminal view can only be in one place. During layout changes SwiftUI may update an outgoing pane next to the new one, so `HostedView` lets only the *newest* `PaneContainerView` own a view.
   - WKWebView takes almost any drop, so panes put a transparent `PaneDropOverlay` on top only while a tab is dragged (private UTI `dev.roosa.singularity.tab`, declared in Info.plist).
   - Pane headers sit in the window's invisible title-bar strip, where macOS starts a window drag before asking the view (`mouseDownCanMoveWindow` is not enough). `PaneDragHandleView` switches `window.isMovable` off while hovered. Never put SwiftUI `.help()` on chrome in that strip: it adds an overlay view that eats the click.
+- **Plugins** (spec `docs/superpowers/specs/2026-11-09-plugins-design.md`, guide `docs/plugins/AUTHORING.md`). Plugin = folder in `~/Singularity/plugins/<id>` with `plugin.json`, optional `background.ts` (bundled Bun) and `page.ts`. Background runs under `sandbox-exec` with a generated SBPL profile (no network, reads its folder, writes its data folder) and a minimal env; programs only via `singularity.run` for declared commands at paths pinned at approval (`CommandPolicy.refused`). Every file is fingerprinted (dotfiles, node_modules); any change pauses the plugin until re-approved, except code edits in development mode; widened permissions and package files always need approval. Packages: exact registry versions + `bun.lock`, installed at approval with `--ignore-scripts`, staged. Page scripts run in an isolated `WKContentWorld` after `PluginPrelude` (no network/eval, real-click guards on buttons); DOM routes can't be blocked, so review matters. `FillGuard`: a fill needs frame host = `forHost` (or subdomain), `fillForms` match, and a genuine click. Don't loosen these without the owner.
 - **Settings window** (⌘,, SwiftUI `Settings` scene, `Sources/Singularity/Settings/`): General (search engine: `AppSettings.searchTemplate`, a URL with `%s`), Terminal (font, size, close on exit), Agents (all Spaces' agent switch + policy via `AppState.updateSpace`, approval timeout, the `claude mcp add` command for this copy of the app), Data & privacy (paths, per-Space clear history / site data / agent log). Stored in `~/Singularity/settings.json` (`AppSettings`, tolerant decoding); always change it through `AppState.updateSettings`.
 - WKWebViews are created lazily (only when a tab is first shown) and kept alive across Space switches.
 - Later phases (see the brief): per-Space artifact server on 127.0.0.1 with a bearer token; MCP via a `singularity-mcp` stdio launcher → Unix socket at `~/Singularity/.run/mcp.sock`; approval policy + `agent-log.jsonl`.

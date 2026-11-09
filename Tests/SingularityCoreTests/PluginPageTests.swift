@@ -405,3 +405,37 @@ private func url(_ s: String) -> URL { URL(string: s)! }
         }
     }
 }
+
+/// The template plugin (Plugins/template) is what the authoring guide tells people to copy:
+/// it must always load, ask for little, and compile.
+@Suite struct TemplatePluginTests {
+    private let folder = repoRoot.appending(path: "Plugins/template", directoryHint: .isDirectory)
+
+    @Test func manifestLoadsAndAsksForLittle() throws {
+        let manifest = try PluginManifest.load(from: folder)
+        #expect(manifest.id == "template")
+        #expect(manifest.permissions.commands.isEmpty)
+        #expect(manifest.permissions.fillForms.isEmpty)
+        #expect(manifest.permissions.network.isEmpty)
+        #expect(manifest.permissions.pageAdditions == ["https://*/*"])
+    }
+
+    @Test(.enabled(if: hasBun)) func pageScriptTranspiles() throws {
+        let snapshot = try PluginFingerprint.snapshot(folder: folder)
+        let source = try PluginPageCompiler.readVerified(folder: folder, script: "page.ts",
+                                                         expectedHash: snapshot.fileHashes["page.ts"]).get()
+        let js = try PluginPageCompiler.transpile(source: source, runtime: bunPath, hostFolder: hostFolder).get()
+        #expect(js.contains("addFieldButton"))
+    }
+
+    @Test(.enabled(if: hasBun)) func backgroundScriptParses() throws {
+        let process = Process()
+        process.executableURL = bunPath
+        process.arguments = ["build", "--no-bundle", folder.appending(path: "background.ts").path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+}

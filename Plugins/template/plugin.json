@@ -1,0 +1,15 @@
+{
+  "id": "template",
+  "name": "Template",
+  "version": "0.1.0",
+  "description": "A minimal example: a button in search fields that greets you from the background program.",
+  "author": "Your name",
+  "background": "background.ts",
+  "page": { "script": "page.ts", "sites": ["https://*/*"] },
+  "permissions": {
+    "pageAdditions": ["https://*/*"],
+    "fillForms": [],
+    "commands": {},
+    "network": []
+  }
+}
