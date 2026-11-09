@@ -148,6 +148,8 @@ final class PluginManager {
     /// Looks at every plugin folder (starting the approved ones) and watches the plugins folder.
     func start() {
         try? FileManager.default.createDirectory(at: paths.pluginsDirectory, withIntermediateDirectories: true)
+        // Staging folders of installs that never finished (the app quit or crashed meanwhile).
+        PluginPackages.removeLeftoverStaging(in: paths.pluginInstallDirectory)
         if watcher == nil {
             let watcher = ArtifactWatcher(root: paths.pluginsDirectory, includeFoldersAndHiddenFiles: true) { [weak self] changes in
                 self?.filesChanged(changes.map(\.relativePath))
@@ -475,7 +477,7 @@ final class PluginManager {
     /// showed once the install is done (e.g. edited while it ran).
     private func installPackages(_ id: String, folder: URL, review: PluginReview, before: PluginScan,
                                  snapshot: PluginFingerprint.Snapshot) async throws -> (PluginScan, PluginFingerprint.Snapshot) {
-        let shipsNodeModules = snapshot.fileHashes.keys.contains { $0.hasPrefix("node_modules/") }
+        let shipsNodeModules = snapshot.fileHashes.keys.contains(where: PluginPackages.isInTopLevelNodeModules)
             || (try? FileManager.default.attributesOfItem(atPath: folder.appending(path: "node_modules").path)) != nil
         guard !review.packages.packages.isEmpty || shipsNodeModules else { return (before, snapshot) }
 
@@ -484,14 +486,14 @@ final class PluginManager {
         if count > 0 { appendLog(id, "info", "installing \(count) \(count == 1 ? "package" : "packages") with bun install") }
         let runtime = runtime
         let hostFolder = host.deletingLastPathComponent()
-        let cache = paths.bunInstallCacheDirectory
+        let stagingRoot = paths.pluginInstallDirectory
         // install() deletes node_modules first, then runs Bun in a staging folder and moves the
         // result in; all of it off the main thread.
         // Only installs the package.json and bun.lock the sheet showed (same hashes).
         let expected = snapshot.fileHashes
         let result = await Task.detached {
             await PluginPackages.install(folder: folder, expectedFileHashes: expected, runtime: runtime,
-                                         hostFolder: hostFolder, cacheFolder: cache)
+                                         hostFolder: hostFolder, stagingRoot: stagingRoot)
         }.value
         // Bun's output, line by line, at most the last 100 lines.
         for line in result.output.split(whereSeparator: \.isNewline).suffix(100) {

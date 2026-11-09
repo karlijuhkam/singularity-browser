@@ -4,11 +4,19 @@ import Foundation
 ///
 /// Why not `JSONSerialization`: it silently accepts trailing commas and, for a key that appears
 /// twice, keeps one of the values. If Singularity checked one value while Bun installed the other,
-/// the check would be worthless, so this parser refuses duplicate keys outright.
+/// the check would be worthless, so this parser refuses duplicate keys outright (Bun keeps the
+/// *first* of two).
 ///
-/// `allowJSONC: true` is for `bun.lock`, which Bun writes as JSONC ("JSON with comments"): it
-/// allows trailing commas (Bun always writes them) and `//` / `/* */` comments. Everything else is
-/// plain JSON (RFC 8259): double-quoted strings, no NaN/Infinity, no unquoted keys.
+/// The same worry rules out comments. Bun reads bun.lock as JSONC, and its `//` comment ends at
+/// `\r`, U+2028 or U+2029 as well as `\n`: a parser that disagreed by one character about where a
+/// comment ends would see a different document than Bun. Bun 1.4.4 never writes comments, so none
+/// are accepted, in either mode.
+///
+/// `lockfile: true` is for `bun.lock`: trailing commas are allowed (Bun always writes them), and
+/// outside strings only space, tab and `\n` count as whitespace (Bun writes `\n` line endings), so
+/// a `\r`, U+2028/U+2029, a byte-order mark or NUL is an error. Otherwise it is plain JSON
+/// (RFC 8259, which also allows `\r` as whitespace): double-quoted strings, no NaN/Infinity, no
+/// unquoted keys, no comments.
 public enum JSONText {
     public struct ParseError: Error, Equatable, Sendable, CustomStringConvertible {
         public let message: String
@@ -17,11 +25,14 @@ public enum JSONText {
         public var description: String { "\(message) at byte \(offset)" }
     }
 
+    /// The message of the error for a `/` outside a string.
+    public static let commentMessage = "comments aren't allowed"
+
     /// Objects and arrays nested deeper than this are refused (the parser is recursive).
     static let maxDepth = 64
 
-    public static func parse(_ data: Data, allowJSONC: Bool = false) throws(ParseError) -> JSONValue {
-        var parser = Parser(bytes: [UInt8](data), jsonc: allowJSONC)
+    public static func parse(_ data: Data, lockfile: Bool = false) throws(ParseError) -> JSONValue {
+        var parser = Parser(bytes: [UInt8](data), lockfile: lockfile)
         let value = try parser.value(depth: 0)
         try parser.skipSpace()
         guard parser.atEnd else { throw parser.fail("unexpected text after the end") }
@@ -30,30 +41,27 @@ public enum JSONText {
 
     private struct Parser {
         let bytes: [UInt8]
-        let jsonc: Bool
+        /// Trailing commas allowed; `\r` not whitespace.
+        let lockfile: Bool
         var i = 0
 
-        init(bytes: [UInt8], jsonc: Bool) {
+        init(bytes: [UInt8], lockfile: Bool) {
             self.bytes = bytes
-            self.jsonc = jsonc
+            self.lockfile = lockfile
         }
 
         var atEnd: Bool { i >= bytes.count }
 
         func fail(_ message: String) -> ParseError { ParseError(message: message, offset: i) }
 
-        /// Skips whitespace, and in JSONC mode also comments.
+        /// Skips whitespace. Stops at anything else; a "/" (a comment's start) is an error.
         mutating func skipSpace() throws(ParseError) {
             while i < bytes.count {
                 switch bytes[i] {
-                case 0x20, 0x09, 0x0A, 0x0D: i += 1
-                case 0x2F where jsonc && i + 1 < bytes.count && bytes[i + 1] == 0x2F:   // "//"
-                    while i < bytes.count && bytes[i] != 0x0A { i += 1 }
-                case 0x2F where jsonc && i + 1 < bytes.count && bytes[i + 1] == 0x2A:   // "/*"
-                    i += 2
-                    while i + 1 < bytes.count && !(bytes[i] == 0x2A && bytes[i + 1] == 0x2F) { i += 1 }
-                    guard i + 1 < bytes.count else { throw fail("unterminated comment") }
-                    i += 2
+                case 0x20, 0x09, 0x0A: i += 1
+                case 0x0D where !lockfile: i += 1
+                case 0x0D: throw fail("carriage return outside a string")
+                case 0x2F: throw fail(JSONText.commentMessage)
                 default: return
                 }
             }
@@ -96,7 +104,7 @@ public enum JSONText {
                 i += 1
                 try skipSpace()
                 if i < bytes.count && bytes[i] == 0x7D {
-                    guard jsonc else { throw fail("trailing comma") }
+                    guard lockfile else { throw fail("trailing comma") }
                     i += 1
                     return .object(result)
                 }
@@ -118,7 +126,7 @@ public enum JSONText {
                 i += 1
                 try skipSpace()
                 if i < bytes.count && bytes[i] == 0x5D {
-                    guard jsonc else { throw fail("trailing comma") }
+                    guard lockfile else { throw fail("trailing comma") }
                     i += 1
                     return .array(result)
                 }

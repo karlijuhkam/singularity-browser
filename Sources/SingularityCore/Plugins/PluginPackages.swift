@@ -47,8 +47,9 @@ public enum PluginPackages {
     public static let registry = "https://registry.npmjs.org/"
     /// How long `bun install` may take.
     public static let installTimeout: Duration = .seconds(180)
-    /// bun.lock bigger than this is refused (a real one for dozens of packages is a few hundred KB).
-    static let maxLockfileBytes = 10 << 20
+    /// package.json or bun.lock bigger than this is refused (a bun.lock for dozens of packages is
+    /// tens of KB).
+    static let maxFileBytes = 1 << 20
 
     /// The declared packages (`dependencies`), sorted by name. `[]` without a package.json.
     /// Throws like `check`.
@@ -72,30 +73,71 @@ public enum PluginPackages {
     struct PackageFiles {
         /// nil when there is no package.json.
         var packageJSON: Data?
-        /// nil when there is no bun.lock regular file (a folder of that name counts as none).
+        /// nil when there is no bun.lock (a folder of that name counts as none).
         var lockfile: Data?
 
+        /// Reads both. Each must be a regular file (not a link, FIFO or device: a FIFO would block
+        /// the read forever) of at most 1 MB.
         static func read(folder: URL) throws(PluginError) -> PackageFiles {
-            let fm = FileManager.default
             var files = PackageFiles()
-            let packageURL = folder.appending(path: "package.json")
-            if (try? fm.attributesOfItem(atPath: packageURL.path)) != nil {
-                guard let data = try? Data(contentsOf: packageURL) else { throw .invalidJSON("package.json: not readable") }
-                files.packageJSON = data
+            switch readRegularFile(folder.appending(path: "package.json"), max: maxFileBytes) {
+            case .missing: break
+            case .data(let data): files.packageJSON = data
+            case .directory, .notRegular: throw .invalidJSON("package.json: not a regular file")
+            case .tooLarge: throw .invalidJSON("package.json: larger than 1 MB")
+            case .unreadable: throw .invalidJSON("package.json: not readable")
             }
-            var isDir: ObjCBool = false
-            let lock = folder.appending(path: "bun.lock")
-            if fm.fileExists(atPath: lock.path, isDirectory: &isDir), !isDir.boolValue {
-                do {
-                    let handle = try FileHandle(forReadingFrom: lock)
-                    defer { try? handle.close() }
-                    files.lockfile = try handle.read(upToCount: maxLockfileBytes + 1) ?? Data()
-                } catch {
-                    throw .invalidJSON("bun.lock: not readable")
-                }
+            switch readRegularFile(folder.appending(path: "bun.lock"), max: maxFileBytes) {
+            case .missing, .directory: break
+            case .data(let data): files.lockfile = data
+            case .notRegular: throw .invalidJSON("bun.lock: not a regular file")
+            case .tooLarge: throw .invalidJSON("bun.lock: larger than 1 MB")
+            case .unreadable: throw .invalidJSON("bun.lock: not readable")
             }
             return files
         }
+
+        /// SHA-256 of each file present, keyed like `PluginFingerprint.fileHashes`.
+        var hashes: [String: String] {
+            var out: [String: String] = [:]
+            if let packageJSON { out["package.json"] = sha256(packageJSON) }
+            if let lockfile { out["bun.lock"] = sha256(lockfile) }
+            return out
+        }
+
+        /// True when these are exactly the files `fileHashes` (a snapshot's hashes) describes:
+        /// same hashes, and present or missing alike.
+        func match(_ fileHashes: [String: String]) -> Bool {
+            hashes == fileHashes.filter { $0.key == "package.json" || $0.key == "bun.lock" }
+        }
+    }
+
+    enum ReadResult { case missing, directory, notRegular, tooLarge, unreadable, data(Data) }
+
+    /// Reads a file only if it is a regular file, without following a symlink and without
+    /// blocking: open(2) with O_NOFOLLOW (a link fails) and O_NONBLOCK (opening a FIFO doesn't
+    /// wait for a writer), then fstat(2) on what was opened, so nothing can be swapped in between.
+    static func readRegularFile(_ url: URL, max: Int) -> ReadResult {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        if fd < 0 {
+            switch errno {
+            case ENOENT: return .missing
+            case ELOOP: return .notRegular   // a symlink
+            default:
+                // open(2) on a directory works read-only; any other failure is "unreadable".
+                return .unreadable
+            }
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { return .unreadable }
+        switch info.st_mode & S_IFMT {
+        case S_IFREG: break
+        case S_IFDIR: return .directory
+        default: return .notRegular
+        }
+        guard let data = try? handle.read(upToCount: max + 1) ?? Data() else { return .unreadable }
+        return data.count > max ? .tooLarge : .data(data)
     }
 
     /// `check(folder:)` for files already read.
@@ -105,9 +147,20 @@ public enum PluginPackages {
         guard !dependencies.isEmpty else { return Summary(packages: [], lockedCount: 0) }
         let packages = dependencies.map { PluginPackage(name: $0.key, version: $0.value) }.sorted { $0.name < $1.name }
         guard let lockfile = files.lockfile else { throw .missingLockfile }
-        guard lockfile.count <= maxLockfileBytes else { throw .invalidJSON("bun.lock: larger than 10 MB") }
         let count = try checkLockfile(lockfile, dependencies: dependencies)
         return Summary(packages: packages, lockedCount: count)
+    }
+
+    /// Like `check(folder:)`, but from package.json and bun.lock as they were when `fileHashes`
+    /// (a scan's snapshot) was taken: they are read once and must have those hashes, so the
+    /// summary describes exactly the files that were fingerprinted. nil if they changed since.
+    public static func check(folder: URL, matching fileHashes: [String: String]) throws(PluginError) -> Summary? {
+        if (try? FileManager.default.attributesOfItem(atPath: folder.appending(path: ".npmrc").path)) != nil {
+            throw .forbiddenFile(".npmrc")
+        }
+        let files = try PackageFiles.read(folder: folder)
+        guard files.match(fileHashes) else { return nil }
+        return try check(files)
     }
 
     // MARK: - package.json
@@ -203,7 +256,7 @@ public enum PluginPackages {
 
     // MARK: - bun.lock
 
-    /// Checks a bun.lock (Bun 1.4.4's text format, JSONC) against `dependencies` and returns how
+    /// Checks a bun.lock (Bun 1.4.4's text format: JSON with trailing commas; see `JSONText`) against `dependencies` and returns how
     /// many packages it installs. The shapes Bun writes for each kind of package (generated with
     /// Bun 1.4.4; see Tests/…/Fixtures/bun-lock):
     ///
@@ -218,8 +271,10 @@ public enum PluginPackages {
     ///     nested     "is-odd/is-number": ["is-number@6.0.0", "", { … }, "sha512-…"]
     ///
     /// Accepted: exactly the first shape — four elements; `"<name>@<exact version>"` whose name is
-    /// the key's last package name; an empty second element (the default registry, which Singularity
-    /// sets to registry.npmjs.org); an object; an integrity string. Everything else is
+    /// the key's last package name; a second element that is exactly `""` (the default registry,
+    /// which Singularity sets to registry.npmjs.org: Bun downloads from a URL written here whatever
+    /// --registry says); an object; a well-formed `sha512-` integrity (`isSHA512Integrity`; Bun
+    /// installs an entry without one unchecked); metadata that passes `isSafeMeta`. Everything else is
     /// `unsupportedPackage(<key>)`. Also refused: top-level keys other than lockfileVersion,
     /// configVersion, workspaces and packages (e.g. overrides, patchedDependencies), workspaces
     /// other than the root, and root dependency groups other than `dependencies`. Each declared
@@ -227,12 +282,14 @@ public enum PluginPackages {
     static func checkLockfile(_ data: Data, dependencies: [String: String]) throws(PluginError) -> Int {
         let root: [String: JSONValue]
         do {
-            guard case .object(let object) = try JSONText.parse(data, allowJSONC: true) else {
+            guard case .object(let object) = try JSONText.parse(data, lockfile: true) else {
                 throw PluginError.invalidJSON("bun.lock: not an object")
             }
             root = object
         } catch let error as PluginError {
             throw error
+        } catch let error as JSONText.ParseError where error.message == JSONText.commentMessage {
+            throw .invalidJSON("bun.lock: comments aren't allowed")
         } catch {
             throw .invalidJSON("bun.lock: \(error)")
         }
@@ -252,7 +309,8 @@ public enum PluginPackages {
             guard let names = packagePath(key), let leaf = names.last,
                   case .array(let entry)? = packages[key], entry.count == 4,
                   case .string(let spec) = entry[0], case .string(let registryURL) = entry[1], registryURL.isEmpty,
-                  case .object = entry[2], case .string(let integrity) = entry[3], !integrity.isEmpty,
+                  case .object(let meta) = entry[2], isSafeMeta(meta),
+                  case .string(let integrity) = entry[3], isSHA512Integrity(integrity),
                   let parts = splitSpec(spec), parts.name == leaf, isExactVersion(parts.version) else {
                 throw .unsupportedPackage(key)
             }
@@ -287,6 +345,43 @@ public enum PluginPackages {
         return packages.count
     }
 
+    /// The third element of a registry entry (copied from the package's registry metadata). Bun
+    /// trusts it, so the parts that could point elsewhere are checked too (defence in depth: in
+    /// tests with Bun 1.4.4 the locked entries won anyway):
+    /// - `dependencies` / `optionalDependencies` / `peerDependencies`: names valid, version ranges
+    ///   without ":", "/" or "\" (so no `file:`, `link:`, `npm:`, git, GitHub or URL specs);
+    /// - `bin`: relative paths inside the package (no "..", not absolute).
+    static func isSafeMeta(_ meta: [String: JSONValue]) -> Bool {
+        for key in ["dependencies", "optionalDependencies", "peerDependencies"] {
+            guard let group = meta[key] else { continue }
+            guard case .object(let deps) = group else { return false }
+            for (name, value) in deps {
+                guard isValidName(name), case .string(let range) = value,
+                      !range.contains(where: { $0 == ":" || $0 == "/" || $0 == "\\" }) else { return false }
+            }
+        }
+        func isInsidePath(_ value: JSONValue) -> Bool {
+            guard case .string(let path) = value, !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\") else { return false }
+            return !path.split(separator: "/").contains("..")
+        }
+        switch meta["bin"] {
+        case nil: break
+        case .object(let bins)?: if !bins.values.allSatisfy(isInsidePath) { return false }
+        case let value?: if !isInsidePath(value) { return false }
+        }
+        return true
+    }
+
+    /// `sha512-` followed by the standard base64 of exactly 64 bytes (88 characters, ending "==").
+    static func isSHA512Integrity(_ text: String) -> Bool {
+        guard text.hasPrefix("sha512-") else { return false }
+        let b64 = text.dropFirst(7)
+        guard b64.utf8.count == 88,
+              b64.utf8.allSatisfy({ isAlnum($0) || $0 == 43 || $0 == 47 || $0 == 61 }),   // + / =
+              let bytes = Data(base64Encoded: String(b64)) else { return false }
+        return bytes.count == 64
+    }
+
     /// "a/@s/b/c" -> ["a", "@s/b", "c"]: the package names along a bun.lock key (each package's
     /// node_modules parent). nil if any of them isn't a valid name.
     static func packagePath(_ key: String) -> [String]? {
@@ -316,9 +411,17 @@ public enum PluginPackages {
     /// True for the files that make up a plugin's packages: package.json, bun.lock, and anything
     /// under a `node_modules` folder (at any depth: Bun resolves those too). These need a new
     /// approval even in development mode, which only covers edits to the plugin's own code.
+    /// Names compare ignoring case: on APFS (case-insensitive by default) "Node_Modules" and
+    /// "Package.JSON" are the same files Bun opens.
     public static func isPackagePath(_ path: String) -> Bool {
-        if path == "package.json" || path == "bun.lock" { return true }
-        return path.split(separator: "/").dropLast().contains("node_modules")
+        let lower = path.lowercased()
+        if lower == "package.json" || lower == "bun.lock" { return true }
+        return lower.split(separator: "/").dropLast().contains("node_modules")
+    }
+
+    /// True when `path` is inside the top-level `node_modules` (ignoring case, see `isPackagePath`).
+    public static func isInTopLevelNodeModules(_ path: String) -> Bool {
+        path.lowercased().hasPrefix("node_modules/")
     }
 
     /// True when any package file (`isPackagePath`) was added, removed or changed between the two
@@ -333,7 +436,7 @@ public enum PluginPackages {
     /// folder after installing is exactly what the approval sheet showed.
     public static func sameOutsideNodeModules(_ a: [String: String], _ b: [String: String]) -> Bool {
         func outside(_ hashes: [String: String]) -> [String: String] {
-            hashes.filter { !$0.key.hasPrefix("node_modules/") }
+            hashes.filter { !isInTopLevelNodeModules($0.key) }
         }
         return outside(a) == outside(b)
     }
@@ -361,9 +464,12 @@ public enum PluginPackages {
     }
 
     /// Exactly what `bun install` gets; nothing is inherited from the app (no NPM_TOKEN, proxies,
-    /// XDG_CONFIG_HOME…). `home` is a fresh, empty folder, so no ~/.npmrc or ~/.bunfig.toml is read.
-    /// The cache lives under `~/Singularity/.cache/`, not in the plugin's data folder (which the
-    /// plugin can write to, so it could plant files in the cache).
+    /// XDG_CONFIG_HOME, BUN_CONFIG_NO_VERIFY…). `home` is a fresh, empty folder, so no ~/.npmrc or
+    /// ~/.bunfig.toml is read. `cache` is a fresh, empty folder too, used by this one install: Bun
+    /// does not re-check a cached package's integrity, so a shared cache would let one plugin's
+    /// lockfile plant a tarball under a real name@version that another plugin's install then uses.
+    /// (Bun 1.4.4 has no flag that forces the check on cache hits; `--no-verify` only turns it off
+    /// for downloads.)
     public static func installEnvironment(home: String, cache: String) -> [String: String] {
         [
             "HOME": home,
@@ -411,10 +517,10 @@ public enum PluginPackages {
     /// - Parameters:
     ///   - runtime: the bundled Bun executable.
     ///   - hostFolder: the app's `plugin-host` folder (its bunfig.toml is empty).
-    ///   - cacheFolder: Bun's package cache (`~/Singularity/.cache/bun-install`). Staging folders
-    ///     are made next to it and deleted afterwards.
+    ///   - stagingRoot: where the per-install staging folders go
+    ///     (`~/Singularity/.cache/plugin-install`).
     public static func install(folder: URL, expectedFileHashes: [String: String]? = nil, runtime: URL, hostFolder: URL,
-                               cacheFolder: URL, timeout: Duration = installTimeout) async -> InstallResult {
+                               stagingRoot: URL, timeout: Duration = installTimeout) async -> InstallResult {
         let fm = FileManager.default
         func result(_ outcome: InstallResult.Outcome, _ message: String, _ output: String = "") -> InstallResult {
             if outcome == .failed || outcome == .filesChanged { removeNodeModules(in: folder) }
@@ -426,11 +532,8 @@ public enum PluginPackages {
         let summary: Summary
         do {
             files = try PackageFiles.read(folder: folder)
-            if let expected = expectedFileHashes {
-                guard files.packageJSON.map(sha256) == expected["package.json"],
-                      files.lockfile.map(sha256) == expected["bun.lock"] else {
-                    return result(.filesChanged, "Its package.json or bun.lock changed.")
-                }
+            if let expected = expectedFileHashes, !files.match(expected) {
+                return result(.filesChanged, "Its package.json or bun.lock changed.")
             }
             summary = try check(files)
         } catch {
@@ -441,17 +544,20 @@ public enum PluginPackages {
             return result(.nothingToInstall, "No packages")
         }
 
-        // <cache>/../install-<uuid>/{project,home}: project holds only package.json and bun.lock;
-        // home is Bun's empty HOME and TMPDIR. Private to this user, deleted afterwards.
-        let staging = cacheFolder.deletingLastPathComponent()
-            .appending(path: "install-\(UUID().uuidString)", directoryHint: .isDirectory)
+        // <stagingRoot>/install-<uuid>/{project,home,cache}: project holds only package.json and
+        // bun.lock; home is Bun's empty HOME and TMPDIR; cache is this install's own package cache.
+        // Private to this user (0700), deleted afterwards (and at app start, if one was left over).
+        let staging = stagingRoot.appending(path: stagingPrefix + UUID().uuidString, directoryHint: .isDirectory)
         defer { try? fm.removeItem(at: staging) }
         let project = staging.appending(path: "project", directoryHint: .isDirectory)
         let home = staging.appending(path: "home", directoryHint: .isDirectory)
-        let runtimePath: String, hostPath: String, projectPath: String, homePath: String
+        let cache = staging.appending(path: "cache", directoryHint: .isDirectory)
+        let runtimePath: String, hostPath: String, projectPath: String, homePath: String, cachePath: String
         do {
-            for dir in [cacheFolder, project, home] {
-                try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            for dir in [project, home, cache] {
+                try fm.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             }
             try packageJSON.write(to: project.appending(path: "package.json"))
             try lockfile.write(to: project.appending(path: "bun.lock"))
@@ -459,13 +565,14 @@ public enum PluginPackages {
             hostPath = try PluginProcess.realPath(hostFolder)
             projectPath = try PluginProcess.realPath(project)
             homePath = try PluginProcess.realPath(home)
+            cachePath = try PluginProcess.realPath(cache)
         } catch {
             return result(.failed, "Couldn't prepare the package install: \(error.localizedDescription)")
         }
 
         let run = await CommandBroker.run(
             path: runtimePath, arguments: installArguments(hostFolder: hostPath), timeout: timeout,
-            environment: installEnvironment(home: homePath, cache: cacheFolder.path),
+            environment: installEnvironment(home: homePath, cache: cachePath),
             currentDirectory: URL(filePath: projectPath, directoryHint: .isDirectory))
         let output = [run.stdout, run.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
         if run.timedOut {
@@ -484,6 +591,18 @@ public enum PluginPackages {
             return result(.failed, "Couldn't put the installed packages in place: \(error.localizedDescription)", output)
         }
         return result(.installed, count == 1 ? "Installed 1 package" : "Installed \(count) packages", output)
+    }
+
+    /// Staging folders are named `install-<uuid>`.
+    static let stagingPrefix = "install-"
+
+    /// Deletes staging folders an earlier run left behind (it quit or crashed mid-install). Call it
+    /// at app start, before any install can run.
+    public static func removeLeftoverStaging(in stagingRoot: URL) {
+        let fm = FileManager.default
+        for name in (try? fm.contentsOfDirectory(atPath: stagingRoot.path)) ?? [] where name.hasPrefix(stagingPrefix) {
+            try? fm.removeItem(at: stagingRoot.appending(path: name))
+        }
     }
 
     /// Lowercase hex SHA-256, as in `PluginFingerprint.fileHashes`.

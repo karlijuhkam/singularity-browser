@@ -222,9 +222,16 @@ public struct PluginReview: Equatable, Sendable {
         case .failure(let error): return .failure(error)
         case .success(let s): snapshot = s
         }
-        // The manifest check already validated these; read them again for the list on the sheet.
+        // The manifest check already validated these. The list on the sheet is built from
+        // package.json and bun.lock with exactly the hashes in this snapshot (what approve will
+        // install), not from whatever is on disk by now.
         let packages: PluginPackages.Summary
-        do { packages = try PluginPackages.check(folder: scan.folder) } catch { return .failure(error) }
+        do {
+            guard let summary = try PluginPackages.check(folder: scan.folder, matching: snapshot.fileHashes) else {
+                return .failure(.unreadable("package.json or bun.lock changed while being read; review again"))
+            }
+            packages = summary
+        } catch { return .failure(error) }
         var paths: [String: String] = [:]
         var missing: [String] = []
         for name in manifest.permissions.commands.keys.sorted() {

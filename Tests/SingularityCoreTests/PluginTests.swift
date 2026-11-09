@@ -900,24 +900,187 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(try edited { $0 } == nil)
     }
 
+    // MARK: Fix round 1: lockfiles crafted to parse differently in Bun
+
+    /// The with-deps lockfile text.
+    private func withDepsLock() throws -> String {
+        try String(contentsOf: fixtures.appending(path: "plugins/with-deps/bun.lock"), encoding: .utf8)
+    }
+
+    private func lockError(_ lock: String) throws -> PluginError? {
+        let folder = try copyWithDeps()
+        try Data(lock.utf8).write(to: folder.appending(path: "bun.lock"))
+        do { _ = try PluginManifest.load(from: folder); return nil } catch { return error }
+    }
+
+    /// The reviewer's attack: Bun ends a `//` comment at \r, U+2028 or U+2029 (not only \n) and
+    /// keeps the first of two duplicate keys. So `// note<CR>"packages": {evil}, //<LF>"packages":
+    /// {benign}` is, to Bun, the evil map. Every variant must be refused while parsing, so the
+    /// benign-looking map is never what gets checked.
+    @Test func commentTricksRefused() throws {
+        let benign = try withDepsLock()
+        let evil = #""packages": { "is-number": ["is-number@7.0.0", "", {}, "sha512-41Cifkg6e8TylSpdtTpeLVMqvSBEVzTttHvERD741+pnZ8ANv0004MRL43QKPDlK9cGvNp6NZWZUBlbGXYxxng=="], "is-odd": ["is-odd@3.0.1", "", { "dependencies": { "is-number": "*" } }, "sha512-CQpnWPrDwmP1+SMHXZhtLtJv90yiyVfluGsX5iNCVkrhQtU3TQHsUWPG9wkdk9Lgd5yNpAg9jQEo90CBaXgWMA=="], "is-odd/is-number": ["is-number@/tmp/local.tgz", {}] }"#
+        let comment = "\"workspaces\": {"
+        for end in ["\r", "\u{2028}", "\u{2029}"] {
+            let crafted = benign.replacingOccurrences(of: "  \"packages\": {", with: " // reviewed by Singularity\(end)\(evil), //\n  \"packages\": {")
+            #expect(crafted != benign)
+            if case .invalidJSON(let text)? = try lockError(crafted) {
+                #expect(text == "bun.lock: comments aren't allowed")
+            } else { Issue.record("comment ending in \(end.unicodeScalars.first!.value) accepted") }
+        }
+        // /* */ hiding the evil map from one parser and not the other.
+        let block = benign.replacingOccurrences(of: comment, with: "/* x */ " + comment)
+        #expect(try lockError(block) == .invalidJSON("bun.lock: comments aren't allowed"))
+        // A bare \r, U+2028, a BOM or NUL anywhere outside strings.
+        for odd in ["\r", "\u{2028}", "\u{2029}", "\u{FEFF}", "\u{0}"] {
+            if case .invalidJSON? = try lockError(benign.replacingOccurrences(of: "\n  \"packages\"", with: "\n\(odd)  \"packages\"")) {} else {
+                Issue.record("\(odd.unicodeScalars.first!.value) accepted")
+            }
+        }
+        if case .invalidJSON? = try lockError("\u{FEFF}" + benign) {} else { Issue.record("BOM accepted") }
+        if case .invalidJSON? = try lockError(benign.replacingOccurrences(of: "\n", with: "\r\n")) {} else { Issue.record("CRLF accepted") }
+        // Without any trick, the evil map itself is refused (its third entry is a local tarball).
+        let start = try #require(benign.range(of: "  \"packages\": {"))
+        let plainEvil = String(benign[..<start.lowerBound]) + "  " + evil + "\n}\n"
+        #expect(try lockError(plainEvil) == .unsupportedPackage("is-odd/is-number"))
+        #expect(try lockError(benign) == nil)
+    }
+
+    /// Entry shape: the URL slot must be exactly "", the integrity a real sha512.
+    @Test func strictRegistryEntries() throws {
+        let lock = try withDepsLock()
+        let goodNested = #""is-number@6.0.0", "", {}, "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg==""#
+        func with(_ entry: String) throws -> PluginError? {
+            try lockError(lock.replacingOccurrences(of: goodNested, with: entry))
+        }
+        #expect(lock.contains(goodNested))
+        // The reviewer's cache-poisoning entry: registry-shaped, but with a download URL.
+        #expect(try with(#""is-number@6.0.0", "https://registry.npmjs.org/is-even/-/is-even-1.0.0.tgz", {}, "sha512-LEhnkAdJqic4Dbqn58A0y52IXoHWlsueqQkKfMfdEnIYG8A1sm/GHidKkS6yvXlMoRrkM34csHnXQtOqcb+Jzg==""#)
+                == .unsupportedPackage("is-odd/is-number"))
+        for url in ["https://registry.npmjs.org/", "/tmp/x.tgz", " ", "0"] {
+            #expect(try with(#""is-number@6.0.0", "\#(url)", {}, "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg==""#)
+                    == .unsupportedPackage("is-odd/is-number"), "\(url)")
+        }
+        #expect(try with(#""is-number@6.0.0", null, {}, "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg==""#)
+                == .unsupportedPackage("is-odd/is-number"))
+        // Tarball URL with no integrity at all (reviewer's p5), and malformed integrities.
+        #expect(try with(#""is-number@https://registry.npmjs.org/is-even/-/is-even-1.0.0.tgz", {}"#)
+                == .unsupportedPackage("is-odd/is-number"))
+        for integrity in ["", "sha512-", "sha1-Wu1VHeILBK8KAWJUAiSZQX94GmM=", "sha512-abc", "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg",
+                          "sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfD*g==",
+                          "SHA512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg=="] {
+            #expect(try with(#""is-number@6.0.0", "", {}, "\#(integrity)""#) == .unsupportedPackage("is-odd/is-number"), "\(integrity)")
+        }
+        #expect(try with(#""is-number@6.0.0", "", {}"#) == .unsupportedPackage("is-odd/is-number"))
+        // Metadata pointing elsewhere (the reviewer's p2/p3/p13 forms).
+        let isOdd = #"{ "dependencies": { "is-number": "^6.0.0" } }"#
+        for spec in ["npm:is-even@1.0.0", "link:/tmp/secret", "github:jonschlinkert/is-number", "file:/tmp/secret",
+                     "https://registry.npmjs.org/is-even/-/is-even-1.0.0.tgz", "a/b", "..\\\\x"] {
+            #expect(try lockError(lock.replacingOccurrences(of: isOdd, with: #"{ "dependencies": { "is-number": "\#(spec)" } }"#))
+                    == .unsupportedPackage("is-odd"), "\(spec)")
+        }
+        #expect(try lockError(lock.replacingOccurrences(of: isOdd, with: #"{ "dependencies": { "is-number": ">=6.0.0 <7 || latest" } }"#)) == nil)
+        for bin in [#""../../../outside.txt""#, #""/tmp/outside.txt""#, #"{ "pw": "bin/../../x" }"#, #"{ "pw": 1 }"#] {
+            #expect(try lockError(lock.replacingOccurrences(of: isOdd, with: #"{ "bin": \#(bin) }"#)) == .unsupportedPackage("is-odd"), "\(bin)")
+        }
+        #expect(try lockError(lock.replacingOccurrences(of: isOdd, with: #"{ "bin": { "is-odd": "cli.js" }, "os": "darwin" }"#)) == nil)
+        #expect(PluginPackages.isSHA512Integrity("sha512-Wu1VHeILBK8KAWJUAiSZQX94GmOE45Rg6/538fKwiloUu21KncEkYGPqob2oSZ5mUT73vLGrHQjKw3KMPwfDzg=="))
+        // Every entry of every generated registry lockfile passes.
+        #expect(try with(goodNested) == nil)
+    }
+
+    /// package.json and bun.lock must be regular files of at most 1 MB; a FIFO must not hang.
+    @Test(.timeLimit(.minutes(1))) func packageFilesMustBeRegularAndSmall() throws {
+        let fm = FileManager.default
+        let fifo = try copyWithDeps()
+        try fm.removeItem(at: fifo.appending(path: "bun.lock"))
+        #expect(mkfifo(fifo.appending(path: "bun.lock").path, 0o600) == 0)
+        #expect(throws: PluginError.invalidJSON("bun.lock: not a regular file")) { try PluginPackages.check(folder: fifo) }
+        let fifoPackage = try tempPlugin()
+        #expect(mkfifo(fifoPackage.appending(path: "package.json").path, 0o600) == 0)
+        #expect(throws: PluginError.invalidJSON("package.json: not a regular file")) { try PluginPackages.check(folder: fifoPackage) }
+
+        let link = try copyWithDeps()
+        try fm.moveItem(at: link.appending(path: "bun.lock"), to: link.appending(path: "real.lock"))
+        try fm.createSymbolicLink(atPath: link.appending(path: "bun.lock").path, withDestinationPath: "real.lock")
+        #expect(throws: PluginError.invalidJSON("bun.lock: not a regular file")) { try PluginPackages.check(folder: link) }
+
+        let big = try copyWithDeps()
+        let text = try withDepsLock()
+        try Data((text + String(repeating: " ", count: 1 << 20)).utf8).write(to: big.appending(path: "bun.lock"))
+        #expect(throws: PluginError.invalidJSON("bun.lock: larger than 1 MB")) { try PluginPackages.check(folder: big) }
+        try Data(String(repeating: " ", count: (1 << 20) + 1).utf8).write(to: big.appending(path: "package.json"))
+        #expect(throws: PluginError.invalidJSON("package.json: larger than 1 MB")) { try PluginPackages.check(folder: big) }
+    }
+
+    /// The sheet's package list comes from the bytes the snapshot hashed.
+    @Test func reviewListsTheSnapshotsPackages() throws {
+        let folder = try copyWithDeps()
+        let hashes = try PluginFingerprint.fileHashes(folder: folder)
+        #expect(try PluginPackages.check(folder: folder, matching: hashes)?.packages.count == 2)
+        let lock = folder.appending(path: "bun.lock")
+        try Data((try String(contentsOf: lock, encoding: .utf8) + "\n").utf8).write(to: lock)
+        #expect(try PluginPackages.check(folder: folder, matching: hashes) == nil)
+        // A scan taken before the change, prepared after it: refused, not listed from the new file.
+        let scan = PluginScan(folder: folder, manifest: .success(try PluginManifest.load(from: folder)),
+                              files: .success(PluginFingerprint.Snapshot(fingerprint: "old", fileHashes: hashes)))
+        if case .failure(.unreadable) = PluginReview.prepare(scan: scan, resolve: { _ in nil }) {} else {
+            Issue.record("prepared from changed files")
+        }
+    }
+
+    @Test func packagePathsIgnoreCase() {
+        for path in ["package.json", "Package.JSON", "BUN.LOCK", "node_modules/a/i.js", "Node_Modules/a/i.js", "lib/NODE_MODULES/b/i.js"] {
+            #expect(PluginPackages.isPackagePath(path), "\(path)")
+        }
+        for path in ["background.ts", "lib/package.json", "node_modules", "my_node_modules/x.js"] {
+            #expect(!PluginPackages.isPackagePath(path), "\(path)")
+        }
+        #expect(PluginPackages.sameOutsideNodeModules(["a.ts": "1"], ["a.ts": "1", "Node_Modules/x/i.js": "2"]))
+        #expect(!PluginPackages.sameOutsideNodeModules(["a.ts": "1"], ["a.ts": "1", "lib/node_modules/x/i.js": "2"]))
+    }
+
+    @Test func leftoverStagingFoldersRemoved() throws {
+        let root = try tempPlugin().appending(path: "plugin-install", directoryHint: .isDirectory)
+        let fm = FileManager.default
+        for name in ["install-1/project", "install-2", "keep"] {
+            try fm.createDirectory(at: root.appending(path: name), withIntermediateDirectories: true)
+        }
+        PluginPackages.removeLeftoverStaging(in: root)
+        #expect(try fm.contentsOfDirectory(atPath: root.path) == ["keep"])
+        PluginPackages.removeLeftoverStaging(in: root.appending(path: "missing"))   // no folder: nothing happens
+    }
+
     @Test func jsonText() throws {
         #expect(try JSONText.parse(Data(#"{"a":[1,-2.5e3,true,false,null,"é😀\n"]}"#.utf8))
                 == .object(["a": .array([.number(1), .number(-2500), .bool(true), .bool(false), .null, .string("é😀\n")])]))
-        // JSONC: trailing commas and comments, only when allowed.
-        let jsonc = Data("{ // c\n \"a\": [1, 2,], /* b */ \"b\": {},\n}".utf8)
-        #expect(try JSONText.parse(jsonc, allowJSONC: true) == .object(["a": .array([.number(1), .number(2)]), "b": .object([:])]))
-        #expect(throws: JSONText.ParseError.self) { try JSONText.parse(jsonc) }
+        // Lockfile mode: trailing commas, only when allowed.
+        let trailing = Data("{\n \"a\": [1, 2,],\t\"b\": {},\n}".utf8)
+        #expect(try JSONText.parse(trailing, lockfile: true) == .object(["a": .array([.number(1), .number(2)]), "b": .object([:])]))
+        #expect(throws: JSONText.ParseError.self) { try JSONText.parse(trailing) }
         #expect(throws: JSONText.ParseError.self) { try JSONText.parse(Data(#"{"a":1,}"#.utf8)) }
-        for bad in [#"{"a":1,"a":2}"#, #"{"a":01}"#, #"{'a':1}"#, #"{a:1}"#, #"[1 2]"#, #""\x""#, "\"a\u{1}\"", #""\ud800""#,
-                    #"{"a":1} x"#, "", "/* open", #"[,]"#, #"{,}"#, "NaN"] {
-            #expect(throws: JSONText.ParseError.self, "\(bad)") { try JSONText.parse(Data(bad.utf8), allowJSONC: true) }
+        // \r is JSON whitespace (package.json), but not in a lockfile (Bun ends a // comment there).
+        #expect(try JSONText.parse(Data("{\"a\":\r\n1}".utf8)) == .object(["a": .number(1)]))
+        #expect(throws: JSONText.ParseError.self) { try JSONText.parse(Data("{\"a\":\r\n1}".utf8), lockfile: true) }
+        // Inside strings, \r escapes and U+2028 are just text.
+        #expect(try JSONText.parse(Data("\"a\\r\u{2028}b\"".utf8), lockfile: true) == .string("a\r\u{2028}b"))
+        for bad in [#"{"a":1,"a":2}"#, #"{"a":{"b":1,"b":1}}"#, #"{"a":01}"#, #"{'a':1}"#, #"{a:1}"#, #"[1 2]"#, #""\x""#,
+                    "\"a\u{1}\"", #""\ud800""#, #"{"a":1} x"#, "", "/* open", #"[,]"#, #"{,}"#, "NaN",
+                    "{ // c\n \"a\": 1 }", "{ /* c */ \"a\": 1 }", "{\"a\": 1 // c\n}", "{\u{2028}\"a\":1}",
+                    "{\u{2029}\"a\":1}", "\u{FEFF}{\"a\":1}", "{\"a\":1}\u{0}", "{\u{A0}\"a\":1}", "{\u{B}\"a\":1}"] {
+            for lockfile in [false, true] {
+                #expect(throws: JSONText.ParseError.self, "\(bad)") { try JSONText.parse(Data(bad.utf8), lockfile: lockfile) }
+            }
+        }
+        #expect(throws: JSONText.ParseError(message: JSONText.commentMessage, offset: 2)) {
+            try JSONText.parse(Data("{ // c\n}".utf8), lockfile: true)
         }
         #expect(throws: JSONText.ParseError.self) { try JSONText.parse(Data([0x22, 0xFF, 0x22])) }  // invalid UTF-8
         let deep = String(repeating: "[", count: 100) + String(repeating: "]", count: 100)
         #expect(throws: JSONText.ParseError.self) { try JSONText.parse(Data(deep.utf8)) }
         // Every generated lockfile parses.
         for name in try FileManager.default.contentsOfDirectory(atPath: fixtures.appending(path: "bun-lock").path) {
-            _ = try JSONText.parse(Data(contentsOf: fixtures.appending(path: "bun-lock/\(name)")), allowJSONC: true)
+            _ = try JSONText.parse(Data(contentsOf: fixtures.appending(path: "bun-lock/\(name)")), lockfile: true)
         }
     }
 
@@ -970,7 +1133,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("shipped".utf8).write(to: file)
         let result = await PluginPackages.install(folder: folder, runtime: URL(filePath: "/nonexistent/bun"),
-                                                  hostFolder: URL(filePath: "/nonexistent"), cacheFolder: folder.appending(path: "c"))
+                                                  hostFolder: URL(filePath: "/nonexistent"), stagingRoot: folder.appending(path: "c"))
         #expect(result.outcome == .nothingToInstall)
         #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "node_modules").path))
     }
@@ -984,7 +1147,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         try FileManager.default.createDirectory(at: folder.appending(path: "node_modules/x"), withIntermediateDirectories: true)
         let result = await PluginPackages.install(folder: folder, expectedFileHashes: shown, runtime: URL(filePath: "/nonexistent/bun"),
                                                   hostFolder: URL(filePath: "/nonexistent"),
-                                                  cacheFolder: folder.deletingLastPathComponent().appending(path: "cache"))
+                                                  stagingRoot: folder.deletingLastPathComponent().appending(path: "staging"))
         #expect(result.outcome == .filesChanged)
         #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "node_modules").path))
         // A package.json that appeared after the review counts too.
@@ -992,7 +1155,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         let shownPlain = try PluginFingerprint.fileHashes(folder: plain)
         try Data(#"{"dependencies":{}}"#.utf8).write(to: plain.appending(path: "package.json"))
         let second = await PluginPackages.install(folder: plain, expectedFileHashes: shownPlain, runtime: URL(filePath: "/nonexistent/bun"),
-                                                  hostFolder: URL(filePath: "/nonexistent"), cacheFolder: plain.appending(path: "c"))
+                                                  hostFolder: URL(filePath: "/nonexistent"), stagingRoot: plain.appending(path: "c"))
         #expect(second.outcome == .filesChanged)
     }
 
@@ -1001,7 +1164,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         try FileManager.default.createDirectory(at: folder.appending(path: "node_modules/x"), withIntermediateDirectories: true)
         let result = await PluginPackages.install(folder: folder, runtime: URL(filePath: "/nonexistent/bun"),
                                                   hostFolder: URL(filePath: "/nonexistent"),
-                                                  cacheFolder: folder.deletingLastPathComponent().appending(path: "cache"))
+                                                  stagingRoot: folder.deletingLastPathComponent().appending(path: "staging"))
         #expect(result.outcome == .failed)
         #expect(!result.message.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: folder.appending(path: "node_modules").path))
@@ -1014,9 +1177,9 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
                      "--linker=hoisted", "--backend=clonefile"] {
             #expect(args.contains(flag), "\(flag)")
         }
-        let env = PluginPackages.installEnvironment(home: "/tmp/h", cache: "/S/.cache/bun-install")
+        let env = PluginPackages.installEnvironment(home: "/S/install-1/home", cache: "/S/install-1/cache")
         #expect(Set(env.keys) == ["HOME", "TMPDIR", "LANG", "NO_COLOR", "BUN_INSTALL_CACHE_DIR", "BUN_CONFIG_REGISTRY"])
-        #expect(env["BUN_INSTALL_CACHE_DIR"] == "/S/.cache/bun-install")
+        #expect(env["BUN_INSTALL_CACHE_DIR"] == "/S/install-1/cache")
     }
 
     @Test func removeBinFoldersKeepsEverythingElse() throws {
@@ -1057,21 +1220,19 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         try Data("BUN_CONFIG_REGISTRY=http://127.0.0.1:9/\nNPM_CONFIG_REGISTRY=http://127.0.0.1:9/\n".utf8)
             .write(to: folder.appending(path: ".env"))
         let lockBefore = try Data(contentsOf: folder.appending(path: "bun.lock"))
-        let cache = folder.deletingLastPathComponent().appending(path: "cache", directoryHint: .isDirectory)
+        let stagingRoot = folder.deletingLastPathComponent().appending(path: "staging", directoryHint: .isDirectory)
         let result = await PluginPackages.install(folder: folder, expectedFileHashes: try PluginFingerprint.fileHashes(folder: folder),
                                                   runtime: installBun,
                                                   hostFolder: installRepo.appending(path: "Resources/plugin-host"),
-                                                  cacheFolder: cache)
+                                                  stagingRoot: stagingRoot)
         #expect(result.outcome == .installed, "\(result.message)\n\(result.output)")
         #expect(result.message == "Installed 2 packages")
-        // The staging folder is gone; only the plugin and the cache are left.
-        #expect(Set(try FileManager.default.contentsOfDirectory(atPath: folder.deletingLastPathComponent().path))
-                == ["with-deps", "cache"])
+        // The staging folder (with this install's own cache) is gone.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: stagingRoot.path).isEmpty)
         let fm = FileManager.default
         #expect(fm.fileExists(atPath: folder.appending(path: "node_modules/is-odd/index.js").path))
         #expect(fm.fileExists(atPath: folder.appending(path: "node_modules/is-odd/node_modules/is-number/index.js").path))
         #expect(try Data(contentsOf: folder.appending(path: "bun.lock")) == lockBefore)
-        #expect(try fm.contentsOfDirectory(atPath: cache.path).isEmpty == false)
         // No symlinks left, so the folder can be fingerprinted and approved.
         let scan = PluginScan.scan(folder: folder)
         #expect(scan.validManifest != nil)
