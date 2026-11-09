@@ -17,6 +17,9 @@ public enum PluginError: Error, Equatable, Sendable {
     case symlinkNotAllowed(String)
     /// A FIFO, socket or device inside a plugin folder; the path is relative.
     case unsupportedFile(String)
+    /// A regular file with more than one hard link (st_nlink > 1): its content could be changed
+    /// through another name, perhaps from outside the folder, without the folder looking edited.
+    case hardLinkNotAllowed(String)
     /// The plugin's files couldn't be read (permissions, a file vanished mid-read, …); the text
     /// is the underlying error.
     case unreadable(String)

@@ -5,10 +5,10 @@
   "description": "Fill logins from 1Password, unlocked with Touch ID.",
   "author": "Karli Juhkam",
   "background": "background.ts",
-  "page": { "script": "page.ts", "sites": ["<all_urls>"] },
+  "page": { "script": "page.ts", "sites": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"] },
   "permissions": {
-    "pageAdditions": ["<all_urls>"],
-    "fillForms": ["<all_urls>"],
+    "pageAdditions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+    "fillForms": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
     "commands": { "op": ["item list", "item get"] },
     "network": []
   }

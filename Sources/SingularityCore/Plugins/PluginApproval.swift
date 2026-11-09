@@ -24,8 +24,9 @@ public enum PluginFingerprint {
     /// `.DS_Store` files at any depth are skipped.
     /// Each file contributes: path length, path bytes, content length, content bytes (lengths are
     /// 8-byte big-endian), so no two different folders can produce the same byte stream.
-    /// Throws `symlinkNotAllowed` for a symlink (also the folder itself, reported as "."), and
-    /// `unsupportedFile` for anything but regular files and directories (a FIFO would hang the read).
+    /// Throws `symlinkNotAllowed` for a symlink (also the folder itself, reported as "."),
+    /// `hardLinkNotAllowed` for a regular file with more than one hard link, and `unsupportedFile`
+    /// for anything but regular files and directories (a FIFO would hang the read).
     public static func compute(folder: URL) throws -> String {
         try snapshot(folder: folder).fingerprint
     }
@@ -71,11 +72,17 @@ public enum PluginFingerprint {
                 if name == ".DS_Store" || (prefix.isEmpty && name == ".git") { continue }
                 let url = dir.appending(path: name)
                 let rel = prefix.isEmpty ? name : prefix + "/" + name
-                let type = try fm.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType
-                switch type {
+                let attributes = try fm.attributesOfItem(atPath: url.path)
+                switch attributes[.type] as? FileAttributeType {
                 case .typeSymbolicLink: throw PluginError.symlinkNotAllowed(rel)
                 case .typeDirectory: try walk(url, rel)
-                case .typeRegular: files.append((rel, url))
+                case .typeRegular:
+                    // .referenceCount is st_nlink. A second hard link (anywhere on the volume)
+                    // could change this file without anything in the folder being written.
+                    if let links = attributes[.referenceCount] as? Int, links > 1 {
+                        throw PluginError.hardLinkNotAllowed(rel)
+                    }
+                    files.append((rel, url))
                 default: throw PluginError.unsupportedFile(rel)
                 }
             }

@@ -17,6 +17,10 @@ public enum SandboxProfile {
             "(allow file-read* (literal \"/\"))",
             // The plugin's own files, read-only: it cannot rewrite itself.
             "(allow file-read* (subpath \(quote(pluginFolder))))",
+            // ...except its .git folder: the fingerprint skips it (see PluginFingerprint), so code
+            // or data there was never reviewed. A later rule wins over an earlier one in SBPL. The
+            // last component isn't resolved: a .git symlink can't widen this to another folder.
+            "(deny file-read* (subpath \(quoteLiteral(realPath(pluginFolder.path) + "/.git"))))",
             // Bun crashes (panics) when a sysctl it needs is denied, so the ones Bun 1.4.4 was seen
             // reading are allowed, found with `(allow sysctl-read (with report))` and the system log:
             // at startup (hardware and OS version facts) and in node:os (cpus, uptime, loadavg,
@@ -52,7 +56,12 @@ public enum SandboxProfile {
     /// An SBPL string literal for the real path of `url`. The sandbox matches real paths, so
     /// symlinks are resolved (/var -> /private/var); backslash and double quote are escaped.
     private static func quote(_ url: URL) -> String {
-        let escaped = realPath(url.path)
+        quoteLiteral(realPath(url.path))
+    }
+
+    /// An SBPL string literal for `path` as it is.
+    private static func quoteLiteral(_ path: String) -> String {
+        let escaped = path
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: "\\n")

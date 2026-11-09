@@ -184,3 +184,14 @@ Settled by the builder (Claude) after the design review; the owner can override 
 - **Runtime:** Bun, bundled inside Singularity.
 - **npm packages:** allowed, declared and pinned (`package.json` + `bun.lock`), installed by Singularity at approval.
 - **1Password:** one account; no per-Space account mapping.
+
+## Known limitations (round 1)
+
+Residual risks accepted by the owner at the round-1 reviews (see the SDD ledger). Each one is stated in `docs/plugins/AUTHORING.md` where it matters, and reviewers are told to look for it.
+
+- **DOM-route exfiltration.** A page script that may change the page can make the page load things that carry data: image URLs, inserted `<img>`/`<script>`/`<link>` elements, CSS `url(...)`, navigation, form submission. Network APIs are locked in the plugin's world, but these can't be blocked from a script that must touch the DOM. Using one is a reason to reject a plugin.
+- **A page script inserting `<script>` into the page's own world.** Cookies and storage are locked in the plugin's world (in every frame it can reach), but on a site without a Content Security Policy an inserted `<script>` element (or an inline event-handler attribute, or a `javascript:` URL) runs as the page, where they are readable. Reviewers must reject it.
+- **KERN_PROCARGS2.** An approved plugin's background program can read the command-line arguments (not the environment) of the user's other processes: the macOS sandbox can't deny that sysctl. It has no network to send them anywhere, but secrets passed as arguments are readable.
+- **Commands are unsandboxed.** Programs run through `singularity.run` run as the user, with network access and the app's own environment; only the leading sub-command words are checked and further arguments are free. Shells, interpreters, network tools and programs that run other programs are refused by name (`CommandPolicy.refused`), and pinned paths are re-checked at every launch.
+- **Scan-to-read gap.** The fingerprint is checked right before each launch, but a file can still change between that scan and Bun reading it. The next file event pauses the plugin.
+- **Restored tabs.** Tabs restored at launch get plugin page scripts only on their next load.

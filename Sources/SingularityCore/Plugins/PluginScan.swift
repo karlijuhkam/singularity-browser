@@ -76,19 +76,32 @@ public enum PluginLaunch {
     }
 
     /// Run only when the plugin is approved, switched on in at least one Space, has a background
-    /// program, and every pinned command path is still an executable file.
+    /// program, and every pinned command path is still an executable file that passes
+    /// `CommandBroker.vet` (the path and, after following symlinks, its target aren't refused
+    /// programs: a link pinned at approval may have been pointed at a shell since, or the refused
+    /// list may have grown).
     public static func decide(status: PluginStatus, approval: PluginApproval?, manifest: PluginManifest?,
-                              isExecutable: (String) -> Bool = isExecutableRegularFile) -> Decision {
+                              isExecutable: (String) -> Bool = isExecutableRegularFile,
+                              isAllowedProgram: (String) -> Bool = isAllowedProgram) -> Decision {
         guard status == .approved, let approval, let manifest else { return .notApproved }
         guard !approval.enabledSpaces.isEmpty else { return .switchedOff }
         guard manifest.background != nil else { return .nothingToRun }
-        for (name, path) in approval.commandPaths.sorted(by: { $0.key < $1.key }) where !isExecutable(path) {
-            return .blocked("\(name) isn't at \(path) any more — review to re-approve")
+        for (name, path) in approval.commandPaths.sorted(by: { $0.key < $1.key }) {
+            if !isExecutable(path) { return .blocked("\(name) isn't at \(path) any more — review to re-approve") }
+            if !isAllowedProgram(path) {
+                return .blocked("\(path) is now a program plugins may not run — review to re-approve")
+            }
         }
         for name in manifest.permissions.commands.keys.sorted() where approval.commandPaths[name] == nil {
             return .blocked("no approved path for \(name) — review to re-approve")
         }
         return .launch
+    }
+
+    /// `CommandBroker.vet` passes `path`: an executable file that, by its name and its symlink
+    /// target's name, isn't a refused program.
+    public static func isAllowedProgram(_ path: String) -> Bool {
+        CommandBroker.vet(path) != nil
     }
 
     /// An existing regular file (after following symlinks: Homebrew's `op` is a link) that we may

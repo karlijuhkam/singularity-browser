@@ -29,6 +29,8 @@ public enum CommandBroker {
     /// aliases, functions and builtins (zsh's `echo`) don't count. GUI apps don't inherit the
     /// shell's PATH, so the login shell is asked for it. Returns nil for invalid or refused names
     /// (checked before any shell runs), and when nothing suitable is found.
+    ///
+    /// Blocks up to ~6 s (runs the login shell). Never call on the main actor.
     public static func resolve(_ name: String, loginShell: String) -> String? {
         guard CommandPolicy.isValidName(name), !CommandPolicy.isRefused(name) else { return nil }
         // A fixed script: nothing from the plugin goes into it. The marker line lets us skip
@@ -113,9 +115,11 @@ public enum CommandBroker {
     /// `environment` is given (then exactly that, nothing inherited). `currentDirectory`: the
     /// working directory (default: the app's). Collects stdout and stderr (each capped at 10 MB).
     /// After `timeout` it sends SIGTERM, then SIGKILL 2 s later, and reports `timedOut`. Never
-    /// blocks a thread while waiting.
+    /// blocks a thread while waiting. `children`: the program is listed there while it runs, so
+    /// its owner can kill it (`RunningChildren.killAll`, at app quit).
     public static func run(path: String, arguments: [String], timeout: Duration,
-                           environment: [String: String]? = nil, currentDirectory: URL? = nil) async -> CommandResult {
+                           environment: [String: String]? = nil, currentDirectory: URL? = nil,
+                           children: RunningChildren? = nil) async -> CommandResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -140,6 +144,8 @@ public enum CommandBroker {
                 continuation.resume(returning: nil)
                 return
             }
+            // Listed for its owner; an owner that is already shutting down gets it killed at once.
+            if let children, !children.add(process) { kill(process.processIdentifier, SIGKILL) }
             // Parent keeps only the read ends; the child holds its own copies of the write ends.
             // (Pipe closes our write ends when the Pipe is deallocated; Process closes them after launch.)
             DispatchQueue.global().async { out.drain(outPipe.fileHandleForReading); outDone.finish() }
@@ -155,6 +161,9 @@ public enum CommandBroker {
                 if process.isRunning { kill(flag, SIGKILL) }         // ignored SIGTERM: force it
             }
         }
+        // Exited (and reaped): no longer one of the owner's children. Removed here, after the
+        // await, so it always comes after `add`.
+        children?.remove(process)
         guard let status else {
             return CommandResult(status: -1, stdout: "", stderr: err.string, timedOut: false)
         }
@@ -174,6 +183,46 @@ public enum CommandBroker {
         process.terminate()
         let pid = process.processIdentifier
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if process.isRunning { kill(pid, SIGKILL) } }
+    }
+}
+
+// MARK: - Children of one owner
+
+/// The programs `CommandBroker.run` started for one owner (a `PluginProcess`) that are still
+/// running, so the owner can kill them when it ends: at app quit, a command a plugin started
+/// shouldn't outlive the app. Holds only processes it was given, each until `run` has seen it exit.
+public final class RunningChildren: @unchecked Sendable {   // all state behind `lock`
+    private let lock = NSLock()
+    private var processes: [ObjectIdentifier: Process] = [:]
+    private var closed = false
+
+    public init() {}
+
+    /// Adds a just-started process; false once `killAll` was called (the caller kills it).
+    func add(_ process: Process) -> Bool {
+        lock.withLock {
+            guard !closed else { return false }
+            processes[ObjectIdentifier(process)] = process
+            return true
+        }
+    }
+
+    func remove(_ process: Process) {
+        lock.withLock { _ = processes.removeValue(forKey: ObjectIdentifier(process)) }
+    }
+
+    /// How many are listed (for tests).
+    public var count: Int { lock.withLock { processes.count } }
+
+    /// SIGKILLs every listed process that is still running, and refuses new ones from now on.
+    /// `isRunning` is false once Foundation has reaped the child, so a pid that may already
+    /// belong to another program is never signalled.
+    public func killAll() {
+        let list: [Process] = lock.withLock {
+            closed = true
+            return Array(processes.values)
+        }
+        for process in list where process.isRunning { kill(process.processIdentifier, SIGKILL) }
     }
 }
 

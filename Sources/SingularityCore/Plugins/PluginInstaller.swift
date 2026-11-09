@@ -33,9 +33,15 @@ public enum PluginInstaller {
     ///    with the same id is never replaced.
     public static func add(from source: URL, pluginsDirectory: URL) throws(AddError) -> String {
         let fm = FileManager.default
-        let sourcePath = source.standardizedFileURL.resolvingSymlinksInPath().path
-        let pluginsPath = pluginsDirectory.standardizedFileURL.resolvingSymlinksInPath().path
-        if sourcePath == pluginsPath || sourcePath.hasPrefix(pluginsPath + "/") { throw .alreadyInPluginsFolder }
+        // realpath(3), like everywhere else in the plugin code (URL.resolvingSymlinksInPath maps
+        // /private/var back to /var, so two spellings of one folder could compare unequal). A
+        // plugins folder that doesn't exist yet can't contain the source; a source that doesn't
+        // exist fails below, when its manifest is read.
+        if let sourcePath = try? PluginProcess.realPath(source),
+           let pluginsPath = try? PluginProcess.realPath(pluginsDirectory),
+           sourcePath == pluginsPath || sourcePath.hasPrefix(pluginsPath + "/") {
+            throw .alreadyInPluginsFolder
+        }
 
         let id: String
         do {

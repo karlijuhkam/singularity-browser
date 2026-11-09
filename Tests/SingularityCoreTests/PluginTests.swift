@@ -338,6 +338,21 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(throws: PluginError.symlinkNotAllowed("link")) { _ = try PluginFingerprint.compute(folder: folder) }
     }
 
+    @Test func fingerprintRefusesHardLinks() throws {
+        let folder = try copyFixture("ok-1password")
+        // A file outside the folder, hard-linked in: writing it would change the plugin unseen.
+        let outside = try tempDir().appending(path: "outside.ts")
+        try "export {}".write(to: outside, atomically: true, encoding: .utf8)
+        try FileManager.default.linkItem(at: outside, to: folder.appending(path: "linked.ts"))
+        #expect(throws: PluginError.hardLinkNotAllowed("linked.ts")) { _ = try PluginFingerprint.compute(folder: folder) }
+        #expect(throws: PluginError.hardLinkNotAllowed("linked.ts")) { _ = try PluginFingerprint.listFiles(folder: folder) }
+        #expect(PluginError.hardLinkNotAllowed("linked.ts").userMessage
+                == "it contains a file with another hard link (linked.ts); copy the file instead")
+        // Once the other name is gone, the file is an ordinary one again.
+        try FileManager.default.removeItem(at: outside)
+        _ = try PluginFingerprint.compute(folder: folder)
+    }
+
     // MARK: Status
 
     @Test func statusEvaluation() throws {
@@ -467,6 +482,13 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(!p.contains("process-fork"))
         #expect(p.contains("(allow process-exec (literal \"/Applications/S.app/Contents/Helpers/bun\"))"))
         #expect(p.contains("(allow file-read* (subpath \"/private/tmp/sbx-test/plugins/a\"))"))
+        // The plugin's .git can't be read, and that rule comes after the allow (the later rule wins).
+        let deny = "(deny file-read* (subpath \"/private/tmp/sbx-test/plugins/a/.git\"))"
+        #expect(p.contains(deny))
+        if let allowAt = p.range(of: "(allow file-read* (subpath \"/private/tmp/sbx-test/plugins/a\"))"),
+           let denyAt = p.range(of: deny) {
+            #expect(allowAt.lowerBound < denyAt.lowerBound)
+        }
         #expect(p.contains("(allow file-read* file-write* (subpath \"/private/tmp/sbx-test/data/a\"))"))
         #expect(p.contains("(allow file-read* (subpath \"/private/tmp/sbx-test/host\"))"))
         #expect(!p.contains("(allow sysctl-read)"))   // only named sysctls
@@ -509,7 +531,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         defer { victim.terminate() }
 
         let script = """
-        import { readFileSync, writeFileSync } from "node:fs";
+        import { readdirSync, readFileSync, writeFileSync } from "node:fs";
         const out: string[] = ["ok"];
         const probe = async (name: string, fn: () => unknown) => {
           try { await fn(); out.push(name + ":allowed"); } catch { out.push(name + ":denied"); }
@@ -518,6 +540,11 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         await probe("net", async () => { await fetch("https://example.com", { signal: AbortSignal.timeout(5000) }); });
         await probe("home", () => readFileSync(\(json(secret.path)), "utf8"));
         await probe("pluginwrite", () => writeFileSync(\(json(plugin.path))+"/evil.txt", "x"));
+        // The plugin's own files load, but its .git folder (skipped by the fingerprint) can't be read.
+        await probe("pluginread", () => { if (readFileSync(\(json(plugin.path))+"/notes.txt", "utf8") !== "n") throw 1; });
+        await probe("gitignoreread", () => { if (readFileSync(\(json(plugin.path))+"/.gitignore", "utf8") !== "g") throw 1; });
+        await probe("gitread", () => readFileSync(\(json(plugin.path))+"/.git/x", "utf8"));
+        await probe("gitlist", () => { if (readdirSync(\(json(plugin.path))+"/.git").length === 0) throw 1; });
         await probe("spawn", () => { const r = Bun.spawnSync(["/bin/echo", "hi"]); if (r.exitCode !== 0 || !r.success) throw 1; });
         // sysctl through bun:ffi (plain libSystem calls): the process list, the host name, and
         // another process's arguments (KERN_PROCARGS2, of a `sleep` the test starts).
@@ -548,6 +575,10 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         console.log(out.join("\\n"));
         """
         try script.write(to: plugin.appending(path: "t.ts"), atomically: true, encoding: .utf8)
+        try "n".write(to: plugin.appending(path: "notes.txt"), atomically: true, encoding: .utf8)
+        try "g".write(to: plugin.appending(path: ".gitignore"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: plugin.appending(path: ".git"), withIntermediateDirectories: true)
+        try "x".write(to: plugin.appending(path: ".git/x"), atomically: true, encoding: .utf8)
 
         func run(_ exe: String, _ args: [String]) throws -> String {
             let proc = Process()
@@ -566,6 +597,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         // Control: the same script without a sandbox proves the probes work (network is not asserted: may be offline).
         let control = Set(try run(bunPath.path, ["run", scriptPath]).split(separator: "\n").map(String.init))
         #expect(control.contains("home:allowed") && control.contains("spawn:allowed"), Comment(rawValue: "\(control)"))
+        #expect(control.contains("gitread:allowed") && control.contains("gitlist:allowed"), Comment(rawValue: "\(control)"))
         #expect(control.contains("intl:allowed") && control.contains("locale:allowed"), Comment(rawValue: "\(control)"))
         #expect(control.contains("proclist:allowed") && control.contains("procargs:allowed")
                 && control.contains("hostname:allowed"), Comment(rawValue: "\(control)"))
@@ -579,6 +611,10 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(lines.contains("net:denied"), Comment(rawValue: output))
         #expect(lines.contains("home:denied"), Comment(rawValue: output))
         #expect(lines.contains("pluginwrite:denied"), Comment(rawValue: output))
+        #expect(lines.contains("pluginread:allowed"), Comment(rawValue: output))
+        #expect(lines.contains("gitignoreread:allowed"), Comment(rawValue: output))
+        #expect(lines.contains("gitread:denied"), Comment(rawValue: output))
+        #expect(lines.contains("gitlist:denied"), Comment(rawValue: output))
         #expect(lines.contains("spawn:denied"), Comment(rawValue: output))
         #expect(lines.contains("intl:allowed"), Comment(rawValue: output))
         #expect(lines.contains("locale:allowed"), Comment(rawValue: output))

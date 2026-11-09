@@ -477,6 +477,33 @@ struct PluginProcessTests {
         #expect(ContinuousClock.now - started < .seconds(1.5))
     }
 
+    /// At app quit, a command the plugin started (outside the sandbox) is killed with it.
+    @Test(.timeLimit(.minutes(1))) func terminateNowKillsRunningCommands() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        // A stand-in for "echo" that records its pid and then sleeps (exec keeps the same pid).
+        let pidFile = ws.root.appending(path: "child.pid")
+        let slow = ws.root.appending(path: "sleepy-echo")
+        try "#!/bin/sh\necho $$ > '\(pidFile.path)'\nexec /bin/sleep 30\n".write(to: slow, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: slow.path)
+        let process = try makeProcess(ws, commandPaths: ["echo": slow.path])
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+
+        process.send(message(1, .string("run-op")))
+        let pid = try await waitFor("the command's pid") { () -> Int32? in
+            guard let text = try? String(contentsOf: pidFile, encoding: .utf8) else { return nil }
+            return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        #expect(kill(pid, 0) == 0)                       // the sleep is running
+        #expect(process.commandChildren.count == 1)
+        process.terminateNow()
+        // Gone (killed and reaped): signal 0 to its pid fails with ESRCH.
+        _ = try await waitFor("the command to end", timeout: .seconds(5)) { kill(pid, 0) != 0 ? true : nil }
+        _ = try await waitFor("the list to empty", timeout: .seconds(5)) { process.commandChildren.count == 0 ? true : nil }
+    }
+
     // MARK: Supervisor
 
     /// A clock the test moves by hand.

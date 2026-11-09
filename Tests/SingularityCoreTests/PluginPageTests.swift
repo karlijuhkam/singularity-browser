@@ -381,6 +381,11 @@ private func url(_ s: String) -> URL { URL(string: s)! }
         let manifest = try PluginManifest.load(from: folder)
         #expect(manifest.permissions.commands == ["op": ["item list", "item get"]])
         #expect(manifest.permissions.network.isEmpty)
+        // https everywhere; plain http only for local development logins.
+        let sites = ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]
+        #expect(manifest.page?.sites == sites)
+        #expect(manifest.permissions.pageAdditions == sites)
+        #expect(manifest.permissions.fillForms == sites)
     }
 
     @Test(.enabled(if: hasBun)) func pageScriptTranspiles() throws {

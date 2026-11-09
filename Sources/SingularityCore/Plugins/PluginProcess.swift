@@ -52,6 +52,8 @@ public final class PluginProcess: @unchecked Sendable {
     private var exitReported = false
     private var inputOverflowed = false
     private var runningCommands = 0
+    /// Commands started for this plugin that are still running (killed by `terminateNow`).
+    let commandChildren = RunningChildren()
 
     /// The plugin's stdin (writes happen on a queue of their own, so `send` never blocks).
     private let input = PluginInput()
@@ -187,7 +189,9 @@ public final class PluginProcess: @unchecked Sendable {
     }
 
     /// Kills the process at once (SIGKILL) and closes its stdin; for app termination, where
-    /// there is no time to wait for a polite exit. Safe to call any time, more than once.
+    /// there is no time to wait for a polite exit. Also kills the commands it started that are
+    /// still running (they run outside the sandbox and would otherwise outlive the app).
+    /// Safe to call any time, more than once.
     public func terminateNow() {
         let process: Process? = lock.withLock {
             stopping = true
@@ -195,6 +199,7 @@ public final class PluginProcess: @unchecked Sendable {
         }
         input.close()
         if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        commandChildren.killAll()
     }
 
     /// Closes stdin, SIGTERM, and SIGKILL 2 s later if needed.
@@ -308,7 +313,9 @@ public final class PluginProcess: @unchecked Sendable {
         }
         guard admitted else { return refuse("too many commands running") }
         Task.detached { [weak self] in
-            let result = await CommandBroker.run(path: path, arguments: arguments, timeout: Self.commandTimeout)
+            guard let children = self?.commandChildren else { return }
+            let result = await CommandBroker.run(path: path, arguments: arguments, timeout: Self.commandTimeout,
+                                                 children: children)
             guard let self else { return }
             // A PluginProcess runs once, so "stopping" marks its only generation as over: results
             // that come back after stop() are dropped.

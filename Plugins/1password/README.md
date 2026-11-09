@@ -10,6 +10,8 @@ username and password are filled in. Touch ID (through 1Password) unlocks the va
   `op item get`.
 - It fills only when you click the button and then pick a login from the menu. Always a menu, even
   if there is one login.
+- It runs only on `https://` pages, plus `http://localhost` and `http://127.0.0.1` (any port) for
+  local development logins. Never on other plain `http://` pages.
 - It fills only into the site the login belongs to (the login's website, or a subdomain of it).
 - It never writes passwords to its log or keeps them; the log has counts only.
 - It doesn't save or create logins.

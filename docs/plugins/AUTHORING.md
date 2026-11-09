@@ -25,7 +25,7 @@ A plugin may be **page-only**: leave out the `background` key and `background.ts
 2. Change `id`, `name`, `description`, `author` in `plugin.json`. Edit `page.ts` and `background.ts`.
 3. In Singularity: Settings -> Plugins -> Add Plugin... -> choose the folder. Singularity validates the manifest, packages and page script and shows any problem before anything runs; nothing runs until you approve. This is the way to check a plugin. (Add Plugin copies the folder to `~/Singularity/plugins/<id>/` using the `id`, even if the folder name differs; the folder-name rule only bites for folders placed in `~/Singularity/plugins` by hand.) For a quick syntax check without the app, run `bun build --no-bundle page.ts`.
 4. Read the approval sheet, switch on **Development mode** if you will keep editing, approve, and switch the plugin on for a Space.
-5. Open a page that matches your sites. Errors from the page script appear in the page's console as `Plugin <id>: page script failed: ...`. Background logs appear in Settings -> Plugins (the last 50 lines).
+5. Open a page that matches your sites. Errors from the page script appear in the page's console as `Plugin <id>: page script failed: ...`. Background logs appear in Settings -> Plugins, which keeps the last 200 lines for as long as the app runs. (Separately, the supervisor of the background process keeps its own last 50 lines, for restarts and crash reports; that is not what Settings shows.)
 
 ## Folder layout
 
@@ -185,7 +185,7 @@ Other things to know:
 The background runs under `sandbox-exec` with a generated profile that denies everything except:
 
 - running Bun itself, nothing else;
-- reading its own folder (read-only: it cannot rewrite itself);
+- reading its own folder (read-only: it cannot rewrite itself), except a top-level `.git/`, which the fingerprint skips and the sandbox doesn't let it read;
 - reading and writing its data folder;
 - reading a few system files Bun needs (ICU data, time zone data, some `sysctl` values).
 
@@ -296,7 +296,7 @@ You may use npm packages in the background file. The rules are strict because th
 
 ## Approval, fingerprints and development mode
 
-- Every file in the folder is hashed, including dotfiles, `bun.lock` and `node_modules` at any depth. (Skipped: a top-level `.git/` and `.DS_Store` files.) The hash of everything is the plugin's **fingerprint**, recorded at approval.
+- Every file in the folder is hashed, including dotfiles, `bun.lock` and `node_modules` at any depth. (Skipped: a top-level `.git/`, which the background can't read either, and `.DS_Store` files.) The hash of everything is the plugin's **fingerprint**, recorded at approval. Symbolic links and files with more than one hard link are refused.
 - Any change to any file pauses the plugin (status "changed") until the user approves again.
 - **Development mode** (a switch on the approval sheet and in Settings -> Plugins) lets edits to the plugin's own code through: saving a file restarts the plugin instead of pausing it. It does not cover widened permissions or any package file (see above). It can only be switched on while the plugin is approved as it is now.
 - Widened permissions always need a new approval, in any mode.
@@ -306,6 +306,8 @@ You may use npm packages in the background file. The rules are strict because th
 Test loop for a new plugin: add, approve with development mode on, edit, save, reload the page.
 
 ## Known limitations
+
+The full list of accepted risks for round 1 is in the spec (`docs/superpowers/specs/2026-11-09-plugins-design.md`, "Known limitations (round 1)"). The ones that matter most when writing or reviewing a plugin:
 
 - An approved plugin's background program can read the command-line **arguments** (not the environment) of the user's other processes, because macOS's sandbox can't block that. Reviewers should keep this in mind, and plugins must never put secrets into arguments of programs they run.
 - Tabs restored at launch may get plugin scripts only on their next load.
@@ -435,6 +437,7 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 | Dependencies but no `bun.lock` | `it uses packages but has no bun.lock` |
 | `.npmrc` in the folder | `it contains .npmrc, which plugins may not have` |
 | A symlink in the folder (even in `node_modules`) | `it contains a symbolic link (<path>)` |
+| A file hard-linked into the folder (`ln`, not a copy) | `it contains a file with another hard link (<path>); copy the file instead` |
 | `singularity.fillLogin` on a site not in `fillForms` | `this plugin may not fill forms on this site` |
 | Fill reply for the wrong host, or not after a real click | the page gets `{ "error": "fill blocked" }` |
 | `onClick` triggered by `button.click()` in a script | nothing happens (not a genuine click) |
@@ -451,5 +454,6 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 5. **Secrets in logs.** Search for `log(` and `console.`. Counts and error kinds are fine; values are not. Check that `stderr` of programs isn't logged or returned blindly.
 6. **Packages.** Open `package.json`: few dependencies, exact versions, known names. Look at `bun.lock` for unexpected packages. Be extra careful with anything large.
 7. **Code quality.** Plain readable TypeScript. No minified, obfuscated or generated code, no strange encodings, no `atob`/base64 blobs.
+8. **No code from the data folder.** The data folder is writable and never reviewed: no `import()`, `require`, `eval` or `new Function` of anything read from it (or built at run time) in `background.ts`.
 
 If a plugin passes these, approving it is reasonable. If any step is unclear, ask the author or don't approve.

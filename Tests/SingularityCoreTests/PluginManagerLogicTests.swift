@@ -167,6 +167,21 @@ import Testing
 
         #expect(PluginLaunch.decide(status: .approved, approval: ok, manifest: manifest, isExecutable: { _ in false })
                 == .blocked("echo isn't at /bin/echo any more — review to re-approve"))
+        // Re-vetted at every launch: a pinned path that is (now) a refused program, or a link to one.
+        var shell = ok; shell.commandPaths = ["echo": "/bin/zsh"]
+        #expect(PluginLaunch.decide(status: .approved, approval: shell, manifest: manifest)
+                == .blocked("/bin/zsh is now a program plugins may not run — review to re-approve"))
+        let link = try tempDir().appending(path: "echo")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "/bin/echo")
+        var linked = ok; linked.commandPaths = ["echo": link.path]
+        #expect(PluginLaunch.decide(status: .approved, approval: linked, manifest: manifest) == .launch)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "/bin/sh")
+        #expect(PluginLaunch.decide(status: .approved, approval: linked, manifest: manifest)
+                == .blocked("\(link.path) is now a program plugins may not run — review to re-approve"))
+        #expect(PluginLaunch.decide(status: .approved, approval: ok, manifest: manifest, isExecutable: yes,
+                                    isAllowedProgram: { _ in false })
+                == .blocked("/bin/echo is now a program plugins may not run — review to re-approve"))
         var unpinned = ok; unpinned.commandPaths = [:]
         #expect(PluginLaunch.decide(status: .approved, approval: unpinned, manifest: manifest, isExecutable: yes)
                 == .blocked("no approved path for echo — review to re-approve"))
@@ -348,6 +363,18 @@ import Testing
         let installed = try PluginInstaller.add(from: target, pluginsDirectory: plugins)
         #expect(throws: PluginInstaller.AddError.alreadyInPluginsFolder) {
             try PluginInstaller.add(from: plugins.appending(path: installed), pluginsDirectory: plugins)
+        }
+        // Another spelling of the same folder (realpath: /var is /private/var; a symlinked parent).
+        let alias = try tempDir().appending(path: "alias")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: plugins.path)
+        #expect(throws: PluginInstaller.AddError.alreadyInPluginsFolder) {
+            try PluginInstaller.add(from: plugins.appending(path: installed), pluginsDirectory: alias)
+        }
+        if plugins.path.hasPrefix("/var/") {
+            #expect(throws: PluginInstaller.AddError.alreadyInPluginsFolder) {
+                try PluginInstaller.add(from: URL(filePath: "/private" + plugins.appending(path: installed).path),
+                                        pluginsDirectory: plugins)
+            }
         }
     }
 

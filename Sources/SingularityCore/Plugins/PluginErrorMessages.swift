@@ -23,6 +23,7 @@ extension PluginError {
         case .symlinkNotAllowed(let path):
             return path == "." ? "its folder is a symbolic link" : "it contains a symbolic link (\(path))"
         case .unsupportedFile(let path): return "it contains a special file (\(path))"
+        case .hardLinkNotAllowed(let path): return "it contains a file with another hard link (\(path)); copy the file instead"
         case .unreadable: return "its files can't be read"
         case .unsupportedPackage(let name):
             return "it uses “\(name)”, which isn't an exact npm registry version matching bun.lock"

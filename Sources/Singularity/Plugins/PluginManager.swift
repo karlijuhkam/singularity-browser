@@ -75,7 +75,8 @@ enum PluginManagerError: LocalizedError, Equatable {
 /// restarts.
 ///
 /// When a plugin runs: its status is `.approved`, it is on in at least one Space, and every
-/// command path pinned at approval is still an executable file (`PluginLaunch.decide`). That is
+/// command path pinned at approval is still an executable file and not a refused program
+/// (`PluginLaunch.decide`). That is
 /// checked again, with a fresh fingerprint, right before every launch, crash restarts included
 /// (inside the supervisor's `makeProcess`). A file can still change between that scan and Bun
 /// reading it; that gap can't be closed from outside, and the file watcher catches the change
