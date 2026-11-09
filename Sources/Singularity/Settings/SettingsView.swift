@@ -5,18 +5,26 @@ import SwiftUI
 /// The Settings window (⌘,). SwiftUI's `Settings` scene provides the window and the menu item;
 /// every change goes through `AppState.updateSettings` (saved to ~/Singularity/settings.json).
 struct SettingsView: View {
+    @Environment(AppState.self) private var state
+
     var body: some View {
-        TabView {
+        @Bindable var state = state
+        TabView(selection: $state.settingsTab) {
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(AppState.SettingsTab.general)
             TerminalSettings()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
+                .tag(AppState.SettingsTab.terminal)
             AgentSettings()
                 .tabItem { Label("Agents", systemImage: "sparkles") }
+                .tag(AppState.SettingsTab.agents)
             PluginSettings()
                 .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
+                .tag(AppState.SettingsTab.plugins)
             DataSettings()
                 .tabItem { Label("Data & Privacy", systemImage: "hand.raised") }
+                .tag(AppState.SettingsTab.data)
         }
         .frame(width: 600)
     }

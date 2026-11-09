@@ -104,17 +104,17 @@ Every entry of `page.sites` must also appear, as the same text, in `permissions.
 
 | Permission | What it allows | What the approval sheet says |
 |---|---|---|
-| `pageAdditions` | Buttons and menus in pages on these sites (and the page script running there). | "Adds buttons to pages on <sites>" |
+| `pageAdditions` | Buttons and menus in pages on these sites (and the page script running there). | "Reads and changes pages on <sites>, including what you type" ("on all sites" for `<all_urls>`), and "Its page script could pass what it reads to other websites; review it before approving" (also shown for any plugin with a page script) |
 | `fillForms` | The background may fill login fields on these sites (see Fills). | "Fills login forms on <sites>" |
-| `commands` | `{ "program": ["sub command", ...] }`. The background may run that program with arguments starting with one of the listed sub-commands. | "Runs /opt/homebrew/bin/program (only: sub command, ...)" (the path is only an example) |
-| `network` | Must be `[]` in round 1. | "Never uses the internet" without commands; with commands: "The plugin itself never uses the internet; the programs it runs can" |
+| `commands` | `{ "program": ["sub command", ...] }`. The background may run that program with arguments starting with one of the listed sub-commands. | "Runs /opt/homebrew/bin/program (only: sub command, ... — plus any further arguments)" (the path is only an example) |
+| `network` | Must be `[]` in round 1. | About the background program only (a page-only plugin gets no such line): "Its background program never uses the internet" without commands; with commands: "Its background program never uses the internet; the programs it runs can" |
 
 Details:
 
 - Sub-commands match word for word and case-sensitively at the start of the arguments. `"item list"` allows `item list --format json` and `item list --anything`: **only the leading words are checked; later arguments are free.** A program with an empty list, or an empty sub-command, is refused.
 - A program name is a bare name: letters, digits, `.`, `_`, `-`, starting with a letter or digit. No slashes.
 - The program is found on the user's login `PATH` when the plugin is approved, and that path is pinned. A different program with the same name later is not run.
-- These program names are refused (also with a version suffix such as `python3.12`): `sh bash zsh fish dash ksh csh tcsh env sudo su curl wget ssh scp sftp nc ncat telnet ftp rsync osascript open python python3 perl ruby php node bun deno npx bunx rbash nodejs pip pip3 npm pnpm yarn xargs nice nohup exec command launchctl swift lua awk gawk tclsh expect`. In short: shells, interpreters, network tools and package managers.
+- These program names are refused (also with a version suffix such as `python3.12`): `sh bash zsh fish dash ksh csh tcsh env sudo su curl wget ssh scp sftp nc ncat telnet ftp rsync osascript open python python3 perl ruby php node bun deno npx bunx rbash nodejs pip pip3 npm pnpm yarn xargs nice nohup exec command launchctl swift lua awk gawk tclsh expect arch caffeinate time timeout gtimeout stdbuf watch script sandbox-exec taskpolicy ssh-agent xcrun find tmux screen lldb gdb sqlite3 vim vi ex nvim emacs`. In short: shells, interpreters, network tools, package managers, and programs that run other programs.
 - Asking for more later (a new site, a new program, a new sub-command) means the plugin needs approval again, even in development mode. Asking for less does not.
 
 ### Manifest errors
@@ -407,7 +407,7 @@ if (result.status !== 0 || result.timedOut) return { error: "git failed" }; // d
 return { version: result.stdout.trim() };
 ```
 
-The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --version)`. Remember: `git` runs unsandboxed, with network access.
+The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --version — plus any further arguments)`. Remember: `git` runs unsandboxed, with network access.
 
 ## Common mistakes
 

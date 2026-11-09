@@ -124,6 +124,12 @@ enum PaletteResults {
         }
 
         var items: [PaletteItem] = []
+        // A quiet notice instead of a sheet: new, changed or broken plugins wait here until the
+        // user chooses to look (an automatic approval sheet would invite reflex approval).
+        let needReview = state.plugins.plugins.filter(\.needsReview).count
+        if let title = PluginStatusText.reviewTitle(count: needReview) {
+            items.append(command("plugins-review", title, "puzzlepiece.extension") { state.showPluginSettings() })
+        }
         for other in state.spaces where other.id != space.id {
             items.append(command("space-\(other.id)", "Switch to Space: \(other.name)", "square.stack") {
                 state.selectSpace(other.id)

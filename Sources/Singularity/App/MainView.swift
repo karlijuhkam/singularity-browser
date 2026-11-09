@@ -5,6 +5,7 @@ import SwiftUI
 /// and the command palette floating on top when open.
 struct MainView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         @Bindable var state = state
@@ -38,6 +39,7 @@ struct MainView: View {
             NameSheet(request: request)
         }
         .onAppear {
+            state.openSettingsWindow = { [openSettings] in openSettings() }
             state.loadSelectedTab()
             // Clicking inside a pane (a web page or terminal) focuses it.
             PaneContainerView.installFocusMonitor { [state] tabID in state.focusPane(tabID) }

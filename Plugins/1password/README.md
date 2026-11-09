@@ -22,7 +22,7 @@ username and password are filled in. Touch ID (through 1Password) unlocks the va
 ## Install
 
 Settings -> Plugins -> Add Plugin... -> choose this folder (`Plugins/1password`), then approve it.
-The approval sheet should say it runs `op` (only: item list, item get) and that the plugin itself never uses the internet (the programs it runs can).
+The approval sheet should say it runs `op` (only: item list, item get — plus any further arguments), that its page script reads and changes pages and could pass what it reads to other websites, and that its background program never uses the internet (the programs it runs can).
 Then enable it in the Spaces where you want it.
 
 ## Files

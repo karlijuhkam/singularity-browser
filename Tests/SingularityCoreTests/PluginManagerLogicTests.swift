@@ -206,6 +206,28 @@ import Testing
         #expect(PluginStatusText.describe(status: .new, decision: .notApproved, run: .stopped).tone == .attention)
     }
 
+    @Test func reviewNotice() {
+        func needs(_ s: PluginStatus, _ d: PluginLaunch.Decision = .launch, _ r: PluginSupervisor.State = .running,
+                   page: Bool = false) -> Bool {
+            PluginStatusText.needsReview(status: s, decision: d, run: r, hasPageProblem: page)
+        }
+        #expect(needs(.new, .notApproved, .stopped))
+        #expect(needs(.changed, .notApproved, .stopped))
+        #expect(needs(.permissionsWidened, .notApproved, .stopped))
+        #expect(needs(.invalid(.missingFile("background.ts")), .notApproved, .stopped))
+        #expect(needs(.approved, .blocked("op isn't at /x any more — review to re-approve")))
+        #expect(needs(.approved, .launch, .crashedRepeatedly))
+        #expect(needs(.approved, .launch, .failedToStart("x")))
+        #expect(needs(.approved, page: true))
+        #expect(!needs(.approved))
+        #expect(!needs(.approved, .switchedOff, .stopped))
+        #expect(!needs(.approved, .nothingToRun, .stopped))
+
+        #expect(PluginStatusText.reviewTitle(count: 0) == nil)
+        #expect(PluginStatusText.reviewTitle(count: 1) == "Plugins: 1 needs your review")
+        #expect(PluginStatusText.reviewTitle(count: 3) == "Plugins: 3 need your review")
+    }
+
     @Test func developmentModeCanOnlyBeSwitchedOnWhileApproved() {
         #expect(PluginStatusText.canSetDevelopmentMode(to: true, status: .approved))
         #expect(!PluginStatusText.canSetDevelopmentMode(to: true, status: .changed))
@@ -234,7 +256,7 @@ import Testing
         #expect(review.readme == "# Echo\nSays things back.")
         #expect(review.commandPaths == ["echo": "/bin/echo"])
         #expect(review.missingCommands.isEmpty && review.canApprove)
-        #expect(review.permissionLines.contains("Runs /bin/echo (only: hello)"))
+        #expect(review.permissionLines.contains("Runs /bin/echo (only: hello — plus any further arguments)"))
         #expect(review.changes(since: nil) == nil)
         #expect(review.matches(scan))
         #expect(review.matches(PluginScan.scan(folder: folder)))

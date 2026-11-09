@@ -178,6 +178,13 @@ import Testing
             let dir = try temp(folder: "t", json: manifestJSON(permissions: "{\"commands\":{\"\(name)\":[\"x\"]}}"))
             #expect(throws: PluginError.refusedCommand(name)) { _ = try PluginManifest.load(from: dir) }
         }
+        // Final review: programs that run other programs.
+        for name in ["arch", "caffeinate", "time", "timeout", "gtimeout", "stdbuf", "watch", "script", "sandbox-exec",
+                     "taskpolicy", "ssh-agent", "xcrun", "find", "tmux", "screen", "lldb", "gdb", "sqlite3",
+                     "vim", "vi", "ex", "nvim", "emacs", "Caffeinate", "sqlite3.45"] {
+            #expect(CommandPolicy.isRefused(name), "\(name)")
+            #expect(!CommandPolicy.allows(command: name, arguments: ["x"], declared: [name: ["x"]]))
+        }
         for name in ["op", "op2"] {
             #expect(!CommandPolicy.isRefused(name))
             #expect(CommandPolicy.allows(command: name, arguments: ["x"], declared: [name: ["x"]]))
@@ -595,19 +602,29 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
     // MARK: Permission texts
 
     @Test func permissionDescriptions() throws {
-        let lines = PermissionDescriptions.lines(for: try onePassword().permissions,
-                                                 commandPaths: ["op": "/opt/homebrew/bin/op"])
-        #expect(lines == ["Adds buttons to pages on all sites",
+        let manifest = try onePassword()
+        let lines = PermissionDescriptions.lines(for: manifest.permissions,
+                                                 commandPaths: ["op": "/opt/homebrew/bin/op"],
+                                                 hasPageScript: manifest.page != nil)
+        #expect(lines == ["Reads and changes pages on all sites, including what you type",
+                          "Its page script could pass what it reads to other websites; review it before approving",
                           "Fills login forms on all sites",
-                          "Runs /opt/homebrew/bin/op (only: item list, item get)",
-                          "The plugin itself never uses the internet; the programs it runs can"])
+                          "Runs /opt/homebrew/bin/op (only: item list, item get — plus any further arguments)",
+                          "Its background program never uses the internet; the programs it runs can"])
         let mixed = PermissionDescriptions.lines(for: .init(pageAdditions: ["https://a.com/*", "<all_urls>"]), commandPaths: [:])
-        #expect(mixed.first == "Adds buttons to pages on all sites")
+        #expect(mixed.first == "Reads and changes pages on all sites, including what you type")
         let some = PermissionDescriptions.lines(
             for: .init(pageAdditions: ["https://a.com/*", "https://b.com/*"], commands: ["gh": ["pr list"]], network: ["x.com"]),
             commandPaths: [:])
-        #expect(some == ["Adds buttons to pages on https://a.com/*, https://b.com/*",
-                         "Runs gh (only: pr list)", "Connects to x.com"])
+        #expect(some == ["Reads and changes pages on https://a.com/*, https://b.com/*, including what you type",
+                         "Its page script could pass what it reads to other websites; review it before approving",
+                         "Runs gh (only: pr list — plus any further arguments)", "Connects to x.com"])
+        // A page script without pageAdditions still gets the warning; a page-only plugin has no
+        // background program, so no network line.
+        #expect(PermissionDescriptions.lines(for: .init(), commandPaths: [:], hasPageScript: true, hasBackground: false)
+                == ["Its page script could pass what it reads to other websites; review it before approving"])
+        #expect(PermissionDescriptions.lines(for: .init(), commandPaths: [:])
+                == ["Its background program never uses the internet"])
     }
 
     // MARK: Command broker
@@ -1089,11 +1106,11 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         let review = try PluginReview.prepare(scan: PluginScan.scan(folder: folder)) { _ in nil }.get()
         #expect(review.packages.packages.map(\.name) == ["is-number", "is-odd"])
         #expect(review.permissionLines == ["Installs 2 packages from the npm registry (3 with the packages they use)",
-                                           "Never uses the internet"])
+                                           "Its background program never uses the internet"])
         let one = PluginPackages.Summary(packages: [PluginPackage(name: "a", version: "1.0.0")], lockedCount: 1)
         #expect(PermissionDescriptions.lines(for: .init(), commandPaths: [:], packages: one)
-                == ["Installs 1 package from the npm registry", "Never uses the internet"])
-        #expect(PermissionDescriptions.lines(for: .init(), commandPaths: [:]) == ["Never uses the internet"])
+                == ["Installs 1 package from the npm registry", "Its background program never uses the internet"])
+        #expect(PermissionDescriptions.lines(for: .init(), commandPaths: [:]) == ["Its background program never uses the internet"])
     }
 
     /// What `PluginManager.approve` relies on: the approval records the folder as it is after the

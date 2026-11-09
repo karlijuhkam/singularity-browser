@@ -31,6 +31,10 @@ struct InstalledPlugin: Identifiable {
     var statusLine: (text: String, tone: PluginStatusText.Tone) {
         PluginStatusText.describe(status: status, decision: decision, run: runState)
     }
+
+    var needsReview: Bool {
+        PluginStatusText.needsReview(status: status, decision: decision, run: runState, hasPageProblem: pageProblem != nil)
+    }
 }
 
 /// Problems `PluginManager` reports to the UI, as plain sentences.

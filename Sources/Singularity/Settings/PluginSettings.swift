@@ -52,7 +52,7 @@ struct PluginSettings: View {
                         .font(.caption)
                         .foregroundStyle(message.isError ? .red : .green)
                 }
-                Text("Plugins run in a sandbox: no internet, no files outside their own folders. They only run after you approve them, and they stop when their files change until you approve again.")
+                Text("Plugins run sandboxed in the background; their page scripts can read the pages they're allowed on. Approve only plugins you've reviewed. They stop when their files change until you approve again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -11,6 +11,14 @@ import WebKit
 @MainActor
 @Observable
 final class AppState {
+    enum SettingsTab: Hashable { case general, terminal, agents, plugins, data }
+
+    /// Opens Settings → Plugins (the palette's "Plugins: N need your review").
+    func showPluginSettings() {
+        settingsTab = .plugins
+        openSettingsWindow?()
+    }
+
     private(set) var spaces: [Space] = []
     private(set) var selectedSpaceID: UUID?
 
@@ -22,6 +30,11 @@ final class AppState {
     var nameRequest: NameRequest?
     /// Problems found while loading files from disk, shown once in the sidebar.
     var loadErrors: [String] = []
+    /// The Settings window's selected tab (so a palette command can open it on Plugins).
+    var settingsTab: SettingsTab = .general
+    /// Opens the Settings window. SwiftUI only hands this out as a view environment value
+    /// (`\.openSettings`, macOS 14+), so `MainView` stores it here on appear.
+    @ObservationIgnored var openSettingsWindow: (() -> Void)?
 
     let web: WebViewRegistry
     let terminals: TerminalRegistry

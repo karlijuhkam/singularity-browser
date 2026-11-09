@@ -151,6 +151,27 @@ public enum PluginStatusText {
         }
     }
 
+    /// Whether the plugin needs the user to look at it: never approved, changed, asking for more,
+    /// or with a problem (broken manifest, blocked launch, crashing, or a page script that can't
+    /// be used). Drives the palette's "Plugins: N need your review" item.
+    public static func needsReview(status: PluginStatus, decision: PluginLaunch.Decision,
+                                   run: PluginSupervisor.State, hasPageProblem: Bool) -> Bool {
+        switch status {
+        case .new, .changed, .permissionsWidened, .invalid: return true
+        case .approved: break
+        }
+        return hasPageProblem || describe(status: status, decision: decision, run: run).tone == .problem
+    }
+
+    /// The palette item's title for `count` plugins needing review; nil when there are none.
+    public static func reviewTitle(count: Int) -> String? {
+        switch count {
+        case ...0: return nil
+        case 1: return "Plugins: 1 needs your review"
+        default: return "Plugins: \(count) need your review"
+        }
+    }
+
     /// Development mode can always be switched off, but only switched on while the plugin is
     /// approved as it is now: switching it on for a changed plugin would run the changes unreviewed.
     public static func canSetDevelopmentMode(to on: Bool, status: PluginStatus) -> Bool {
@@ -245,7 +266,8 @@ public struct PluginReview: Equatable, Sendable {
     public var canApprove: Bool { missingCommands.isEmpty }
 
     public var permissionLines: [String] {
-        PermissionDescriptions.lines(for: manifest.permissions, commandPaths: commandPaths, packages: packages)
+        PermissionDescriptions.lines(for: manifest.permissions, commandPaths: commandPaths, packages: packages,
+                                     hasPageScript: manifest.page != nil, hasBackground: manifest.background != nil)
     }
 
     /// Files changed since `approval`; nil for a first approval, or for an approval recorded
