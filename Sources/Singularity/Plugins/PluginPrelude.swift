@@ -111,6 +111,8 @@ enum PluginPrelude {
       const connected = (node) => apply(isConnected, node, []);
       const rectOf = (el) => apply(getRect, el, []);
       const styleOf = (el, name) => apply(getPropertyValue, apply(getComputedStyle, window, [el]), [name]);
+      const pseudoContent = (el, pseudo) =>
+        apply(getPropertyValue, apply(getComputedStyle, window, [el, pseudo]), ["content"]);
       const parentOf = (node) => apply(parentNodeOf, node, []);
       const rootElement = () => apply(documentElementOf, document, []);
       const bodyElement = () => apply(bodyOf, document, []);
@@ -278,7 +280,9 @@ enum PluginPrelude {
       //     has no point; the page can't focus inside our closed shadow root);
       //   - a field button is small (≤ 64 px); the clicked element is visible (checkVisibility); the
       //     host and <html> have opacity ≥ 0.9 and visibility "visible"; and the host, <html> and
-      //     <body> have no filter, mask, clip-path or blend mode (each can hide a clickable button).
+      //     <body> have no filter, mask, clip-path or blend mode (each can hide a clickable button);
+      //   - the host has no ::before/::after content: a page stylesheet could otherwise draw a cover
+      //     over the button with the host's own pseudo-element (pointer-events: none lets clicks through).
       // Remaining risk we can't see from here: an overlay with `pointer-events: none` drawn over our
       // button lets a click through while the user sees the overlay. The authoring guide therefore
       // recommends a menu pick before releasing passwords.
@@ -310,6 +314,10 @@ enum PluginPrelude {
         const body = bodyElement();
         for (const el of body ? [host, root, body] : [host, root]) {
           if (!unblended(el)) return false;
+        }
+        for (const pseudo of ["::before", "::after"]) {
+          const content = pseudoContent(host, pseudo);
+          if (content !== "none" && content !== "normal") return false;
         }
         return true;
       };
