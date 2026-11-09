@@ -43,7 +43,9 @@ let package = Package(
 
         .testTarget(
             name: "SingularityCoreTests",
-            dependencies: ["SingularityCore"]
+            dependencies: ["SingularityCore"],
+            // Plugin manifest fixtures are read from disk via #filePath, not bundled.
+            exclude: ["Fixtures"]
         ),
     ]
 )

@@ -1,0 +1,9 @@
+{
+  "id": "bad-key",
+  "name": "Fixture bad-key",
+  "version": "0.1.0",
+  "description": "Test fixture.",
+  "author": "Test",
+  "background": "background.ts",
+  "permissions": { "cookies": [] }
+}

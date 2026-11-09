@@ -1,0 +1,9 @@
+{
+  "id": "bad-lockfile",
+  "name": "Fixture bad-lockfile",
+  "version": "0.1.0",
+  "description": "Test fixture.",
+  "author": "Test",
+  "background": "background.ts",
+  "permissions": {}
+}

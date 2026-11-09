@@ -1,0 +1,9 @@
+{
+  "id": "bad-shell",
+  "name": "Fixture bad-shell",
+  "version": "0.1.0",
+  "description": "Test fixture.",
+  "author": "Test",
+  "background": "background.ts",
+  "permissions": { "commands": { "sh": [] } }
+}

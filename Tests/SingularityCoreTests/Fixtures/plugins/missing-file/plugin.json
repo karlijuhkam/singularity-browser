@@ -1,0 +1,9 @@
+{
+  "id": "missing-file",
+  "name": "Fixture missing-file",
+  "version": "0.1.0",
+  "description": "Test fixture.",
+  "author": "Test",
+  "background": "nothere.ts",
+  "permissions": {}
+}

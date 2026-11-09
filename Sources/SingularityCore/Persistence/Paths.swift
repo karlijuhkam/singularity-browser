@@ -6,6 +6,9 @@ import Foundation
 ///     ├─ state.json                 Space order + selected Space
 ///     ├─ settings.json              preferences from the Settings window
 ///     ├─ .run/mcp.sock              socket for agents (singularity-mcp), while the app runs
+///     ├─ plugins/<id>/              one folder per plugin (plugin.json, sources)
+///     ├─ plugins-data/<id>/         a plugin's own data folder
+///     ├─ plugins-state.json         plugin approvals and per-Space switches
 ///     └─ spaces/<slug>/
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
@@ -30,6 +33,16 @@ public struct Paths: Sendable {
     public var settingsFile: URL { root.appending(path: "settings.json") }
     /// The Unix socket `singularity-mcp` connects to (folder 0700, socket 0600).
     public var mcpSocket: URL { root.appending(path: ".run/mcp.sock") }
+    /// Installed plugins, one folder per plugin id.
+    public var pluginsDirectory: URL { root.appending(path: "plugins", directoryHint: .isDirectory) }
+    /// Plugin approvals and per-Space switches.
+    public var pluginStateFile: URL { root.appending(path: "plugins-state.json") }
+
+    /// The one folder a plugin's background program may write to.
+    public func pluginsDataDirectory(_ id: String) -> URL {
+        root.appending(path: "plugins-data", directoryHint: .isDirectory).appending(path: id, directoryHint: .isDirectory)
+    }
+
     public var spacesDirectory: URL { root.appending(path: "spaces", directoryHint: .isDirectory) }
 
     public func spaceDirectory(_ slug: String) -> URL {

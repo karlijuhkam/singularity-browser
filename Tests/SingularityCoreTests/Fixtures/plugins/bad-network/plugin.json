@@ -1,0 +1,9 @@
+{
+  "id": "bad-network",
+  "name": "Fixture bad-network",
+  "version": "0.1.0",
+  "description": "Test fixture.",
+  "author": "Test",
+  "background": "background.ts",
+  "permissions": { "network": ["api.example.com"] }
+}

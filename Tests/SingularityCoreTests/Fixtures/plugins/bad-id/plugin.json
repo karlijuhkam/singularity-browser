@@ -1,0 +1,9 @@
+{
+  "id": "Other",
+  "name": "Fixture bad-id",
+  "version": "0.1.0",
+  "description": "Test fixture.",
+  "author": "Test",
+  "background": "background.ts",
+  "permissions": {}
+}

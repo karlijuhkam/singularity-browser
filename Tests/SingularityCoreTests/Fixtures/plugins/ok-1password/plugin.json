@@ -1,0 +1,15 @@
+{
+  "id": "ok-1password",
+  "name": "1Password",
+  "version": "0.1.0",
+  "description": "Fill logins from 1Password, unlocked with Touch ID.",
+  "author": "Karli Juhkam",
+  "background": "background.ts",
+  "page": { "script": "page.ts", "sites": ["<all_urls>"] },
+  "permissions": {
+    "pageAdditions": ["<all_urls>"],
+    "fillForms": ["<all_urls>"],
+    "commands": { "op": ["item list", "item get"] },
+    "network": []
+  }
+}

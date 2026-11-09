@@ -3,6 +3,15 @@ import Foundation
 /// Errors from the plugin system. Later tasks add more cases.
 public enum PluginError: Error, Equatable, Sendable {
     case invalidSitePattern(String)
+    // Manifest loading (PluginManifest.load)
+    case invalidJSON(String)
+    case invalidID(String)
+    case idDoesNotMatchFolder(id: String, folder: String)
+    case missingFile(String)
+    case unknownPermission(String)
+    case refusedCommand(String)
+    case networkNotAvailable
+    case missingLockfile
 }
 
 /// Host comparison helpers shared by site patterns and the 1Password fill guard.
