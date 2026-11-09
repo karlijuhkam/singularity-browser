@@ -80,6 +80,8 @@ if (( ! SKIP_NOTARIZE )) && [[ "$IDENTITY_NAME" != Developer\ ID\ Application* ]
 fi
 
 # ---- build --------------------------------------------------------------------------------------
+"$ROOT/scripts/fetch-bun.sh"
+
 echo "→ building release (universal)"
 ARCH_FLAGS=(--arch arm64 --arch x86_64)
 if ! swift build -c release "${ARCH_FLAGS[@]}" --product Singularity >/dev/null \
@@ -93,8 +95,9 @@ BIN_DIR="$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)"
 
 echo "→ assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN_DIR/Singularity" "$BIN_DIR/singularity-mcp" "$APP/Contents/MacOS/"
+cp "$ROOT/Vendor/bun/bun" "$APP/Contents/Helpers/bun"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
 for bundle in "$BIN_DIR"/*.bundle; do
@@ -106,6 +109,9 @@ echo "  architectures: $(lipo -archs "$APP/Contents/MacOS/Singularity")"
 echo "→ signing with: $IDENTITY_NAME ($IDENTITY)"
 # Inner executables first, then the bundle. --timestamp is required for notarization.
 codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/singularity-mcp"
+# Bun's JavaScript engine needs JIT entitlements under the hardened runtime.
+codesign --force --options runtime --timestamp --entitlements "$ROOT/Resources/Bun.entitlements" \
+  --sign "$IDENTITY" "$APP/Contents/Helpers/bun"
 codesign --force --options runtime --timestamp --entitlements "$ROOT/Resources/Singularity.entitlements" \
   --sign "$IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=1 "$APP"
