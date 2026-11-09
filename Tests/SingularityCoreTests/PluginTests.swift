@@ -57,4 +57,33 @@ import Testing
         #expect(!HostMatch.isSameOrSubdomain("evilgithub.com", of: "github.com"))
         #expect(HostMatch.isSameOrSubdomain("WWW.GitHub.com.", of: "github.COM"))
     }
+
+    @Test func negativeMatches() throws {
+        let gh = try SitePattern("https://*.github.com/*")
+        for u in ["https://github.com.evil.com/", "https://evil.com/?x=github.com",
+                  "https://github.com@evil.com/", "https://.github.com/"] {
+            #expect(!gh.matches(url(u)), "\(u)")
+        }
+        let ex = try SitePattern("https://example.com/*")
+        #expect(!ex.matches(url("https://www.example.com/")))
+        #expect(!ex.matches(url("https://evilexample.com/")))
+        for p in ["<all_urls>", "*://*/*"] {
+            let sp = try SitePattern(p)
+            #expect(!sp.matches(url("ws://a.com/")))
+            #expect(!sp.matches(url("file:///etc/hosts")))
+        }
+        for bad in ["https://*./*", "https://*.*.com/*", "https://user@github.com/*",
+                    "https://.github.com/*", "https://a..b.com/*", "https://a.com?x/*", "https://a b.com/*"] {
+            #expect(throws: PluginError.invalidSitePattern(bad)) { _ = try SitePattern(bad) }
+        }
+        #expect(!HostMatch.isSameOrSubdomain(".github.com", of: "github.com"))
+        #expect(!HostMatch.isSameOrSubdomain("a..github.com", of: "github.com"))
+        #expect(!HostMatch.isSameOrSubdomain("", of: ""))
+    }
+
+    @Test func pathLiterals() throws {
+        let p = try SitePattern("https://a.com/a.b+c(d)*")
+        #expect(p.matches(url("https://a.com/a.b+c(d)x")))
+        #expect(!p.matches(url("https://a.com/aXb+c(d)x")))
+    }
 }

@@ -14,12 +14,17 @@ public enum HostMatch {
         return h
     }
 
+    /// False for an empty host or one with an empty label (".a.com", "a..com").
+    static func hasOnlyNonEmptyLabels(_ host: String) -> Bool {
+        !host.isEmpty && !host.split(separator: ".", omittingEmptySubsequences: false).contains { $0.isEmpty }
+    }
+
     /// True when `host` is `savedHost` itself or a subdomain of it.
     /// "www.github.com" of "github.com" is true; the reverse and "evilgithub.com" are false.
     public static func isSameOrSubdomain(_ host: String, of savedHost: String) -> Bool {
         let h = normalize(host)
         let saved = normalize(savedHost)
-        if saved.isEmpty { return false }
+        if !hasOnlyNonEmptyLabels(h) || !hasOnlyNonEmptyLabels(saved) { return false }
         return h == saved || h.hasSuffix("." + saved)
     }
 }
@@ -35,7 +40,6 @@ public struct SitePattern: Hashable, Sendable {
     }
 
     public let text: String
-    private let isAllURLs: Bool
     private let scheme: String   // "*", "http" or "https"
     private let host: Host
     private let path: String     // includes the leading "/"
@@ -43,13 +47,11 @@ public struct SitePattern: Hashable, Sendable {
     public init(_ text: String) throws(PluginError) {
         self.text = text
         if text == "<all_urls>" {
-            isAllURLs = true
             scheme = "*"
             host = .any
             path = "/*"
             return
         }
-        isAllURLs = false
 
         guard let sep = text.range(of: "://") else { throw .invalidSitePattern(text) }
         let scheme = String(text[..<sep.lowerBound]).lowercased()
@@ -60,18 +62,19 @@ public struct SitePattern: Hashable, Sendable {
         let rawHost = String(rest[..<slash])
         let path = String(rest[slash...])
 
-        if rawHost.isEmpty || rawHost.contains(":") { throw .invalidSitePattern(text) }
+        let forbidden: Set<Character> = [":", "@", "?", "#"]
+        if rawHost.isEmpty || rawHost.contains(where: { forbidden.contains($0) || $0.isWhitespace }) { throw .invalidSitePattern(text) }
         let parsedHost: Host
         if rawHost == "*" {
             parsedHost = .any
         } else if rawHost.hasPrefix("*.") {
             let domain = HostMatch.normalize(String(rawHost.dropFirst(2)))
-            if domain.isEmpty || domain.contains("*") { throw .invalidSitePattern(text) }
+            if !HostMatch.hasOnlyNonEmptyLabels(domain) || domain.contains("*") { throw .invalidSitePattern(text) }
             parsedHost = .domainAndSubdomains(domain)
         } else {
             if rawHost.contains("*") { throw .invalidSitePattern(text) }
             let name = HostMatch.normalize(rawHost)
-            if name.isEmpty { throw .invalidSitePattern(text) }
+            if !HostMatch.hasOnlyNonEmptyLabels(name) { throw .invalidSitePattern(text) }
             parsedHost = .exact(name)
         }
 
