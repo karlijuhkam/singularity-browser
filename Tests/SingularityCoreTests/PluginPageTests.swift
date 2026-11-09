@@ -371,3 +371,37 @@ private func url(_ s: String) -> URL { URL(string: s)! }
         #expect((try? transpile(#"import type { A } from "./a"; const x: A | null = null;"#).get()) != nil)
     }
 }
+
+/// The shipped 1Password plugin (Plugins/1password): its manifest is what the approval sheet
+/// shows, and a syntax error in its scripts must not ship.
+@Suite struct OnePasswordPluginTests {
+    private let folder = repoRoot.appending(path: "Plugins/1password", directoryHint: .isDirectory)
+
+    @Test func manifestAsksForOnlyOp() throws {
+        let manifest = try PluginManifest.load(from: folder)
+        #expect(manifest.permissions.commands == ["op": ["item list", "item get"]])
+        #expect(manifest.permissions.network.isEmpty)
+    }
+
+    @Test(.enabled(if: hasBun)) func pageScriptTranspiles() throws {
+        let snapshot = try PluginFingerprint.snapshot(folder: folder)
+        let source = try PluginPageCompiler.readVerified(folder: folder, script: "page.ts",
+                                                         expectedHash: snapshot.fileHashes["page.ts"]).get()
+        let js = try PluginPageCompiler.transpile(source: source, runtime: bunPath, hostFolder: hostFolder).get()
+        #expect(js.contains("addFieldButton"))
+    }
+
+    /// `bun build --no-bundle` only parses and strips types; it fails on a syntax error.
+    @Test(.enabled(if: hasBun)) func backgroundScriptsParse() throws {
+        for file in ["background.ts", "logic.ts"] {
+            let process = Process()
+            process.executableURL = bunPath
+            process.arguments = ["build", "--no-bundle", folder.appending(path: file).path]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            #expect(process.terminationStatus == 0, "\(file) doesn't parse")
+        }
+    }
+}
