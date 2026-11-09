@@ -29,6 +29,14 @@ public enum SandboxProfile {
                 + #" "kern.osrelease" "kern.osvariant_status" "kern.version""#
                 + #" "security.mac.lockdown_mode_state" "vm.loadavg")"#
                 + #" (sysctl-name-prefix "hw.optional.") (sysctl-name-prefix "hw.perflevel"))"#,
+            // Dates and Intl (Bun panics without these). All read-only:
+            // the ICU data file (its name, icudtNNl.dat, changes with macOS versions; the folder holds only ICU data),
+            #"(allow file-read* (subpath "/usr/share/icu"))"#,
+            // the /etc and /var symlinks themselves, to follow /etc/localtime (the user's time zone),
+            #"(allow file-read-metadata (literal "/etc") (literal "/var"))"#,
+            #"(allow file-read* (literal "/private/etc/localtime"))"#,
+            // and the system time zone database it points into (versioned folders inside).
+            #"(allow file-read* (subpath "/private/var/db/timezone"))"#,
         ]
         // Read-only extras, e.g. the folder with the app's plugin host script.
         for url in extraReadable { rules.append("(allow file-read* (subpath \(quote(url))))") }

@@ -424,6 +424,8 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(p.contains("(allow file-read* file-write* (subpath \"/private/tmp/sbx-test/data/a\"))"))
         #expect(p.contains("(allow file-read* (subpath \"/private/tmp/sbx-test/host\"))"))
         #expect(!p.contains("(allow sysctl-read)"))   // only named sysctls
+        #expect(!p.contains("(subpath \"/usr\")") && !p.contains("(subpath \"/System\")"))
+        #expect(!p.contains("file-write* (subpath \"/private/var"))
         #expect(!p.contains("~/Library"))
         #expect(!p.contains("Singularity/spaces"))
         // No write access to anything but the data folder.
@@ -490,6 +492,13 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
           const size = new BigUint64Array([BigInt(buf.length)]);
           if (libc.sysctlbyname(ptr(Buffer.from("kern.hostname\\0")), ptr(buf), ptr(size), null, 0) !== 0) throw 1;
         });
+        // Dates and Intl need ICU and time zone data (Bun panics without them, ending the script).
+        await probe("intl", () => {
+          const text = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Tallinn" }).format(new Date(0));
+          if (text !== "01/01/1970") throw 1;
+        });
+        await probe("locale", () => { if (new Date().toLocaleString().length === 0) throw 1; });
+        out.push("tz:" + Intl.DateTimeFormat().resolvedOptions().timeZone);
         console.log(out.join("\\n"));
         """
         try script.write(to: plugin.appending(path: "t.ts"), atomically: true, encoding: .utf8)
@@ -511,6 +520,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         // Control: the same script without a sandbox proves the probes work (network is not asserted: may be offline).
         let control = Set(try run(bunPath.path, ["run", scriptPath]).split(separator: "\n").map(String.init))
         #expect(control.contains("home:allowed") && control.contains("spawn:allowed"), Comment(rawValue: "\(control)"))
+        #expect(control.contains("intl:allowed") && control.contains("locale:allowed"), Comment(rawValue: "\(control)"))
         #expect(control.contains("proclist:allowed") && control.contains("procargs:allowed")
                 && control.contains("hostname:allowed"), Comment(rawValue: "\(control)"))
         try? FileManager.default.removeItem(at: plugin.appending(path: "evil.txt"))
@@ -524,6 +534,10 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(lines.contains("home:denied"), Comment(rawValue: output))
         #expect(lines.contains("pluginwrite:denied"), Comment(rawValue: output))
         #expect(lines.contains("spawn:denied"), Comment(rawValue: output))
+        #expect(lines.contains("intl:allowed"), Comment(rawValue: output))
+        #expect(lines.contains("locale:allowed"), Comment(rawValue: output))
+        // The local time zone (via /etc/localtime) is the same as outside the sandbox.
+        #expect(lines.filter { $0.hasPrefix("tz:") } == control.filter { $0.hasPrefix("tz:") }, Comment(rawValue: output))
         #expect(lines.contains("proclist:denied"), Comment(rawValue: output))
         #expect(lines.contains("hostname:denied"), Comment(rawValue: output))
         // macOS checks named sysctls against the profile, but KERN_PROCARGS2 (another process's

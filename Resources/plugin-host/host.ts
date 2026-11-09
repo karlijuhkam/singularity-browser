@@ -27,6 +27,11 @@
 //                   {"kind":"runCommand","callID":1,"command":"op","arguments":["item","list"]}
 //                   {"kind":"log","level":"info","message":"…"}
 //
+// Limits: Singularity buffers at most 16 MB of messages that the plugin hasn't read yet. If more
+// would be waiting (the plugin is stuck, or a single message is larger than 16 MB), the plugin is
+// stopped. Lines the plugin writes are capped at 1 MB, log messages at 8 KB, and at most 4
+// singularity.run() calls run at once (more are answered with status 126 right away).
+//
 // Because stdout carries these messages, console.log and friends are redirected to the plugin's
 // log (see below) so a stray print can't break a message. The Swift side of this protocol is
 // Sources/SingularityCore/Plugins/PluginWire.swift and PluginProcess.swift.
