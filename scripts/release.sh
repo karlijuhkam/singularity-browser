@@ -100,6 +100,7 @@ cp "$BIN_DIR/Singularity" "$BIN_DIR/singularity-mcp" "$APP/Contents/MacOS/"
 cp "$ROOT/Vendor/bun/bun" "$APP/Contents/Helpers/bun"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
+cp -R "$ROOT/Resources/plugin-host" "$APP/Contents/Resources/"   # plugins' host.ts
 for bundle in "$BIN_DIR"/*.bundle; do
   [[ -e "$bundle" ]] && cp -R "$bundle" "$APP/Contents/Resources/"
 done

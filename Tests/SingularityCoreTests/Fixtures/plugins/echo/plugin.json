@@ -1,0 +1,12 @@
+{
+  "id": "echo",
+  "name": "Echo",
+  "version": "0.1.0",
+  "description": "Test plugin for PluginProcessTests: echoes page messages and probes its sandbox.",
+  "author": "Singularity tests",
+  "background": "background.ts",
+  "permissions": {
+    "commands": { "echo": ["hello"] },
+    "network": []
+  }
+}
