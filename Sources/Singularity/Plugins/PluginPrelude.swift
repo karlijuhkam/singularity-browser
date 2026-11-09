@@ -156,10 +156,15 @@ enum PluginPrelude {
       // scripts, and `window[n]` / `window.frames[n]` hand that window to this world with all its
       // built-ins intact (fetch, document.cookie, Function…). WindowProxy's indexed access can't be
       // intercepted, so instead `lockRealm` is applied to every frame we can reach, from:
-      //   - the plugin world's own DOM insertion functions (appendChild, innerHTML, setAttribute, …),
-      //     synchronously, right after they run (a plugin inserting <iframe src=slow>);
+      //   - the plugin world's own DOM insertion functions and node-taking setters (appendChild,
+      //     innerHTML, setAttribute, table.caption, document.body, …), synchronously, right after
+      //     they run (a plugin inserting <iframe src=slow>);
+      //   - reading `window.length`;
       //   - a MutationObserver on this document, for frames the page adds (it runs before any later
       //     task, so before the plugin's code can run again).
+      // This is best effort for frames other than our own: an insertion route missing from
+      // `hookInsertions`, used together with a guessed index, would still get through. Reviewers
+      // reject any window[n] / frames / parent / top access (AUTHORING.md).
       // `iframe.contentWindow` / `contentDocument` return null in this world; frames inside shadow
       // roots aren't in `window[n]`, so they can't be reached at all.
       const getOwnDescriptor = Object.getOwnPropertyDescriptor;
@@ -209,10 +214,15 @@ enum PluginPrelude {
             });
           }
         };
+        // Keep this list complete by probing: scripts/probe-plugin-frames.sh tries each route.
         after("Node", ["appendChild", "insertBefore", "replaceChild"]);
         after("Element", ["append", "prepend", "before", "after", "replaceWith", "replaceChildren", "moveBefore",
-                          "insertAdjacentElement", "insertAdjacentHTML", "setHTMLUnsafe",
-                          "setAttribute", "setAttributeNS", "setAttributeNode", "setAttributeNodeNS", "toggleAttribute"]);
+                          "insertAdjacentElement", "insertAdjacentHTML", "setHTMLUnsafe", "setHTML",
+                          "setAttribute", "setAttributeNS", "setAttributeNode", "setAttributeNodeNS", "toggleAttribute",
+                          "removeAttribute", "removeAttributeNS", "removeAttributeNode"]);
+        after("NamedNodeMap", ["setNamedItem", "setNamedItemNS", "removeNamedItem", "removeNamedItemNS"]);
+        after("HTMLSelectElement", ["add"]);       // an <option> may hold any element, frames too
+        after("HTMLOptionsCollection", ["add"]);
         after("CharacterData", ["before", "after", "replaceWith"]);
         after("DocumentType", ["before", "after", "replaceWith"]);
         after("Document", ["append", "prepend", "replaceChildren", "moveBefore", "write", "writeln", "execCommand"]);
@@ -225,8 +235,15 @@ enum PluginPrelude {
         afterSet("Attr", ["value"]);
         afterSet("HTMLIFrameElement", ["src", "srcdoc"]);
         afterSet("HTMLFrameElement", ["src"]);
-        afterSet("HTMLEmbedElement", ["src"]);
-        afterSet("HTMLObjectElement", ["data"]);
+        afterSet("HTMLEmbedElement", ["src", "type"]);
+        afterSet("HTMLObjectElement", ["data", "type"]);
+        // Setters that take a whole node: table.caption / tHead / tFoot, document.body. (Defined on
+        // Document.prototype in WebKit; HTMLDocument.prototype only where it has its own.)
+        afterSet("HTMLTableElement", ["caption", "tHead", "tFoot"]);
+        afterSet("Document", ["body"]);
+        afterSet("HTMLDocument", ["body"]);
+        afterSet("HTMLSelectElement", ["length"]);
+        afterSet("HTMLOptionsCollection", ["length"]);
       };
 
       // Locks realm `w` (this frame's window, or another frame's as seen from this world).
@@ -262,13 +279,26 @@ enum PluginPrelude {
           // and no code of this world runs in a realm we lock from outside.
           lockValue(OwnFunction.prototype, "constructor", noCodeFromStrings);
         }
+        // Timers also lock reachable frames before each callback runs: an <object>/<embed> makes
+        // its frame later, at layout, with no DOM change to react to, and a plugin waiting for it
+        // usually waits with a timer or an animation frame.
+        const scanFirst = (callback) => function (...args) {
+          lockReachableFrames(apply(topOf, window, []));
+          return apply(callback, this, args);
+        };
         for (const name of ["setTimeout", "setInterval"]) {
           const original = w[name];
           if (typeof original !== "function") continue;
           lockValue(w, name, (callback, ...rest) => {
             if (typeof callback !== "function") noCodeFromStrings();
-            return apply(original, w, [callback, ...rest]);
+            return apply(original, w, [scanFirst(callback), ...rest]);
           });
+        }
+        for (const name of ["requestAnimationFrame", "requestIdleCallback"]) {
+          const original = w[name];
+          if (typeof original !== "function") continue;
+          lockValue(w, name, (callback, ...rest) =>
+            apply(original, w, [typeof callback === "function" ? scanFirst(callback) : callback, ...rest]));
         }
 
         // Site data. Window attributes live on the window object itself (WebIDL [Global]);
@@ -298,9 +328,16 @@ enum PluginPrelude {
           const proto = protoOf(w, name);
           if (proto) for (const prop of ["contentWindow", "contentDocument"]) lockAccessor(proto, prop, () => null, undefined);
         }
-        // `length` is how we find frames: keep its real getter, but don't let it be shadowed.
+        // `window.length` (also `frames.length`): a safety net for insertion routes the hooks don't
+        // know about. Code that counts frames first locks them all; it can't be shadowed.
         const length = getOwnDescriptor(w, "length");
-        if (length && typeof length.get === "function") lockAccessor(w, "length", length.get, undefined);
+        if (length && typeof length.get === "function") {
+          const get = length.get;
+          lockAccessor(w, "length", function () {
+            lockReachableFrames(apply(topOf, window, []));
+            return apply(get, this, []);
+          }, undefined);
+        }
         hookInsertions(w);
 
         // Last, because `isLocked` looks at it: `document.cookie` is an accessor on
@@ -323,10 +360,13 @@ enum PluginPrelude {
         for (let i = 0; i < queue.length && i < 1000; i++) {
           const w = queue[i];
           try { if (!isLocked(w)) lockRealm(w, false); } catch (_) {}
-          let count = 0;
-          try { count = w.length; } catch (_) {}
-          for (let k = 0; k < count; k++) {
-            try { const child = w[k]; if (child) queue.push(child); } catch (_) {}
+          // Indexed access until it runs out, not `length` (whose getter calls this function, and
+          // which a cross-origin page could make lie). Works on cross-origin windows too.
+          for (let k = 0; k < 1000; k++) {
+            let child;
+            try { child = w[k]; } catch (_) { break; }
+            if (!child) break;
+            queue.push(child);
           }
         }
       };
@@ -334,7 +374,7 @@ enum PluginPrelude {
       // Frames the page adds (or points somewhere else) while this document lives. Frames inside
       // child documents are their own prelude's job.
       new RealMutationObserver(() => lockReachableFrames(window)).observe(document, {
-        childList: true, subtree: true, attributes: true, attributeFilter: ["src", "srcdoc", "data"],
+        childList: true, subtree: true, attributes: true, attributeFilter: ["src", "srcdoc", "data", "type"],
       });
       lockReachableFrames(window);
 
@@ -359,7 +399,9 @@ enum PluginPrelude {
         const json = stringify(payload === undefined ? null : payload);
         const ticket = takeClickTicket(); // before any await: only the first send after a click gets it
         const token = ticket ? await ticket.token : null;
-        return await post({ type: "send", json, token: typeof token === "string" ? token : null });
+        const reply = await post({ type: "send", json, token: typeof token === "string" ? token : null });
+        lockReachableFrames(apply(topOf, window, [])); // the reply arrives in a task of its own
+        return reply;
       };
 
       // ---- 5. Our elements: a host in the page, everything else in a closed shadow root ---------------
