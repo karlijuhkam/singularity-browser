@@ -518,4 +518,96 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(some == ["Adds buttons to pages on https://a.com/*, https://b.com/*",
                          "Runs gh (only: pr list)", "Connects to x.com"])
     }
+
+    // MARK: Command broker
+
+    @Test func resolveFindsCommands() {
+        // `uptime` rather than `ls`: zsh users often alias `ls`, and `command -v` would print the alias.
+        #expect(CommandBroker.resolve("uptime", loginShell: "/bin/zsh") == "/usr/bin/uptime")
+        #expect(CommandBroker.resolve("definitely-not-a-real-command-xyz", loginShell: "/bin/zsh") == nil)
+    }
+
+    @Test func resolveRejectsBadNamesWithoutRunningAShell() {
+        // The login shell is a path that does not exist: a nil result proves it was never needed.
+        let nope = "/nonexistent/shell"
+        #expect(CommandBroker.resolve("ls; touch /tmp/x", loginShell: nope) == nil)
+        #expect(CommandBroker.resolve("$(id)", loginShell: nope) == nil)
+        #expect(CommandBroker.resolve("-c", loginShell: nope) == nil)
+        #expect(CommandBroker.resolve("python3", loginShell: nope) == nil)
+        #expect(CommandBroker.resolve("bash", loginShell: nope) == nil)
+    }
+
+    @Test func acceptTakesLastLineAndChecksThePath() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("broker-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func make(_ name: String, mode: Int) throws -> String {
+            let path = dir.appendingPathComponent(name).path
+            FileManager.default.createFile(atPath: path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: mode])
+            return path
+        }
+        let tool = try make("mytool", mode: 0o755)
+        #expect(CommandBroker.accept("Welcome back!\nsome rc noise\n\(tool)\n\n") == tool)
+        #expect(CommandBroker.accept("") == nil)
+        #expect(CommandBroker.accept("mytool\n") == nil)                       // relative / alias text
+        #expect(CommandBroker.accept("\(try make("plain", mode: 0o644))\n") == nil)  // not executable
+        #expect(CommandBroker.accept("\(dir.path)\n") == nil)                  // directory
+        #expect(CommandBroker.accept("\(dir.path)/missing\n") == nil)
+
+        // A harmless-looking name that points at an interpreter is refused, by either name.
+        let link = dir.appendingPathComponent("foo").path
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: "/usr/bin/python3")
+        #expect(CommandBroker.accept("\(link)\n") == nil)
+        let shLink = dir.appendingPathComponent("friendly").path
+        try FileManager.default.createSymbolicLink(atPath: shLink, withDestinationPath: "/bin/sh")
+        #expect(CommandBroker.accept("\(shLink)\n") == nil)
+        // A symlink to something harmless is fine and returned as printed.
+        let okLink = dir.appendingPathComponent("alias-ok").path
+        try FileManager.default.createSymbolicLink(atPath: okLink, withDestinationPath: tool)
+        #expect(CommandBroker.accept("\(okLink)\n") == okLink)
+    }
+
+    @Test func runReturnsOutput() async {
+        let result = await CommandBroker.run(path: "/bin/echo", arguments: ["hi"], timeout: .seconds(5))
+        #expect(result.status == 0)
+        #expect(result.stdout == "hi\n")
+        #expect(!result.timedOut)
+        let failed = await CommandBroker.run(path: "/bin/sh", arguments: ["-c", "echo err >&2; exit 3"], timeout: .seconds(5))
+        #expect(failed.status == 3)
+        #expect(failed.stderr == "err\n")
+        let missing = await CommandBroker.run(path: "/nonexistent/tool", arguments: [], timeout: .seconds(5))
+        #expect(missing.status != 0)
+    }
+
+    @Test func runGivesEmptyStdinAndHandlesLargeOutput() async {
+        let cat = await CommandBroker.run(path: "/bin/cat", arguments: [], timeout: .seconds(5))
+        #expect(cat.status == 0 && cat.stdout.isEmpty && !cat.timedOut)
+        // 20 MB on stdout and stderr at once: must not deadlock, and is capped at 10 MB each.
+        let big = await CommandBroker.run(path: "/bin/sh", arguments: ["-c",
+            "head -c 20000000 /dev/zero | tr '\\0' a; head -c 20000000 /dev/zero | tr '\\0' b >&2"], timeout: .seconds(30))
+        #expect(big.status == 0)
+        #expect(big.stdout.utf8.count == 10_000_000)
+        #expect(big.stderr.utf8.count == 10_000_000)
+    }
+
+    @Test func runTimesOutAndReportsIt() async throws {
+        // The script prints its pid, then sleeps; we check that pid is gone afterwards.
+        let started = ContinuousClock.now
+        let result = await CommandBroker.run(path: "/bin/sh", arguments: ["-c", "echo $$; exec sleep 5"],
+                                             timeout: .milliseconds(300))
+        #expect(result.timedOut)
+        #expect(ContinuousClock.now - started < .seconds(4))
+        let pid = try #require(Int32(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
+    }
+
+    @Test func runKillsProcessesThatIgnoreSigterm() async throws {
+        let started = ContinuousClock.now
+        let result = await CommandBroker.run(path: "/bin/sh", arguments: ["-c", "trap '' TERM; echo $$; while :; do sleep 1; done"],
+                                             timeout: .milliseconds(300))
+        #expect(result.timedOut)
+        #expect(ContinuousClock.now - started < .seconds(6))
+        let pid = try #require(Int32(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(kill(pid, 0) == -1 && errno == ESRCH)
+    }
 }
