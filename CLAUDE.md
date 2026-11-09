@@ -72,5 +72,7 @@ No Xcode project: SwiftPM + scripts. The scripts need full Xcode (macOS 27 SDK; 
 - `scripts/build-app.sh`: builds, assembles and signs `build/Singularity.app` (ad-hoc, or `SIGN_IDENTITY=…`)
 - `scripts/run.sh`: build, then quit any running copy and launch
 - `scripts/test.sh`: unit tests (Swift Testing)
+- `scripts/release.sh`: universal release build → Developer ID signing → notarization → staple → `dist/`. `--skip-notarize` signs with any identity. Identities are chosen by SHA-1 fingerprint (this keychain has duplicate "Apple Development" certificates, so names are ambiguous). Needs a Developer ID Application certificate and the `singularity-notary` notarytool profile, both set up by the owner.
+- App icon: `scripts/icon/render_orb.py` is a numpy port of the orb shader on singularity.rroosa.ee; `make_icon.py` puts it on a macOS tile; `make_icns.sh` builds `Resources/AppIcon.icns` (white orb, dark tile). As on the site, the orb is white in dark mode and black in light mode: while running, `AppDelegate` swaps the Dock icon to `DockIcon-dark/-light.png`, and empty tabs show `Orb-dark/-light.png`. `Resources/*.png` are copied into the bundle.
 - Plain `swift build` in a fresh shell uses the Command Line Tools and fails. Run `source scripts/env.sh` first, or use the scripts.
 - The tab model is called `BrowserTab` because SwiftUI has its own `Tab` type.

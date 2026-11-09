@@ -36,6 +36,8 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
   cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 fi
+# Images the app loads at runtime (Dock icon per light/dark mode, the orb in empty tabs).
+cp "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
 
 # SwiftPM puts target resources in <Package>_<Target>.bundle next to the binary.
 for bundle in "$BIN_DIR"/*.bundle; do

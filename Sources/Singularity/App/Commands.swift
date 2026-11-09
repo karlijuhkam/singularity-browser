@@ -14,6 +14,8 @@ struct SingularityCommands: Commands {
                 .keyboardShortcut("t", modifiers: [.command, .option])
             Button("Command Palette") { state.showPalette(.newTab) }
                 .keyboardShortcut("k")
+            Button("Open Location…") { state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent) }
+                .keyboardShortcut("l")
             Divider()
             Button("New Folder…") { state.promptNewFolder() }
             Button("New Space…") { state.spaceEditor = SpaceEditorRequest(spaceID: nil) }
@@ -24,6 +26,23 @@ struct SingularityCommands: Commands {
             Button("Close Tab") { state.closeSelectedTab() }
                 .keyboardShortcut("w")
                 .disabled(state.selectedTab == nil)
+        }
+
+        // Spaces: ⌘1…⌘8 pick that Space, ⌘9 the last one (as tabs do in other browsers).
+        CommandMenu("Spaces") {
+            ForEach(Array(state.spaces.enumerated()), id: \.element.id) { index, space in
+                if let key = Self.spaceShortcut(index: index, count: state.spaces.count) {
+                    Button(space.name) { state.selectSpace(space.id) }
+                        .keyboardShortcut(key)
+                } else {
+                    Button(space.name) { state.selectSpace(space.id) }
+                }
+            }
+            Divider()
+            Button("Next Tab") { state.selectAdjacentTab(1) }
+                .keyboardShortcut(.tab, modifiers: [.control])
+            Button("Previous Tab") { state.selectAdjacentTab(-1) }
+                .keyboardShortcut(.tab, modifiers: [.control, .shift])
         }
 
         CommandGroup(before: .toolbar) {
@@ -56,6 +75,13 @@ struct SingularityCommands: Commands {
                 .disabled(selectedController?.canGoForward != true)
             Divider()
         }
+    }
+
+    /// ⌘1…⌘8 for the first eight Spaces, ⌘9 for the last one.
+    private static func spaceShortcut(index: Int, count: Int) -> KeyEquivalent? {
+        if index == count - 1 { return "9" }
+        guard index < 8 else { return nil }
+        return KeyEquivalent(Character(String(index + 1)))
     }
 
     private var isInSplit: Bool {

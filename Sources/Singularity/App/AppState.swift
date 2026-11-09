@@ -140,6 +140,18 @@ final class AppState {
         if wasEnabled != agentsEnabled || agentsEnabled { mcp?.toolsChanged() }
     }
 
+    /// ⌃⇥ / ⌃⇧⇥: the next or previous tab in sidebar order, wrapping around. A split counts once
+    /// (its whole row), so stepping through the sidebar feels like stepping through rows.
+    func selectAdjacentTab(_ step: Int) {
+        guard let space = selectedSpace else { return }
+        let rows = [SidebarSection.pinned] + space.folders.map { .folder($0.id) } + [.open]
+        let items = rows.flatMap { space.sidebarItems(in: $0) }
+        guard !items.isEmpty else { return }
+        let current = space.selectedTabID.flatMap { id in items.firstIndex { $0.tabIDs.contains(id) } }
+        let next = current.map { ($0 + step + items.count) % items.count } ?? 0
+        if let tabID = items[next].tabIDs.first { selectTab(tabID) }
+    }
+
     func selectSpace(_ id: UUID) {
         guard spaces.contains(where: { $0.id == id }) else { return }
         selectedSpaceID = id
