@@ -73,13 +73,13 @@ enum PaletteResults {
             .prefix(30)
             .map(\.0)
 
-        switch URLInput.classify(trimmed) {
+        switch URLInput.classify(trimmed, searchTemplate: state.settings.searchTemplate) {
         case .url(let url):
             let open = PaletteItem(id: "open-url", title: url.absoluteString, subtitle: "", hint: "Open",
                                    icon: .symbol("arrow.up.forward.square"), action: .openURL(url))
             return [open] + matches
         case .search(let url):
-            let search = PaletteItem(id: "search", title: trimmed, subtitle: "Search DuckDuckGo", hint: "Search",
+            let search = PaletteItem(id: "search", title: trimmed, subtitle: "Search \(state.settings.searchEngineName)", hint: "Search",
                                      icon: .symbol("magnifyingglass"), action: .openURL(url))
             return matches + [search]
         case nil:

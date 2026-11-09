@@ -4,6 +4,7 @@ import Foundation
 ///
 ///     ~/Singularity/
 ///     ├─ state.json                 Space order + selected Space
+///     ├─ settings.json              preferences from the Settings window
 ///     ├─ .run/mcp.sock              socket for agents (singularity-mcp), while the app runs
 ///     └─ spaces/<slug>/
 ///        ├─ space.json              the Space, its folders and tabs
@@ -25,6 +26,8 @@ public struct Paths: Sendable {
     }
 
     public var stateFile: URL { root.appending(path: "state.json") }
+    /// App-wide preferences (Settings window).
+    public var settingsFile: URL { root.appending(path: "settings.json") }
     /// The Unix socket `singularity-mcp` connects to (folder 0700, socket 0600).
     public var mcpSocket: URL { root.appending(path: ".run/mcp.sock") }
     public var spacesDirectory: URL { root.appending(path: "spaces", directoryHint: .isDirectory) }

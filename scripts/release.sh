@@ -7,8 +7,10 @@
 #   scripts/release.sh --skip-notarize   # sign only (any identity), for testing the build locally
 #
 # Environment:
-#   SIGN_IDENTITY   codesign identity (default: the first "Developer ID Application" in the keychain;
-#                   with --skip-notarize, falls back to "Apple Development")
+#   TEAM_ID         Apple Developer team that signs Singularity (default: T748B76PPL, Karli Juhkam).
+#                   Only that team's certificates are used.
+#   SIGN_IDENTITY   explicit codesign identity, overriding the team lookup (default: the team's
+#                   "Developer ID Application"; with --skip-notarize, its "Apple Development")
 #   NOTARY_PROFILE  notarytool keychain profile (default: singularity-notary). Create it once with:
 #                   xcrun notarytool store-credentials singularity-notary --apple-id <you> --team-id <team>
 #
@@ -30,28 +32,49 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$ROOT/
 fail() { echo "error: $*" >&2; exit 1; }
 
 # ---- signing identity ---------------------------------------------------------------------------
+# Only certificates of TEAM_ID are considered (the team shown as Singularity's developer); this Mac
+# also holds certificates of another company's team, which must never sign Singularity.
 # Identities are picked by SHA-1 fingerprint, not by name: a keychain can hold several
 # certificates with the same name, and then codesign refuses an ambiguous name.
-identity_hash() {   # first identity whose name starts with $1
-  security find-identity -v -p codesigning | awk -v prefix="\"$1" 'index($0, prefix) { print $2; exit }'
+TEAM_ID="${TEAM_ID:-T748B76PPL}"
+
+# Prints "fingerprint<TAB>team<TAB>name" for every valid code-signing identity.
+identities() {
+  security find-identity -v -p codesigning | awk '$2 ~ /^[0-9A-F]{40}$/ { print $2 }' | while read -r hash; do
+    local pem team name
+    pem="$(security find-certificate -a -Z -p | awk -v h="$hash" 'BEGIN { RS = "SHA-1 hash: " } index($0, h) == 1' \
+           | sed -n '/BEGIN CERT/,/END CERT/p')"
+    team="$(printf '%s\n' "$pem" | openssl x509 -noout -subject -nameopt multiline 2>/dev/null \
+            | awk -F' = ' '/organizationalUnitName/ { print $2; exit }')"
+    name="$(printf '%s\n' "$pem" | openssl x509 -noout -subject -nameopt multiline 2>/dev/null \
+            | awk -F' = ' '/commonName/ { print $2; exit }')"
+    printf '%s\t%s\t%s\n' "$hash" "$team" "$name"
+  done
 }
-identity_name() {   # display name for a fingerprint
-  security find-identity -v -p codesigning | awk -v hash="$1" '$2 == hash { sub(/^[^"]*"/, ""); sub(/"[^"]*$/, ""); print; exit }'
+# First identity of TEAM_ID whose name starts with $1; prints "fingerprint<TAB>name".
+identity_in_team() {
+  identities | awk -F'\t' -v team="$TEAM_ID" -v prefix="$1" '$2 == team && index($3, prefix) == 1 { print $1 "\t" $3; exit }'
 }
-IDENTITY="${SIGN_IDENTITY:-$(identity_hash 'Developer ID Application')}"
-if [[ -z "$IDENTITY" ]]; then
-  if (( SKIP_NOTARIZE )); then
-    IDENTITY="$(identity_hash 'Apple Development')"
-    [[ -n "$IDENTITY" ]] || fail "no signing identity found in the keychain."
-    echo "→ no Developer ID certificate; signing for local testing with: $(identity_name "$IDENTITY")"
-  else
-    fail "no \"Developer ID Application\" certificate in the keychain. Notarization needs one:
-       developer.apple.com → Certificates, IDs & Profiles → '+' → Developer ID Application.
+
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  IDENTITY="$SIGN_IDENTITY"; IDENTITY_NAME="$SIGN_IDENTITY"
+else
+  FOUND="$(identity_in_team 'Developer ID Application')"
+  if [[ -z "$FOUND" ]] && (( SKIP_NOTARIZE )); then
+    FOUND="$(identity_in_team 'Apple Development')"
+    [[ -n "$FOUND" ]] && echo "→ no Developer ID certificate in team $TEAM_ID; signing for local testing only"
+  fi
+  if [[ -z "$FOUND" ]]; then
+    if (( SKIP_NOTARIZE )); then
+      fail "no signing certificate of team $TEAM_ID in the keychain."
+    fi
+    fail "no \"Developer ID Application\" certificate of team $TEAM_ID in the keychain. Notarization needs one:
+       developer.apple.com → Certificates, IDs & Profiles (team $TEAM_ID) → '+' → Developer ID Application.
        To test the build without it: scripts/release.sh --skip-notarize"
   fi
+  IDENTITY="${FOUND%%$'\t'*}"
+  IDENTITY_NAME="${FOUND#*$'\t'}"
 fi
-IDENTITY_NAME="$(identity_name "$IDENTITY")"
-IDENTITY_NAME="${IDENTITY_NAME:-$IDENTITY}"
 if (( ! SKIP_NOTARIZE )) && [[ "$IDENTITY_NAME" != Developer\ ID\ Application* ]]; then
   fail "notarization requires a Developer ID Application identity (got: $IDENTITY_NAME)."
 fi

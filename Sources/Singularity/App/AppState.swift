@@ -29,6 +29,9 @@ final class AppState {
     let favicons: FaviconStore
     /// Approval policy checks and confirmation sheets for agent actions.
     let approvals = AgentApprovals()
+    /// Preferences from the Settings window (`~/Singularity/settings.json`). Change via `updateSettings`.
+    private(set) var settings = AppSettings()
+    @ObservationIgnored private var settingsDirty = false
     /// Tabs an agent is working on right now (count, since calls can overlap). Drives the badges.
     private(set) var agentBusyTabs: [UUID: Int] = [:]
     /// Recent agent log entries per Space (oldest first), loaded from agent-log.jsonl on demand.
@@ -59,6 +62,7 @@ final class AppState {
         self.artifacts = ArtifactHosts()
         self.favicons = FaviconStore(paths: paths)
 
+        settings = store.loadSettings()
         let loaded = store.load()
         spaces = loaded.spaces
         loadErrors = loaded.errors
@@ -72,6 +76,8 @@ final class AppState {
         web.state = self
         terminals.state = self
         artifacts.state = self
+
+        approvals.timeoutSeconds = { [weak self] in self?.settings.agentApprovalTimeoutSeconds ?? 120 }
 
         let mcp = MCPHub(state: self)
         mcp.start(socketPath: paths.mcpSocket.path)
@@ -792,6 +798,58 @@ final class AppState {
             }
             stateFileDirty = false
         }
+        if settingsDirty {
+            do {
+                try store.save(settings)
+            } catch {
+                NSLog("Singularity: could not save settings.json: \(error)")
+            }
+            settingsDirty = false
+        }
+    }
+
+    // MARK: - Settings
+
+    /// Changes preferences, saves them (debounced) and applies what affects open tabs.
+    func updateSettings(_ change: (inout AppSettings) -> Void) {
+        let before = settings
+        change(&settings)
+        guard settings != before else { return }
+        settingsDirty = true
+        scheduleSave()
+        if settings.terminalFontName != before.terminalFontName || settings.terminalFontSize != before.terminalFontSize {
+            terminals.applyFont(terminalFont)
+        }
+    }
+
+    /// The terminal font from Settings (falls back to the system's monospaced font).
+    var terminalFont: NSFont {
+        let size = CGFloat(settings.terminalFontSize)
+        if let family = settings.terminalFontName,
+           let font = NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: size) {
+            return font
+        }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    /// Settings → Data: empties a Space's browsing history (the palette's suggestions).
+    func clearHistory(spaceID: UUID) {
+        guard let space = space(spaceID) else { return }
+        try? FileManager.default.removeItem(at: paths.historyFile(space.slug))
+        historyCache[spaceID] = []
+    }
+
+    /// Settings → Data: deletes a Space's cookies, logins, local storage and cache (WebKit store).
+    func clearSiteData(spaceID: UUID) async {
+        let store = WKWebsiteDataStore(forIdentifier: spaceID)
+        await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+    }
+
+    /// Settings → Data: empties a Space's agent log.
+    func clearAgentLog(spaceID: UUID) {
+        guard let space = space(spaceID) else { return }
+        try? FileManager.default.removeItem(at: paths.agentLogFile(space.slug))
+        if agentLogs[spaceID] != nil { agentLogs[spaceID] = [] }
     }
 
     /// Folder names already on disk (including ones that failed to load), so a new

@@ -25,13 +25,15 @@ Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is sy
 - **⌥⌘T** opens a **terminal** in the Space's folder. It runs your normal login shell with your `.zshrc`.
 - **Split view:** drag a tab from the sidebar onto the edge of the page, or right-click → **Open in Split View**. Drag a pane's title bar to move it, and drag the gaps to resize.
 
+All preferences are in **Singularity → Settings…** (⌘,): search engine, terminal font, agent permissions for every Space, the exact `claude mcp add` command for your copy of the app, and per-Space "clear history / cookies / agent log".
+
 ### 3. Connect Claude Code (2 min)
 
 1. In Singularity, right-click a Space → **Edit Space…** → switch on **Allow agents**, then choose what agents may do:
    - **Read only:** look at tabs and pages, and take screenshots.
    - **Ask before acting** (recommended): you confirm each click, typing, page opened or tab closed. Form submissions and going to another site always ask.
    - **Allow everything:** no questions asked, but every action is still logged.
-2. Register the MCP server once, for all your projects:
+2. Register the MCP server once, for all your projects. **Settings → Agents** has this command with the right path and a Copy button:
 
    ```sh
    claude mcp add -s user singularity -- /Applications/Singularity.app/Contents/MacOS/singularity-mcp
@@ -88,6 +90,7 @@ Tools, for each Space where agents are allowed (Claude Code shows `work.read_pag
 | Keys | Action |
 |---|---|
 | ⌘T / ⌘K | Command palette (new tab, search, commands) |
+| ⌘, | Settings |
 | ⌘L | Open location (load in the current tab) |
 | ⌥⌘T | New terminal |
 | ⌘W | Close tab |
@@ -102,6 +105,7 @@ Tools, for each Space where agents are allowed (Claude Code shows `work.read_pag
 ```
 ~/Singularity/
 ├─ state.json                   Space order, selected Space
+├─ settings.json                preferences (Settings window)
 ├─ .run/mcp.sock                the agents' socket (only while the app runs)
 └─ spaces/<slug>/
    ├─ space.json                tabs, folders, splits, settings
@@ -126,7 +130,7 @@ One exception: each Space's **cookies and logins** live in WebKit's own store at
 | `scripts/icon/make_icns.sh` | Rebuilds `Resources/AppIcon.icns` from the orb renders (`render_orb.py` ports the singularity.rroosa.ee shader) |
 
 **First release only:**
-1. Create a **Developer ID Application** certificate at developer.apple.com → Certificates, IDs & Profiles → "+", then download it and double-click to install.
+1. Create a **Developer ID Application** certificate in the Apple Developer team that should appear as Singularity's developer (the script defaults to `TEAM_ID=T748B76PPL`): developer.apple.com → Certificates, IDs & Profiles → "+". Download it and double-click to install.
 2. Store notarization credentials, which asks for an app-specific password:
    `xcrun notarytool store-credentials singularity-notary --apple-id <you> --team-id <team>`.
 

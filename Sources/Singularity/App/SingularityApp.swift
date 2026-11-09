@@ -19,6 +19,12 @@ struct SingularityApp: App {
         // Title bar is invisible and content runs underneath it, as in Arc/Safari's compact tabs.
         .windowStyle(.hiddenTitleBar)
         .commands { SingularityCommands(state: state) }
+
+        // ⌘, opens this (SwiftUI adds the "Settings…" menu item).
+        Settings {
+            SettingsView()
+                .environment(state)
+        }
     }
 }
 

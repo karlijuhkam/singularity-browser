@@ -63,11 +63,11 @@ final class AgentApprovals {
     private var allowedOrigins: [UUID: Set<String>] = [:]
     private var isPresenting = false
 
-    /// How long a sheet waits for an answer. Override for testing with
-    /// `defaults write dev.roosa.Singularity agentApprovalTimeoutSeconds 5`.
+    /// Seconds a sheet waits for an answer (Settings → Agents; set by AppState).
+    var timeoutSeconds: () -> Int = { 120 }
+
     private var timeout: Duration {
-        let seconds = UserDefaults.standard.double(forKey: "agentApprovalTimeoutSeconds")
-        return .seconds(seconds > 0 ? seconds : 120)
+        .seconds(max(5, timeoutSeconds()))
     }
 
     func check(_ context: AgentActionContext, space: Space, request: Request) async -> Outcome {

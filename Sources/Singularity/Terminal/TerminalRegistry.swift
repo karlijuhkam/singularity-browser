@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SingularityCore
@@ -21,6 +22,7 @@ final class TerminalRegistry {
             spaceID: space.id,
             spaceSlug: space.slug,
             workingDirectory: tab.workingDirectory ?? space.workingDirectory,
+            font: state?.terminalFont ?? .monospacedSystemFont(ofSize: 13, weight: .regular),
             state: state
         )
         sessions[tab.id] = session
@@ -42,6 +44,13 @@ final class TerminalRegistry {
     /// Sessions whose foreground is a program other than the shell (e.g. a running agent).
     var busySessions: [TerminalSession] {
         sessions.values.filter { $0.foregroundProgram != nil }
+    }
+
+    /// Settings → Terminal changed the font: apply it to every open terminal.
+    func applyFont(_ font: NSFont) {
+        for session in sessions.values {
+            session.view.font = font
+        }
     }
 
     func tearDownAll() {

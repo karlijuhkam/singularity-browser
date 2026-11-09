@@ -5,8 +5,8 @@ public enum URLInput: Equatable, Sendable {
     case url(URL)
     case search(URL)
 
-    /// v1 hard-codes the search engine. See IDEAS.md.
-    public static let searchURLPrefix = "https://duckduckgo.com/?q="
+    /// The default search engine's template (see `AppSettings.searchTemplate`).
+    public static let defaultSearchTemplate = SearchEngine.duckDuckGo.template!
 
     public var url: URL {
         switch self {
@@ -14,8 +14,8 @@ public enum URLInput: Equatable, Sendable {
         }
     }
 
-    /// Returns nil for empty input.
-    public static func classify(_ input: String) -> URLInput? {
+    /// Returns nil for empty input. `searchTemplate` is a URL with `%s` where the query goes.
+    public static func classify(_ input: String, searchTemplate: String = defaultSearchTemplate) -> URLInput? {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
 
@@ -37,7 +37,8 @@ public enum URLInput: Equatable, Sendable {
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&+=?#")
         let query = text.addingPercentEncoding(withAllowedCharacters: allowed) ?? text
-        return .search(URL(string: searchURLPrefix + query)!)
+        let template = AppSettings.isValidSearchTemplate(searchTemplate) ? searchTemplate : defaultSearchTemplate
+        return .search(URL(string: template.replacingOccurrences(of: "%s", with: query))!)
     }
 
     private static func looksLikeHost(_ text: String) -> Bool {

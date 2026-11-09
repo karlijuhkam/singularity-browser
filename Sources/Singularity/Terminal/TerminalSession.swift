@@ -37,14 +37,14 @@ final class TerminalSession {
     /// The Space's slug, exported to the shell as SINGULARITY_SPACE.
     private let spaceSlug: String
 
-    init(tabID: UUID, spaceID: UUID, spaceSlug: String, workingDirectory: String, state: AppState?) {
+    init(tabID: UUID, spaceID: UUID, spaceSlug: String, workingDirectory: String, font: NSFont, state: AppState?) {
         self.tabID = tabID
         self.spaceID = spaceID
         self.spaceSlug = spaceSlug
         self.state = state
         self.view = SingularityTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
 
-        view.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        view.font = font
         // Black-on-white or white-on-black following the system appearance
         // (re-applied on every light/dark switch, see SingularityTerminalView).
         view.configureNativeColors()
@@ -206,11 +206,11 @@ extension TerminalSession: @MainActor LocalProcessTerminalViewDelegate {
         pollTimer = nil
         guard !isClosing else { return }
 
-        if exitCode == 0 {
+        if exitCode == 0, state?.settings.closeTerminalOnExit ?? true {
             // `exit` or Ctrl-D at the prompt: close the tab, like most terminals do.
             state?.closeTab(tabID, in: spaceID, confirmIfBusy: false)
         } else {
-            let reason = exitCode.map { "exit code \($0)" } ?? "terminated by a signal"
+            let reason = exitCode == 0 ? "exited" : (exitCode.map { "exit code \($0)" } ?? "terminated by a signal")
             view.feed(text: "\r\n\u{1b}[2m[Process ended: \(reason). Press Return to start a new shell.]\u{1b}[0m\r\n")
         }
     }

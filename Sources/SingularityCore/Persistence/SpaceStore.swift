@@ -78,6 +78,18 @@ public struct SpaceStore: Sendable {
         try Self.encoder.encode(state).write(to: paths.stateFile, options: .atomic)
     }
 
+    /// Settings; defaults if the file is missing or unreadable.
+    public func loadSettings() -> AppSettings {
+        guard let data = try? Data(contentsOf: paths.settingsFile),
+              let settings = try? JSONDecoder().decode(AppSettings.self, from: data) else { return AppSettings() }
+        return settings
+    }
+
+    public func save(_ settings: AppSettings) throws {
+        try FileManager.default.createDirectory(at: paths.root, withIntermediateDirectories: true)
+        try Self.encoder.encode(settings).write(to: paths.settingsFile, options: .atomic)
+    }
+
     /// Moves a Space's folder to the Trash (recoverable) rather than deleting it.
     public func trashSpaceFolder(slug: String) throws {
         let folder = paths.spaceDirectory(slug)
