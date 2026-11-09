@@ -27,6 +27,8 @@ final class AppState {
     let terminals: TerminalRegistry
     let artifacts: ArtifactHosts
     let favicons: FaviconStore
+    /// The MCP server agents connect to (set at the end of init, since it needs `self`).
+    @ObservationIgnored private(set) var mcp: MCPHub?
 
     @ObservationIgnored let paths: Paths
     @ObservationIgnored private let store: SpaceStore
@@ -63,11 +65,16 @@ final class AppState {
         terminals.state = self
         artifacts.state = self
 
+        let mcp = MCPHub(state: self)
+        mcp.start(socketPath: paths.mcpSocket.path)
+        self.mcp = mcp
+
         // When the app quits: write pending changes and hang up all shells.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.flushSaves()
                 self?.terminals.tearDownAll()
+                self?.mcp?.stop()
             }
         }
     }
@@ -98,22 +105,27 @@ final class AppState {
     // MARK: - Spaces
 
     @discardableResult
-    func createSpace(name: String, colorHex: String, workingDirectory: String) -> Space {
+    func createSpace(name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool = false) -> Space {
         let slug = Slug.unique(from: name, existing: Set(spaces.map(\.slug)) .union(slugsOnDisk()))
-        let space = Space(name: name, slug: slug, colorHex: colorHex, workingDirectory: workingDirectory)
+        let space = Space(name: name, slug: slug, colorHex: colorHex, workingDirectory: workingDirectory, agentsEnabled: agentsEnabled)
         spaces.append(space)
         markDirty(space.id)
         stateFileDirty = true
         selectSpace(space.id)
+        if agentsEnabled { mcp?.toolsChanged() }
         return space
     }
 
-    func updateSpace(_ id: UUID, name: String, colorHex: String, workingDirectory: String) {
+    func updateSpace(_ id: UUID, name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool) {
+        let wasEnabled = space(id)?.agentsEnabled
         mutateSpace(id) {
             $0.name = name
             $0.colorHex = colorHex
             $0.workingDirectory = workingDirectory
+            $0.agentsEnabled = agentsEnabled
         }
+        // Tool descriptions mention the Space's name, so a rename also counts as a change.
+        if wasEnabled != agentsEnabled || agentsEnabled { mcp?.toolsChanged() }
     }
 
     func selectSpace(_ id: UUID) {
@@ -142,6 +154,7 @@ final class AppState {
         }
         stateFileDirty = true
         scheduleSave()
+        if space.agentsEnabled { mcp?.toolsChanged() }
 
         do {
             try store.trashSpaceFolder(slug: space.slug)
@@ -400,6 +413,33 @@ final class AppState {
                 else { return }
                 _ = web.artifactController(for: tab, in: space, host: host, request: request)
             }
+        }
+    }
+
+    // MARK: - For agents (MCP)
+
+    /// Opens a URL in a new tab of a Space *without* selecting it, so the user's view doesn't
+    /// jump around while an agent works. The web view loads in the background.
+    func agentOpenTab(url: URL, spaceID: UUID) -> (BrowserTab, WebTabController)? {
+        let tab = BrowserTab.web(url)
+        mutateSpace(spaceID) { $0.append(tab) }
+        guard let space = space(spaceID) else { return nil }
+        return (tab, web.controller(for: tab, in: space))
+    }
+
+    /// A live web view for a web or artifact tab, creating (and loading) it if the tab hasn't
+    /// been shown since launch. Nil for terminal tabs.
+    func liveWebController(tabID: UUID, spaceID: UUID) async -> WebTabController? {
+        if let existing = web.existingController(tabID) { return existing }
+        guard let space = space(spaceID), let tab = space.tab(tabID) else { return nil }
+        switch tab.kind {
+        case .web:
+            return web.controller(for: tab, in: space)
+        case .artifact(let path):
+            guard let host = await ensureArtifactHost(space), let request = host.request(for: path) else { return nil }
+            return web.existingController(tabID) ?? web.artifactController(for: tab, in: space, host: host, request: request)
+        case .terminal:
+            return nil
         }
     }
 

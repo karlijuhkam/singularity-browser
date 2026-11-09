@@ -5,7 +5,7 @@ import Foundation
 public struct Space: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
-    /// URL-safe name used for the folder on disk and (later) MCP tool names.
+    /// URL-safe name used for the folder on disk and the MCP tool names ("work.list_tabs").
     /// Fixed at creation: renaming a Space only changes `name`.
     public var slug: String
     /// Colour as "#RRGGBB".
@@ -16,6 +16,9 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     /// All tabs in this Space. Order within each sidebar section is the order in this array.
     public var tabs: [BrowserTab]
     public var selectedTabID: UUID?
+    /// Whether external agents may see and control this Space through the MCP server.
+    /// Off by default; switched on per Space in the Space settings.
+    public var agentsEnabled: Bool
 
     public init(
         id: UUID = UUID(),
@@ -25,7 +28,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         workingDirectory: String = "~",
         folders: [Folder] = [],
         tabs: [BrowserTab] = [],
-        selectedTabID: UUID? = nil
+        selectedTabID: UUID? = nil,
+        agentsEnabled: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -35,6 +39,22 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         self.folders = folders
         self.tabs = tabs
         self.selectedTabID = selectedTabID
+        self.agentsEnabled = agentsEnabled
+    }
+
+    /// Decoding by hand so that space.json files written before a field existed still load
+    /// (a missing field gets its default instead of failing the whole file).
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        slug = try container.decode(String.self, forKey: .slug)
+        colorHex = try container.decode(String.self, forKey: .colorHex)
+        workingDirectory = try container.decodeIfPresent(String.self, forKey: .workingDirectory) ?? "~"
+        folders = try container.decodeIfPresent([Folder].self, forKey: .folders) ?? []
+        tabs = try container.decodeIfPresent([BrowserTab].self, forKey: .tabs) ?? []
+        selectedTabID = try container.decodeIfPresent(UUID.self, forKey: .selectedTabID)
+        agentsEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentsEnabled) ?? false
     }
 
     // MARK: - Reading

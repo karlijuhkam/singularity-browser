@@ -4,6 +4,7 @@ import Foundation
 ///
 ///     ~/Singularity/
 ///     ├─ state.json                 Space order + selected Space
+///     ├─ .run/mcp.sock              socket for agents (singularity-mcp), while the app runs
 ///     └─ spaces/<slug>/
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
@@ -23,6 +24,8 @@ public struct Paths: Sendable {
     }
 
     public var stateFile: URL { root.appending(path: "state.json") }
+    /// The Unix socket `singularity-mcp` connects to (folder 0700, socket 0600).
+    public var mcpSocket: URL { root.appending(path: ".run/mcp.sock") }
     public var spacesDirectory: URL { root.appending(path: "spaces", directoryHint: .isDirectory) }
 
     public func spaceDirectory(_ slug: String) -> URL {

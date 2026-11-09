@@ -69,6 +69,8 @@ final class WebViewRegistry {
         // treat WKWebView as an insecure embedded browser. We append the installed Safari's version.
         configuration.applicationNameForUserAgent = Self.safariUserAgentSuffix
         configuration.preferences.isElementFullscreenEnabled = true
+        // Agent tools (read_page, find, click, type), in an isolated world pages can't see.
+        PageAgentScript.install(in: configuration)
         return configuration
     }
 

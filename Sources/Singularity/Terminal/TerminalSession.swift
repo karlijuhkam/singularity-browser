@@ -34,10 +34,13 @@ final class TerminalSession {
     @ObservationIgnored private var programTitle: String?
     @ObservationIgnored private var programTitleGroup: pid_t?
     @ObservationIgnored private var lastDirectory: String?
+    /// The Space's slug, exported to the shell as SINGULARITY_SPACE.
+    private let spaceSlug: String
 
-    init(tabID: UUID, spaceID: UUID, workingDirectory: String, state: AppState?) {
+    init(tabID: UUID, spaceID: UUID, spaceSlug: String, workingDirectory: String, state: AppState?) {
         self.tabID = tabID
         self.spaceID = spaceID
+        self.spaceSlug = spaceSlug
         self.state = state
         self.view = SingularityTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
 
@@ -87,7 +90,7 @@ final class TerminalSession {
         view.startProcess(
             executable: shell,
             args: [],
-            environment: Self.environment(shell: shell),
+            environment: Self.environment(shell: shell, spaceSlug: spaceSlug),
             execName: "-" + (shell as NSString).lastPathComponent,
             currentDirectory: directory
         )
@@ -120,7 +123,7 @@ final class TerminalSession {
     }
 
     /// The app's own environment (which carries SSH_AUTH_SOCK, TMPDIR, …) plus terminal settings.
-    private static func environment(shell: String) -> [String] {
+    private static func environment(shell: String, spaceSlug: String) -> [String] {
         var environment = ProcessInfo.processInfo.environment
         for key in ["__CFBundleIdentifier", "XPC_SERVICE_NAME", "XPC_FLAGS", "TERM_SESSION_ID"] {
             environment.removeValue(forKey: key)
@@ -130,6 +133,9 @@ final class TerminalSession {
         environment["TERM_PROGRAM"] = "Singularity"
         environment["TERM_PROGRAM_VERSION"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
         environment["SHELL"] = shell
+        // Tells agents running in this terminal which Space they are in, i.e. which
+        // "<slug>.<tool>" MCP tools act on the browser around them.
+        environment["SINGULARITY_SPACE"] = spaceSlug
         if environment["LANG"] == nil { environment["LANG"] = "en_US.UTF-8" }
         return environment.map { "\($0.key)=\($0.value)" }
     }

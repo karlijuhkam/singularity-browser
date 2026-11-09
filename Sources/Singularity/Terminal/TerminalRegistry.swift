@@ -19,6 +19,7 @@ final class TerminalRegistry {
         let session = TerminalSession(
             tabID: tab.id,
             spaceID: space.id,
+            spaceSlug: space.slug,
             workingDirectory: tab.workingDirectory ?? space.workingDirectory,
             state: state
         )

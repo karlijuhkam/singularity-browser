@@ -35,7 +35,9 @@ final class WebTabController: NSObject {
         self.spaceID = spaceID
         self.isArtifact = isArtifact
         self.state = state
-        self.webView = WKWebView(frame: .zero, configuration: configuration)
+        // A realistic size even before the tab is shown: tabs that agents open in the background
+        // are laid out (and screenshotted) at this size until the user looks at them.
+        self.webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800), configuration: configuration)
         super.init()
 
         webView.navigationDelegate = self
@@ -49,6 +51,27 @@ final class WebTabController: NSObject {
 
     func load(_ url: URL) {
         webView.load(URLRequest(url: url))
+    }
+
+    /// Waits until the page has finished loading (or `timeout` passes).
+    func waitUntilLoaded(timeout: Duration = .seconds(20)) async {
+        let deadline = ContinuousClock.now + timeout
+        // A load requested a moment ago may not have flipped `isLoading` yet.
+        try? await Task.sleep(for: .milliseconds(100))
+        while webView.isLoading, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// Calls a function of the page agent (PageAgentScript) in its isolated world, e.g.
+    /// `callPageAgent("click(ref)", arguments: ["ref": 12])`. Returns its string result.
+    func callPageAgent(_ call: String, arguments: [String: Any]) async throws -> String {
+        let body = """
+        if (!window.__singularityAgent) throw new Error("This page can't be read (it is not an HTML document, or is still loading).");
+        return window.__singularityAgent.\(call);
+        """
+        let result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: PageAgentScript.world)
+        return result as? String ?? ""
     }
 
     func reload() { webView.reload() }

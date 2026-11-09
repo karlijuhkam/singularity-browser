@@ -11,6 +11,7 @@ struct SpaceEditorSheet: View {
     @State private var name = ""
     @State private var colorHex = SpaceColors.presets[0]
     @State private var workingDirectory = "~"
+    @State private var agentsEnabled = false
 
     private var existing: Space? { request.spaceID.flatMap { state.space($0) } }
 
@@ -44,6 +45,15 @@ struct SpaceEditorSheet: View {
                     }
                 }
 
+                Toggle(isOn: $agentsEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Allow agents")
+                        Text(agentsHint)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if let existing {
                     LabeledContent("Folder on disk") {
                         Text("~/Singularity/spaces/\(existing.slug)")
@@ -69,6 +79,7 @@ struct SpaceEditorSheet: View {
                 name = existing.name
                 colorHex = existing.colorHex
                 workingDirectory = existing.workingDirectory
+                agentsEnabled = existing.agentsEnabled
             } else {
                 // Pick the first colour no other Space uses yet.
                 let used = Set(state.spaces.map(\.colorHex))
@@ -80,11 +91,17 @@ struct SpaceEditorSheet: View {
     private func save() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         if let existing {
-            state.updateSpace(existing.id, name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory)
+            state.updateSpace(existing.id, name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
+                              agentsEnabled: agentsEnabled)
         } else {
-            state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory)
+            state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory, agentsEnabled: agentsEnabled)
         }
         dismiss()
+    }
+
+    private var agentsHint: String {
+        let slug = existing?.slug ?? Slug.make(from: name.isEmpty ? "space" : name)
+        return "Agents connected over MCP can read and operate this Space's tabs (tools named \(slug).…)."
     }
 
     private func chooseFolder() {

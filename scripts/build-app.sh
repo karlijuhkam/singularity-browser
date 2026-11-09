@@ -23,12 +23,15 @@ echo "→ Xcode: ${DEVELOPER_DIR:-$(xcode-select -p)}"
 
 echo "→ swift build ($CONFIG)"
 swift build -c "$CONFIG" --product Singularity
+swift build -c "$CONFIG" --product singularity-mcp
 BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 
 echo "→ assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Singularity" "$APP/Contents/MacOS/Singularity"
+# The MCP launcher agents start (see README). It lives next to the app's own binary.
+cp "$BIN_DIR/singularity-mcp" "$APP/Contents/MacOS/singularity-mcp"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
   cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
@@ -40,6 +43,8 @@ for bundle in "$BIN_DIR"/*.bundle; do
 done
 
 echo "→ codesign (identity: $SIGN_IDENTITY)"
+# Helper executables inside the bundle must be signed before the bundle itself.
+codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/singularity-mcp"
 codesign --force --options runtime \
   --entitlements "$ROOT/Resources/Singularity.entitlements" \
   --sign "$SIGN_IDENTITY" \
