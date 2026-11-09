@@ -24,6 +24,7 @@ final class AppState {
     var loadErrors: [String] = []
 
     let web: WebViewRegistry
+    let terminals: TerminalRegistry
     let favicons: FaviconStore
 
     @ObservationIgnored let paths: Paths
@@ -39,6 +40,7 @@ final class AppState {
         self.paths = paths
         self.store = SpaceStore(paths: paths)
         self.web = WebViewRegistry()
+        self.terminals = TerminalRegistry()
         self.favicons = FaviconStore(paths: paths)
 
         let loaded = store.load()
@@ -52,10 +54,14 @@ final class AppState {
         }
 
         web.state = self
+        terminals.state = self
 
-        // Flush pending writes when the app quits.
+        // When the app quits: write pending changes and hang up all shells.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.flushSaves() }
+            MainActor.assumeIsolated {
+                self?.flushSaves()
+                self?.terminals.tearDownAll()
+            }
         }
     }
 
@@ -116,6 +122,7 @@ final class AppState {
     func deleteSpace(_ id: UUID) {
         guard spaces.count > 1, let space = space(id) else { return }
         web.removeControllers(for: space.tabs.map(\.id))
+        terminals.removeSessions(for: space.tabs.map(\.id))
         spaces.removeAll { $0.id == id }
         dirtySpaceIDs.remove(id) // don't recreate the folder with a pending save
         historyCache[id] = nil
@@ -167,18 +174,41 @@ final class AppState {
         mutateSpace(spaceID) { $0.insert(BrowserTab.web(url), after: sourceTabID) }
     }
 
-    /// Loads a URL in the selected tab, or in a new tab if nothing is selected.
+    /// Loads a URL in the selected web tab, or in a new tab if no web tab is selected.
     func navigateSelectedTab(to url: URL) {
-        guard let space = selectedSpace, let tab = space.selectedTab else {
+        guard let space = selectedSpace, let tab = space.selectedTab, !tab.isTerminal else {
             openInNewTab(url)
             return
         }
         web.controller(for: tab, in: space).load(url)
     }
 
-    func closeTab(_ tabID: UUID, in spaceID: UUID? = nil) {
+    /// Opens a terminal tab in the current Space, starting in the Space's working directory.
+    func openTerminal() {
+        guard let space = selectedSpace else { return }
+        let tab = BrowserTab.terminal(workingDirectory: space.workingDirectory)
+        mutateSpace(space.id) {
+            $0.append(tab)
+            $0.selectedTabID = tab.id
+        }
+        loadSelectedTab()
+    }
+
+    /// Closes a tab. When a terminal is running a program (an agent, an editor, a server),
+    /// asks first, so Cmd+W can't kill it by accident.
+    func closeTab(_ tabID: UUID, in spaceID: UUID? = nil, confirmIfBusy: Bool = true) {
         guard let spaceID = spaceID ?? selectedSpaceID else { return }
+        terminalLog.notice("closeTab \(tabID, privacy: .public): confirmIfBusy=\(confirmIfBusy) program=\(self.terminals.existingSession(tabID)?.foregroundProgram ?? "<none>", privacy: .public)")
+        if confirmIfBusy, let program = terminals.existingSession(tabID)?.foregroundProgram {
+            let alert = NSAlert()
+            alert.messageText = "Close this terminal?"
+            alert.informativeText = "“\(program)” is still running in it and will be stopped."
+            alert.addButton(withTitle: "Close")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         web.removeControllers(for: [tabID])
+        terminals.removeSessions(for: [tabID])
         mutateSpace(spaceID) { $0.closeTab(tabID) }
         if spaceID == selectedSpaceID { loadSelectedTab() }
     }
@@ -261,6 +291,39 @@ final class AppState {
         }
     }
 
+    /// Called by TerminalSession about once a second; only writes when something changed.
+    func terminalDidChange(tabID: UUID, spaceID: UUID, title: String, workingDirectory: String?) {
+        guard let tab = space(spaceID)?.tab(tabID) else { return }
+        let directory = workingDirectory ?? tab.workingDirectory ?? "~"
+        guard tab.title != title || tab.workingDirectory != directory else { return }
+        mutateSpace(spaceID) { space in
+            space.updateTab(tabID) { tab in
+                tab.title = title
+                tab.kind = .terminal(workingDirectory: directory)
+            }
+        }
+    }
+
+    /// Starts a new shell in a terminal tab whose previous shell has exited.
+    func restartTerminal(_ tabID: UUID, in spaceID: UUID) {
+        guard let space = space(spaceID), let tab = space.tab(tabID) else { return }
+        terminals.restart(tab, in: space)
+    }
+
+    /// Asked by the app delegate before quitting. Returns false if the user cancels.
+    func confirmQuit() -> Bool {
+        let busy = terminals.busySessions.compactMap(\.foregroundProgram)
+        terminalLog.notice("confirmQuit: busy programs = \(busy, privacy: .public)")
+        guard !busy.isEmpty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Quit Singularity?"
+        alert.informativeText = "These programs are still running in terminal tabs and will be stopped: "
+            + busy.sorted().joined(separator: ", ") + "."
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     /// Called when a page finishes loading: records it in the Space's history.
     func recordVisit(spaceID: UUID, url: URL, title: String) {
         guard let space = space(spaceID), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
@@ -292,11 +355,14 @@ final class AppState {
 
     // MARK: - Internals
 
-    /// Makes sure the selected tab of the selected Space has a live web view.
-    /// Web views are created lazily, so restored tabs cost nothing until first shown.
+    /// Makes sure the selected tab of the selected Space is live (a web view or a running shell).
+    /// Both are created lazily, so restored tabs cost nothing until first shown.
     func loadSelectedTab() {
         guard let space = selectedSpace, let tab = space.selectedTab else { return }
-        _ = web.controller(for: tab, in: space)
+        switch tab.kind {
+        case .web: _ = web.controller(for: tab, in: space)
+        case .terminal: _ = terminals.session(for: tab, in: space)
+        }
     }
 
     private func mutateSpace(_ id: UUID, _ change: (inout Space) -> Void) {

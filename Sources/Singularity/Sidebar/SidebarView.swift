@@ -21,7 +21,10 @@ struct SidebarView: View {
                     if let space = state.selectedSpace {
                         TabList(space: space)
                     }
-                    NewTabButton()
+                    HStack(spacing: 0) {
+                        NewTabButton()
+                        NewTerminalButton()
+                    }
                 }
                 .padding(.trailing, 6)
                 .padding(.bottom, 8)
@@ -167,6 +170,24 @@ private struct FolderGroup: View {
                     Button("Delete Folder (keep tabs)") { state.deleteFolder(folder.id) }
                 }
         }
+    }
+}
+
+private struct NewTerminalButton: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        Button {
+            state.openTerminal()
+        } label: {
+            Image(systemName: "terminal")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("New Terminal (⌥⌘T)")
     }
 }
 

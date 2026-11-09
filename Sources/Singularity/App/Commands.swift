@@ -10,6 +10,8 @@ struct SingularityCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Tab") { state.showPalette(.newTab) }
                 .keyboardShortcut("t")
+            Button("New Terminal") { state.openTerminal() }
+                .keyboardShortcut("t", modifiers: [.command, .option])
             Button("Command Palette") { state.showPalette(.newTab) }
                 .keyboardShortcut("k")
             Divider()

@@ -41,21 +41,27 @@ struct MainView: View {
     }
 }
 
-/// The selected tab's web view, or an empty state.
+/// The selected tab's content (web page or terminal), or an empty state.
 private struct ContentArea: View {
     @Environment(AppState.self) private var state
 
     var body: some View {
         if let tab = state.selectedTab, let controller = state.web.existingController(tab.id) {
-            WebContentView(webView: controller.webView)
+            HostedView(view: controller.webView)
                 .overlay(alignment: .top) { LoadingBar(controller: controller) }
+        } else if let tab = state.selectedTab, let session = state.terminals.existingSession(tab.id) {
+            HostedView(view: session.view, focusOnShow: true)
+                .padding(8)
+                .background(Color(nsColor: .textBackgroundColor))
+                // A new session (after a restart) gets a new view; `.id` makes SwiftUI rebuild the host.
+                .id(ObjectIdentifier(session))
         } else {
             ZStack {
                 Color(nsColor: .textBackgroundColor)
                 VStack(spacing: 8) {
                     Text(state.selectedSpace?.name ?? "")
                         .font(.title2.weight(.semibold))
-                    Text("Press ⌘T to open a tab")
+                    Text("Press ⌘T to open a tab, or ⌥⌘T for a terminal")
                         .foregroundStyle(.secondary)
                 }
             }

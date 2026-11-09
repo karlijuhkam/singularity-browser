@@ -19,7 +19,7 @@ APP="$ROOT/build/Singularity.app"
 
 cd "$ROOT"
 source "$ROOT/scripts/env.sh"
-echo "→ SDK: ${SDKROOT:-default}"
+echo "→ Xcode: ${DEVELOPER_DIR:-$(xcode-select -p)}"
 
 echo "→ swift build ($CONFIG)"
 swift build -c "$CONFIG" --product Singularity

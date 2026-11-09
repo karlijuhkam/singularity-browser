@@ -22,14 +22,16 @@ sync of any kind · browser extensions (including WKWebExtension) · any built-i
 ```
 Sources/
   SingularityCore/   Pure Swift, no AppKit/WebKit. Models, persistence, palette logic. Unit-tested.
-    Model/           Space, Folder, BrowserTab (TabKind enum: .web now; .terminal/.artifact in later phases)
+    Model/           Space, Folder, BrowserTab (TabKind enum: .web, .terminal; .artifact in Phase 3)
     Persistence/     Paths (~/Singularity layout), SpaceStore (JSON), HistoryStore (jsonl), Slug
     Palette/         FuzzyMatcher, URLInput (URL vs search text)
+    Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath
   Singularity/       The app executable.
     App/             @main app, AppState (@Observable, the single source of truth), menu commands
     Sidebar/         Space rail, tab list (pinned / folders / open), editors
     Web/             WebViewRegistry (one WKWebView per tab), WebTabController (KVO + delegates)
     Palette/         Command palette overlay (Cmd+T / Cmd+K)
+    Terminal/        TerminalRegistry, TerminalSession (SwiftTerm view + login shell + title polling)
 Tests/SingularityCoreTests/   Swift Testing
 ```
 
@@ -37,13 +39,14 @@ Key decisions:
 - **Space** = UUID, name, colour, slug (fixed at creation; renaming changes only the display name), cwd. Each Space has its own `WKWebsiteDataStore(forIdentifier: space.id)`, so cookies and storage are isolated.
 - **Not sandboxed.** Terminal tabs need to spawn login shells. Hardened runtime is on.
 - On disk: `~/Singularity/state.json` (Space order and selection) and `~/Singularity/spaces/<slug>/{space.json, history.jsonl, favicons/}`. Writes are atomic and debounced.
+- **Known exception to "everything under ~/Singularity/":** each Space's cookies, logins and site data live in WebKit's store at `~/Library/WebKit/dev.roosa.Singularity/WebsiteDataStore/<space id>/`. WebKit chooses that location and the app cannot move it. Consequences: copying `~/Singularity/` does not carry logins over; deleting `~/Singularity/` by hand leaves the cookies behind (deleting a Space in the app does remove them); and the stores are tied to the bundle ID, so **never change `dev.roosa.Singularity`**, or every Space starts logged out. Changing the signing identity is fine.
 - WKWebViews are created lazily (only when a tab is first shown) and kept alive across Space switches.
 - Later phases (see the brief): per-Space artifact server on 127.0.0.1 with a bearer token; MCP via a `singularity-mcp` stdio launcher → Unix socket at `~/Singularity/.run/mcp.sock`; approval policy + `agent-log.jsonl`.
 
 ## Build / run / test
-No Xcode project. Only SwiftPM + scripts (works with Command Line Tools alone):
-- `scripts/build-app.sh`: builds and assembles and signs `build/Singularity.app` (ad-hoc, or `SIGN_IDENTITY=…`)
+No Xcode project: SwiftPM + scripts. The scripts need full Xcode (macOS 27 SDK; SwiftUI's `@State` macro plugin and current SwiftTerm both require it). Xcode is installed on the external drive at `/Volumes/Zealot/Xcode.app`. `scripts/env.sh` points builds at it with `DEVELOPER_DIR`. The system default stays on the Command Line Tools on purpose, so `git` keeps working when the drive is unplugged. **Do not run `xcode-select -s`.** Override the location with `XCODE_APP=…`.
+- `scripts/build-app.sh`: builds, assembles and signs `build/Singularity.app` (ad-hoc, or `SIGN_IDENTITY=…`)
 - `scripts/run.sh`: build, then quit any running copy and launch
-- `scripts/test.sh`: unit tests (adds the Swift Testing macro plugin path that CLT-only setups need)
-- Without full Xcode, both scripts build against the macOS 26 SDK (`scripts/env.sh`): in the macOS 27 SDK `@State` is a macro whose plugin only ships with Xcode. Plain `swift build` therefore fails under CLT; use the scripts, or `source scripts/env.sh` first.
+- `scripts/test.sh`: unit tests (Swift Testing)
+- Plain `swift build` in a fresh shell uses the Command Line Tools and fails. Run `source scripts/env.sh` first, or use the scripts.
 - The tab model is called `BrowserTab` because SwiftUI has its own `Tab` type.

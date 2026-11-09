@@ -14,6 +14,7 @@ struct SingularityApp: App {
             MainView()
                 .environment(state)
                 .frame(minWidth: 820, minHeight: 520)
+                .onAppear { appDelegate.state = state }
         }
         // Title bar is invisible and content runs underneath it, as in Arc/Safari's compact tabs.
         .windowStyle(.hiddenTitleBar)
@@ -21,7 +22,16 @@ struct SingularityApp: App {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var state: AppState?
+
+    /// Cmd+Q: ask first if a terminal is running something (e.g. an agent).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        terminalLog.notice("applicationShouldTerminate called; state set: \(self.state != nil)")
+        return (state?.confirmQuit() ?? true) ? .terminateNow : .terminateCancel
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }

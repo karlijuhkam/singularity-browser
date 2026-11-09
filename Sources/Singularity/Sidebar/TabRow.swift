@@ -37,7 +37,11 @@ struct TabRow: View {
 
     @ViewBuilder
     private var favicon: some View {
-        if let host = tab.url?.host(), let image = state.favicons.image(slug: space.slug, host: host) {
+        if tab.isTerminal {
+            let session = state.terminals.existingSession(tab.id)
+            Image(systemName: session?.foregroundProgram != nil ? "terminal.fill" : "terminal")
+                .foregroundStyle(session?.isRunning == false ? .tertiary : .secondary)
+        } else if let host = tab.url?.host(), let image = state.favicons.image(slug: space.slug, host: host) {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
@@ -67,6 +71,10 @@ struct TabRow: View {
         }
 
         Divider()
+
+        if tab.isTerminal, state.terminals.existingSession(tab.id)?.isRunning == false {
+            Button("Start New Shell") { state.restartTerminal(tab.id, in: space.id) }
+        }
 
         if let url = tab.url {
             Button("Copy Link") {

@@ -1,14 +1,21 @@
-# Sourced by the other scripts. Picks an SDK that can build the app.
+# Sourced by the other scripts. Selects the Xcode used to build.
 #
-# Why: from the macOS 27 SDK on, SwiftUI's `@State` is a Swift macro whose compiler plugin
-# (SwiftUIMacros) ships only with full Xcode, not with the Command Line Tools. Without Xcode we
-# therefore build against the newest macOS 26 SDK that CLT includes, where `@State` is still a
-# plain property wrapper. With Xcode installed, nothing changes and the default SDK is used.
-DEV_DIR="$(xcode-select -p)"
-if [[ -z "${SDKROOT:-}" && ! -e "$DEV_DIR/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" \
-      && ! -e "$DEV_DIR/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ]]; then
-  SDK_CANDIDATE="$(ls -d "$DEV_DIR"/SDKs/MacOSX26*.sdk 2>/dev/null | sort -V | tail -1)"
-  if [[ -n "$SDK_CANDIDATE" ]]; then
-    export SDKROOT="$SDK_CANDIDATE"
+# Singularity needs full Xcode (the macOS 27 SDK's SwiftUI `@State` macro and SwiftTerm both
+# need it). Xcode lives on the external drive "Zealot", so we point builds at it with
+# DEVELOPER_DIR for each command. We deliberately do NOT use `sudo xcode-select -s`: that changes
+# the system-wide default, and `git`, `swift` etc. would break whenever the drive is unplugged.
+#
+# Override the location with XCODE_APP=/path/to/Xcode.app, or set DEVELOPER_DIR yourself.
+XCODE_APP="${XCODE_APP:-/Volumes/Zealot/Xcode.app}"
+
+if [[ -z "${DEVELOPER_DIR:-}" ]]; then
+  if [[ -d "$XCODE_APP/Contents/Developer" ]]; then
+    export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
+  elif [[ "$(xcode-select -p)" == *.app/Contents/Developer ]]; then
+    : # A full Xcode is already the system default; use it.
+  else
+    echo "error: Xcode not found at $XCODE_APP. Is the Zealot drive mounted?" >&2
+    echo "       Set XCODE_APP=/path/to/Xcode.app to use another copy." >&2
+    exit 1
   fi
 fi

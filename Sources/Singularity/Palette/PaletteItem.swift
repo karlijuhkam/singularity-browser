@@ -72,12 +72,17 @@ enum PaletteResults {
 
     private static func tabItems(_ space: Space) -> [PaletteItem] {
         space.tabsInSidebarOrder.map { tab in
-            PaletteItem(
+            let icon: PaletteItem.Icon = if tab.isTerminal {
+                .symbol("terminal")
+            } else {
+                tab.url?.host().map { .favicon(host: $0) } ?? .symbol("globe")
+            }
+            return PaletteItem(
                 id: "tab-\(tab.id)",
                 title: tab.displayTitle,
-                subtitle: tab.url?.absoluteString ?? "",
+                subtitle: tab.url?.absoluteString ?? tab.workingDirectory ?? "",
                 hint: tab.id == space.selectedTabID ? "Current Tab" : "Switch to Tab",
-                icon: tab.url?.host().map { .favicon(host: $0) } ?? .symbol("globe"),
+                icon: icon,
                 action: .selectTab(tab.id)
             )
         }
@@ -105,15 +110,18 @@ enum PaletteResults {
                 state.selectSpace(other.id)
             })
         }
+        items.append(command("new-terminal", "New Terminal", "terminal") { state.openTerminal() })
         if let tab = space.selectedTab {
             if tab.folderID == nil {
                 items.append(command("pin", tab.isPinned ? "Unpin Current Tab" : "Pin Current Tab", "pin") {
                     state.togglePin(tab.id)
                 })
             }
-            items.append(command("reload", "Reload Page", "arrow.clockwise") {
-                state.web.existingController(tab.id)?.reload()
-            })
+            if !tab.isTerminal {
+                items.append(command("reload", "Reload Page", "arrow.clockwise") {
+                    state.web.existingController(tab.id)?.reload()
+                })
+            }
             items.append(command("close", "Close Current Tab", "xmark") {
                 state.closeTab(tab.id)
             })

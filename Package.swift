@@ -11,6 +11,11 @@ let package = Package(
     products: [
         .executable(name: "Singularity", targets: ["Singularity"]),
     ],
+    dependencies: [
+        // Terminal emulator for terminal tabs. Pinned to the 1.99 line (v1.20 pulls in a benchmark
+        // package with jemalloc by default). Exact version is locked in Package.resolved.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.99.3"),
+    ],
     targets: [
         // Pure Swift: models, persistence, palette logic. No AppKit/WebKit, so it is unit-testable.
         .target(name: "SingularityCore"),
@@ -18,7 +23,10 @@ let package = Package(
         // The app itself: SwiftUI views plus AppKit/WebKit glue.
         .executableTarget(
             name: "Singularity",
-            dependencies: ["SingularityCore"]
+            dependencies: [
+                "SingularityCore",
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+            ]
         ),
 
         .testTarget(
