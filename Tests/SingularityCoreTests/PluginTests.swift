@@ -600,7 +600,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(lines == ["Adds buttons to pages on all sites",
                           "Fills login forms on all sites",
                           "Runs /opt/homebrew/bin/op (only: item list, item get)",
-                          "Never uses the internet"])
+                          "The plugin itself never uses the internet; the programs it runs can"])
         let mixed = PermissionDescriptions.lines(for: .init(pageAdditions: ["https://a.com/*", "<all_urls>"]), commandPaths: [:])
         #expect(mixed.first == "Adds buttons to pages on all sites")
         let some = PermissionDescriptions.lines(

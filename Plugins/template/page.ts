@@ -6,6 +6,23 @@
 // and no network (fetch and friends throw). Talk to the background program with singularity.send.
 // `singularity` is a global that Singularity defines before this file runs.
 
+// Editor types for the global. Stripped when the file is compiled; copy it into your own page.ts.
+declare const singularity: {
+  siteMatches: boolean;
+  send(payload: unknown): Promise<unknown>;
+  addFieldButton(
+    input: HTMLInputElement,
+    options: { title: string; iconURL?: string; onClick: (input: HTMLInputElement) => void | Promise<void> },
+  ): void;
+  showMenu(anchor: Element, items: { title: string; subtitle?: string }[]): Promise<number | null>;
+  fillLogin(fields: {
+    usernameInput?: HTMLInputElement;
+    passwordInput?: HTMLInputElement;
+    username?: string;
+    password?: string;
+  }): void;
+};
+
 // Where the plugin has an effect: only search fields. Change the selector to try other fields.
 const SELECTOR = "input[type=search]";
 

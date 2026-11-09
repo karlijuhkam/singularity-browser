@@ -2,6 +2,8 @@
 
 This guide is for agents first and people second. It describes what is on the `plugins-round1` branch. If the guide and the code disagree, the code wins; the sources are named in each section.
 
+Paths like `Plugins/template/` and `Resources/plugin-host/` are in the Singularity repository (relative to its root).
+
 Spec and reasons: `docs/superpowers/specs/2026-11-09-plugins-design.md`. A working example: `Plugins/1password/`. The smallest example: `Plugins/template/`.
 
 ## What a plugin is
@@ -11,15 +13,17 @@ A plugin is a folder with two optional parts:
 - a **page script** (`page.ts`) that runs inside web pages and adds small buttons and menus to them;
 - a **background program** (`background.ts`) that runs on Singularity's bundled Bun, in a macOS sandbox with no network. It can ask Singularity to run a few declared programs.
 
-The page script talks to the background program with `singularity.send(...)`. The user must approve a plugin before anything runs. Everything the plugin can do is listed in `plugin.json` and shown on the approval sheet.
+The page script talks to the background program with `singularity.send(...)`. The user must approve a plugin before anything runs. The approval sheet lists the permissions in `plugin.json`.
 
-Round 1 has no network for plugins and no built-in AI. A plugin cannot read pages, cookies or the DOM of sites it is not allowed on, and it cannot send what it sees anywhere.
+Round 1 has no built-in AI. Network APIs are blocked in page scripts, and the background has no network. **But a page script can still send data out through the page itself**: image URLs, inserted `<script>`/`<link>` elements, CSS `url(...)`, navigation, form submission. The app can't block those. Reviewers must look for them (see the review checklist), and finding one is a reason to reject the plugin. A plugin's page script only runs on the sites it is allowed on.
+
+A plugin may be **page-only**: leave out the `background` key and `background.ts`. That is valid.
 
 ## Quick start
 
-1. Copy `Plugins/template/` to a new folder. **The folder name must equal `id` in `plugin.json`.**
+1. Copy `Plugins/template/` to a new folder. **Keep the folder name equal to `id` in `plugin.json`.**
 2. Change `id`, `name`, `description`, `author` in `plugin.json`. Edit `page.ts` and `background.ts`.
-3. In Singularity: Settings -> Plugins -> Add Plugin... -> choose the folder. Singularity copies it to `~/Singularity/plugins/<id>/`.
+3. In Singularity: Settings -> Plugins -> Add Plugin... -> choose the folder. Singularity validates the manifest, packages and page script and shows any problem before anything runs; nothing runs until you approve. This is the way to check a plugin. (Add Plugin copies the folder to `~/Singularity/plugins/<id>/` using the `id`, even if the folder name differs; the folder-name rule only bites for folders placed in `~/Singularity/plugins` by hand.) For a quick syntax check without the app, run `bun build --no-bundle page.ts`.
 4. Read the approval sheet, switch on **Development mode** if you will keep editing, approve, and switch the plugin on for a Space.
 5. Open a page that matches your sites. Errors from the page script appear in the page's console as `Plugin <id>: page script failed: ...`. Background logs appear in Settings -> Plugins (the last 50 lines).
 
@@ -68,15 +72,31 @@ Rules for the folder:
 | `name`, `version`, `description`, `author` | yes | Shown in Settings and on the approval sheet. |
 | `background` | no | Path of the background file, relative to the folder. A regular file inside the folder, no `..`. |
 | `page` | no | `{ "script": "page.ts", "sites": [patterns] }`. The script runs only on these sites. |
-| `permissions` | yes | See below. Missing keys mean "none". An unknown key is an error. |
+| `permissions` | yes | See below. Any key inside may be left out and means "none". An unknown key is an error. |
+
+A minimal **page-only** manifest (no `background`, no commands):
+
+```json
+{
+  "id": "password-length",
+  "name": "Password length",
+  "version": "0.1.0",
+  "description": "Shows how long a password field's value is.",
+  "author": "Your name",
+  "page": { "script": "page.ts", "sites": ["https://*/*"] },
+  "permissions": { "pageAdditions": ["https://*/*"] }
+}
+```
 
 ### Site patterns
 
 Chrome-style match patterns, a subset: `<all_urls>`, or `scheme://host/path`.
 
-- scheme: `*` (http or https), `http` or `https`
+- scheme: `*` (so `*://` means http and https), `http` or `https`
 - host: `*`, `*.example.com` (the domain and all subdomains) or an exact name. No port, no user info.
-- path: starts with `/`; `*` matches any run of characters. Ports are ignored.
+- path: starts with `/`; `*` matches any run of characters. Ports are ignored. **The path match includes the `?query`**: `https://x.com/login` does not match `/login?next=1`; use `https://x.com/login*`.
+
+Choosing sites: use `<all_urls>` only when the plugin really is for every site; reviewers look harder at it. For "every website", prefer `https://*/*`, and add `http://*/*` only when you need it.
 
 Every entry of `page.sites` must also appear, as the same text, in `permissions.pageAdditions` (or `pageAdditions` must contain `<all_urls>`). A page script may not run where `pageAdditions` doesn't allow it.
 
@@ -86,12 +106,12 @@ Every entry of `page.sites` must also appear, as the same text, in `permissions.
 |---|---|---|
 | `pageAdditions` | Buttons and menus in pages on these sites (and the page script running there). | "Adds buttons to pages on <sites>" |
 | `fillForms` | The background may fill login fields on these sites (see Fills). | "Fills login forms on <sites>" |
-| `commands` | `{ "program": ["sub command", ...] }`. The background may run that program with arguments starting with one of the listed sub-commands. | "Runs /path/to/program (only: sub command, ...)" |
-| `network` | Must be `[]` in round 1. | "Never uses the internet" |
+| `commands` | `{ "program": ["sub command", ...] }`. The background may run that program with arguments starting with one of the listed sub-commands. | "Runs /opt/homebrew/bin/program (only: sub command, ...)" (the path is only an example) |
+| `network` | Must be `[]` in round 1. | "Never uses the internet" without commands; with commands: "The plugin itself never uses the internet; the programs it runs can" |
 
 Details:
 
-- Sub-commands match word for word and case-sensitively at the start of the arguments. `"item list"` allows `item list --format json`. A program with an empty list, or an empty sub-command, is refused.
+- Sub-commands match word for word and case-sensitively at the start of the arguments. `"item list"` allows `item list --format json` and `item list --anything`: **only the leading words are checked; later arguments are free.** A program with an empty list, or an empty sub-command, is refused.
 - A program name is a bare name: letters, digits, `.`, `_`, `-`, starting with a letter or digit. No slashes.
 - The program is found on the user's login `PATH` when the plugin is approved, and that path is pinned. A different program with the same name later is not run.
 - These program names are refused (also with a version suffix such as `python3.12`): `sh bash zsh fish dash ksh csh tcsh env sudo su curl wget ssh scp sftp nc ncat telnet ftp rsync osascript open python python3 perl ruby php node bun deno npx bunx rbash nodejs pip pip3 npm pnpm yarn xargs nice nohup exec command launchctl swift lua awk gawk tclsh expect`. In short: shells, interpreters, network tools and package managers.
@@ -99,7 +119,7 @@ Details:
 
 ### Manifest errors
 
-The first problem found is shown as "Problem: <text>". Check order: JSON shape, id format, id equals folder, permission keys, site patterns, page sites, network, commands, files, packages.
+Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "This folder isn't a plugin Singularity can use: <text>." Permission keys are checked while `plugin.json` is read, before the id. Check order: JSON shape and permission keys, id format, id equals folder, site patterns, page sites, network, commands, files, packages.
 
 | Mistake | Exact message |
 |---|---|
@@ -169,7 +189,7 @@ The background runs under `sandbox-exec` with a generated profile that denies ev
 - reading and writing its data folder;
 - reading a few system files Bun needs (ICU data, time zone data, some `sysctl` values).
 
-So: **no network at all**, no starting other programs (only `singularity.run` can, for declared commands), and no other files. The environment is minimal and nothing is inherited from the app:
+So: **no network at all**, no starting other programs (only `singularity.run` can, for declared commands), and no other files. The plugin's own Bun process has a minimal environment and nothing is inherited from the app (this is about that process only, not about programs it runs, see below):
 
 ```
 HOME=<data folder>  TMPDIR=<data folder>/tmp  LANG=en_US.UTF-8  NO_COLOR=1
@@ -177,6 +197,10 @@ BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
 ```
 
 There is no `PATH`. The plugin's own `.env` and `bunfig.toml` are not read.
+
+### Programs run by `singularity.run` are not sandboxed
+
+The sandbox covers the plugin's Bun process only. A program started through `singularity.run` runs **as the user, with network access and with the app's own environment**. Only the leading sub-command words are checked. Reviewers should treat every `commands` entry as a program with full user powers and network access. Never put secrets in arguments.
 
 ## The page API
 
@@ -203,11 +227,15 @@ singularity.fillLogin(fields: {
 - **`showMenu(anchor, items)`**: shows a menu next to `anchor`. At most 50 items; titles and subtitles are plain text, cut to 200 characters. Resolves with the picked index, or `null` if dismissed. An empty list shows "Nothing to show".
 - **`fillLogin(fields)`**: sets the given fields as typing would (the native value setter, then `input` and `change` events). Throws `this plugin may not fill forms on this site` if the page doesn't match `fillForms`. Fields you leave out stay as they are.
 
+Page scripts run at document end, in every frame (iframes included) whose URL matches the plugin's sites; `frameHost` in the background is that frame's host. The only UI is `addFieldButton` and `showMenu`: no toasts or tooltips in round 1, and a menu can't update live (compute what it shows before opening it).
+
+`addFieldButton` works on `type=password` inputs, and page scripts can read `input.value`. Treat password values as sensitive: never send them to the background unless that is the plugin's purpose, and never log them.
+
 DOM APIs (`document.querySelectorAll`, `MutationObserver`, `getComputedStyle`, ...) work as usual. `async`/`await` and top-level `await` work: the code runs inside an async function. Types are stripped, not checked.
 
 ### Rules for `page.ts`
 
-1. **No imports and no exports at all**: not static, not `import()`, not `import.meta`. Even the text `import(` inside a string or comment is refused: rename it. `import type { X } from ...` is fine (it vanishes when compiled), but there is nothing to import from, so avoid it. Put shared code in the same file.
+1. **No imports and no exports at all**: not static, not `import()`, not `import.meta`. The text `import(` inside a string is refused too (the check runs after comments are removed, so a comment is fine): rename it. `import type { X } from ...` is fine (it vanishes when compiled), but there is nothing to import from, so avoid it. Put shared code in the same file. For editor types, paste the `declare const singularity` block from `Plugins/template/page.ts` at the top of your `page.ts`; it is stripped when compiled.
 2. **No `eval`, `Function`, or string timers.** `eval(...)`, `new Function(...)`, the async and generator function constructors and `setTimeout("code", ...)` throw `running code from a string isn't available to plugins`.
 3. **No network APIs.** `fetch`, `XMLHttpRequest`, `WebSocket`, `WebSocketStream`, `EventSource`, `Worker`, `SharedWorker`, `RTCPeerConnection`, `WebTransport`, `importScripts`, `navigator.sendBeacon`, `caches`/`CacheStorage`/`Cache` writes, worklets (`addModule`), `FontFace` and `document.fonts.add/load`, `navigator.serviceWorker.register`, `window.open` and `navigation.navigate` all throw `network isn't available to plugins`. Frames you create get no `contentWindow` or `contentDocument`.
 4. **DOM routes cannot be blocked, and the app does not try to.** A script that may change the page can also make the page load things, and those requests can carry data: `new Image().src = ...`, inserting an `<img>`, `<script>` or `<link>` element, CSS `url(...)`, assigning `location`, submitting a form. **Reviewers must look for these. Using one to send data out is a reason to reject a plugin.**
@@ -223,6 +251,7 @@ Compiler messages (from `Resources/plugin-host/transpile-page.ts`):
 | `import.meta`, `export {}` | `page.ts can't use import/export in round 1 (...)` |
 | Syntax error | `page.ts has a syntax error: ...` |
 | Over 1 MB | `page.ts is larger than 1 MB` |
+| Compiled JavaScript over 4 MB | `page.ts couldn't be prepared: the JavaScript is larger than 4 MB` |
 
 ### Clicks
 
@@ -245,18 +274,18 @@ A background reply of the form
 
 is delivered to the page only when all of these hold:
 
-1. the frame's host equals `forHost` or is a subdomain of it (`www.github.com` may get a `github.com` login; `github.com` may not get a `www.github.com` login; `evilgithub.com` never does);
-2. the frame's URL matches `fillForms` (in the manifest and as approved);
-3. the request came from a genuine click (see Clicks): the `send` that asked for the fill happened within 2 seconds of a real click on the plugin's button or menu.
+1. the frame's host equals `forHost` or is a subdomain of it (this comparison ignores the URL scheme; `www.github.com` may get a `github.com` login; `github.com` may not get a `www.github.com` login; `evilgithub.com` never does);
+2. the frame's URL matches `fillForms` (in the manifest and as approved). The scheme in the pattern **is** enforced here;
+3. the request came from a genuine click (see Clicks): the `send` that asked for the fill happened within 2 seconds of a real click on the plugin's button or menu. **Only the first `send` after a click carries the click token**; a second `send` gets "fill blocked". So: a menu pick, then one `send` that returns the fill.
 
-Otherwise the page gets `{ error: "fill blocked" }`. The fill guard ignores the URL scheme, so **use `https://` patterns in `fillForms` for sensitive sites**. Anything other than a well-formed `fill` object (wrong types) is blocked too. Set the fields with `singularity.fillLogin` in `page.ts`.
+Otherwise the page gets `{ error: "fill blocked" }`. Use `https://` patterns in `fillForms` for sensitive sites, so a fill never reaches an `http://` page. Anything other than a well-formed `fill` object (wrong types) is blocked too. Set the fields with `singularity.fillLogin` in `page.ts`.
 
 ## Packages
 
 You may use npm packages in the background file. The rules are strict because the install runs outside the sandbox:
 
 - Only `dependencies` in `package.json`, each at an **exact version** (`"1.2.3"`) from the npm registry. Not allowed: ranges (`^1.2.0`), tags (`latest`), `file:`, `link:`, `workspace:`, git or GitHub specs, URLs, `npm:` aliases, other dependency groups, and keys such as `overrides`, `resolutions`, `workspaces`.
-- `bun.lock` is required and must be committed. It must match `package.json`. No comments, no CR line endings. Create it with `bun install` on your own machine.
+- `bun.lock` is required and must be committed. It must match `package.json`, and must come from **Bun 1.4.4** (the shape the checker accepts). No comments, no CR line endings; trailing commas are fine in `bun.lock`. `package.json` must be strict JSON. Create the lock with `bun install` using that Bun version.
 - No `.npmrc`.
 - Packages that use npm aliases can't be used. That rules out `glob@10`, `rimraf@5`, `jackspeak` and anything depending on them.
 - Singularity installs packages itself at approval, with `--ignore-scripts`, so install scripts never run. The approval sheet says how many packages are installed.
@@ -279,7 +308,7 @@ Test loop for a new plugin: add, approve with development mode on, edit, save, r
 
 - An approved plugin's background program can read the command-line **arguments** (not the environment) of the user's other processes, because macOS's sandbox can't block that. Reviewers should keep this in mind, and plugins must never put secrets into arguments of programs they run.
 - Tabs restored at launch may get plugin scripts only on their next load.
-- Round 1 has no network, no storage API, no icons beyond `data:image/` URLs, and no page-script imports.
+- Round 1 has no network for a plugin's own code, no storage API, no icons beyond `data:image/` URLs, and no page-script imports.
 
 ## Worked example: an email provider hint
 
@@ -377,13 +406,13 @@ if (result.status !== 0 || result.timedOut) return { error: "git failed" }; // d
 return { version: result.stdout.trim() };
 ```
 
-The approval sheet then shows `Runs /usr/bin/git (only: --version)`.
+The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --version)`. Remember: `git` runs unsandboxed, with network access.
 
 ## Common mistakes
 
 | You did | You get |
 |---|---|
-| Folder name differs from `id` | `its id “foo” doesn't match its folder name “bar”` |
+| Folder in `~/Singularity/plugins` placed by hand with a name that differs from `id` | `its id “foo” doesn't match its folder name “bar”` |
 | Id with capitals or spaces | `“Foo Bar” isn't a valid plugin id (lowercase letters, digits and dashes)` |
 | `"cookies"` or any other key in `permissions` | `it asks for an unknown permission “cookies”` |
 | `"network": ["api.example.com"]` | `it asks for internet access, which plugins can't have yet` |
@@ -413,7 +442,7 @@ The approval sheet then shows `Runs /usr/bin/git (only: --version)`.
 
 ## Review checklist for people (five minutes)
 
-1. **Permissions vs purpose.** Read the approval sheet. Does each line match what the plugin says it does? `<all_urls>` for a plugin that only needs one site is a flag. Any `commands` entry should be a program the plugin obviously needs, with narrow sub-commands.
+1. **Permissions vs purpose.** Read the approval sheet. Does each line match what the plugin says it does? `<all_urls>` for a plugin that only needs one site is a flag. Treat every `commands` entry as a program with full user powers and network access (not sandboxed; only its leading words are checked). It should be a program the plugin obviously needs, with narrow sub-commands.
 2. **DOM network routes in `page.ts`.** Search for `Image`, `.src`, `createElement`, `innerHTML`, `insertAdjacentHTML`, `<img`, `<script`, `<link`, `url(`, `location`, `.submit(`, `form`, `window.name`. Anything that could carry page data to a URL is a reason to reject.
 3. **What goes to the background, and what comes back.** In `page.ts`, look at every `send(...)`. Is only the needed data sent (not the whole page text)? In `background.ts`, is the payload checked, and is `frameHost` used instead of a host from the payload?
 4. **Fills happen only after a menu pick.** Any `fillLogin` or `fill` reply should come after a `showMenu` pick. Check that `fillForms` is as narrow as possible and uses `https://`.

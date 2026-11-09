@@ -21,7 +21,11 @@ public enum PermissionDescriptions {
             out.append(line)
         }
         out.append(permissions.network.isEmpty
-                   ? "Never uses the internet"
+                   ? (permissions.commands.isEmpty
+                      ? "Never uses the internet"
+                      // The plugin's own program has no network, but programs it runs (outside its
+                      // sandbox) can use it, so don't promise more than that.
+                      : "The plugin itself never uses the internet; the programs it runs can")
                    : "Connects to " + permissions.network.joined(separator: ", "))
         return out
     }

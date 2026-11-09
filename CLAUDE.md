@@ -9,7 +9,7 @@ If you want to add something that is not in the brief, write it to `IDEAS.md` in
 
 ## Explicitly out of scope for v1
 Do not build, scaffold, or leave TODOs for:
-sync of any kind · browser extensions (WebExtensions/WKWebExtension) — Singularity plugins replace them; AI only inside plugins (round 2), never built into the app · Windows/Linux/iOS · Peek/Little Arc-style windows · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
+sync of any kind · browser extensions (WebExtensions/WKWebExtension; Singularity plugins replace them) · built-in AI or chat UI (AI only inside plugins, round 2) · Windows/Linux/iOS · Peek/Little Arc-style windows · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
 
 **Scope change (owner decision, after Phase 4):** tiling / split view is *in* v1, built before Phase 5: nested splits (any pane splits right or down), Arc-style split groups, created via context menu, drag and drop, keyboard and palette.
 
