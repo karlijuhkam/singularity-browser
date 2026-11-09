@@ -31,6 +31,8 @@ final class AppState {
     let approvals = AgentApprovals()
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
+    /// Plugins' page scripts in each Space's web views.
+    @ObservationIgnored let pluginScripts: PluginScripts
     /// Preferences from the Settings window (`~/Singularity/settings.json`). Change via `updateSettings`.
     private(set) var settings = AppSettings()
     @ObservationIgnored private var settingsDirty = false
@@ -67,6 +69,9 @@ final class AppState {
         let bundle = Bundle.main.bundleURL
         self.plugins = PluginManager(paths: paths, runtime: bundle.appending(path: "Contents/Helpers/bun"),
                                      host: bundle.appending(path: "Contents/Resources/plugin-host/host.ts"))
+        self.pluginScripts = PluginScripts(manager: plugins, runtime: bundle.appending(path: "Contents/Helpers/bun"),
+                                           hostFolder: bundle.appending(path: "Contents/Resources/plugin-host",
+                                                                        directoryHint: .isDirectory))
 
         settings = store.loadSettings()
         let loaded = store.load()
@@ -80,6 +85,9 @@ final class AppState {
         }
 
         web.state = self
+        web.pluginScripts = pluginScripts
+        pluginScripts.tabID = { [weak web] webView in web?.tabID(for: webView) }
+        plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
         terminals.state = self
         artifacts.state = self
 

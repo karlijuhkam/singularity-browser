@@ -16,6 +16,11 @@ struct InstalledPlugin: Identifiable {
     var decision: PluginLaunch.Decision = .notApproved
     /// The background process's state (`.stopped` when there is none).
     var runState: PluginSupervisor.State = .stopped
+    /// The latest scan's fingerprint and per-file hashes (nil when the files couldn't be read).
+    /// Page scripts are prepared from exactly these files (`PluginScripts`).
+    var snapshot: PluginFingerprint.Snapshot?
+    /// Why the page script isn't in pages (it couldn't be prepared), for Settings → Plugins.
+    var pageProblem: String?
 
     var validManifest: PluginManifest? {
         if case .success(let m) = manifest { return m }
@@ -72,7 +77,12 @@ enum PluginManagerError: LocalizedError, Equatable {
 @Observable
 final class PluginManager {
     /// Sorted by id.
-    private(set) var plugins: [InstalledPlugin] = []
+    private(set) var plugins: [InstalledPlugin] = [] {
+        didSet { onChange?() }
+    }
+    /// Called after any change to `plugins` (status, approval, Spaces, files, logs, …). The page
+    /// scripts (`PluginScripts`) follow the plugins through this.
+    @ObservationIgnored var onChange: (() -> Void)?
     /// Shown at the top of Settings → Plugins when the saved approvals couldn't be read.
     private(set) var stateWarning: String?
 
@@ -229,6 +239,7 @@ final class PluginManager {
             plugin.status = status
             plugin.approval = approval
             plugin.decision = decision
+            plugin.snapshot = scan.snapshot
         }
         guard decision == .launch else {
             stopSupervisor(id, reason: Self.stopReason(status: status, decision: decision))
@@ -264,6 +275,7 @@ final class PluginManager {
             $0.approval = approval
             $0.status = status
             $0.decision = PluginLaunch.decide(status: status, approval: approval, manifest: scan.validManifest)
+            $0.snapshot = scan.snapshot
         }
         enqueue(id) { [weak self] in
             guard let self, let latest = self.scans[id] else { return }
@@ -568,13 +580,28 @@ final class PluginManager {
         }
         guard let scan = scans[id] else { return }
         var plugin = InstalledPlugin(id: id, folder: scan.folder, manifest: scan.manifest,
-                                     status: scan.status(approval: approvals[id]), approval: approvals[id])
+                                     status: scan.status(approval: approvals[id]), approval: approvals[id],
+                                     snapshot: scan.snapshot)
         change(&plugin)
         plugins.append(plugin)
         plugins.sort { $0.id < $1.id }
     }
 
     private static let timeFormat = Date.FormatStyle(date: .omitted, time: .standard)
+
+    /// A line in a plugin's log from elsewhere in the app (page scripts, the fill guard).
+    /// Never pass page data or credentials.
+    func log(_ id: String, _ level: String, _ message: String) {
+        appendLog(id, level, message)
+    }
+
+    /// Records (or clears, with nil) why the plugin's page script isn't in pages. A new problem is
+    /// also written to the log.
+    func setPageProblem(_ id: String, _ problem: String?) {
+        guard let plugin = plugin(id), plugin.pageProblem != problem else { return }
+        update(id) { $0.pageProblem = problem }
+        if let problem { appendLog(id, "error", "page script: \(problem)") }
+    }
 
     private func appendLog(_ id: String, _ level: String, _ message: String) {
         guard let index = plugins.firstIndex(where: { $0.id == id }) else { return }

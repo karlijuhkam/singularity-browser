@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fixture re-login</title>
+  <style>
+    body { font: 15px -apple-system, sans-serif; margin: 40px; }
+    label { display: block; margin: 12px 0 4px; }
+    input { width: 280px; padding: 8px; font: inherit; }
+  </style>
+</head>
+<body>
+  <h1>Fixture re-login</h1>
+  <p>After 1 second this page throws its form away and draws a new one, the way single-page apps
+    re-render. Afterwards each new field must have exactly one button, and no button may be left
+    floating where the old fields were.</p>
+  <div id="app"></div>
+  <p id="status">first form</p>
+  <script>
+    function render(round) {
+      document.getElementById("app").innerHTML = `
+        <form>
+          <label>Username (round ${round})</label>
+          <input name="username" type="text" autocomplete="username">
+          <label>Password (round ${round})</label>
+          <input name="password" type="password" autocomplete="current-password">
+        </form>`;
+    }
+    render(1);
+    setTimeout(() => {
+      render(2);
+      document.getElementById("status").textContent = "form replaced";
+    }, 1000);
+  </script>
+</body>
+</html>

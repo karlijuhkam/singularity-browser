@@ -159,6 +159,14 @@ private struct PluginRow: View {
                 }
             }
 
+            if let problem = plugin.pageProblem {
+                Text(verbatim: "Page script: " + PluginText.line(problem, max: 500))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+            }
+
             if let approval = plugin.approval {
                 spaces(approval)
                 developmentMode(approval)

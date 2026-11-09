@@ -1,0 +1,14 @@
+{
+  "id": "fixture-filler",
+  "name": "Fixture filler",
+  "version": "0.1.0",
+  "description": "Test plugin for page additions: adds a button to login fields on 127.0.0.1 and fills u / p.",
+  "author": "Singularity tests",
+  "background": "background.ts",
+  "page": { "script": "page.ts", "sites": ["http://127.0.0.1/*"] },
+  "permissions": {
+    "pageAdditions": ["http://127.0.0.1/*"],
+    "fillForms": ["http://127.0.0.1/*"],
+    "network": []
+  }
+}

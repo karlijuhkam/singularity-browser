@@ -11,19 +11,28 @@ import WebKit
 @Observable
 final class WebViewRegistry {
     @ObservationIgnored weak var state: AppState?
+    /// Adds plugins' page scripts to each new web view (set by AppState).
+    @ObservationIgnored var pluginScripts: PluginScripts?
     private var controllers: [UUID: WebTabController] = [:]
 
     func existingController(_ tabID: UUID) -> WebTabController? {
         controllers[tabID]
     }
 
+    /// The tab a web view belongs to (for messages from page scripts, which name their web view).
+    func tabID(for webView: WKWebView) -> UUID? {
+        controllers.first { $0.value.webView === webView }?.key
+    }
+
     /// Returns the tab's controller, creating it (and starting the page load) if needed.
     func controller(for tab: BrowserTab, in space: Space) -> WebTabController {
         if let existing = controllers[tab.id] { return existing }
+        let configuration = Self.configuration(for: space)
+        pluginScripts?.attach(configuration.userContentController, spaceID: space.id)
         let controller = WebTabController(
             tabID: tab.id,
             spaceID: space.id,
-            configuration: Self.configuration(for: space),
+            configuration: configuration,
             state: state
         )
         controllers[tab.id] = controller
@@ -38,6 +47,8 @@ final class WebViewRegistry {
         if let port = host.port {
             ArtifactBridge(state: state, spaceID: space.id, port: port).install(in: configuration)
         }
+        // After the app's own scripts: those are kept whenever plugin scripts change.
+        pluginScripts?.attach(configuration.userContentController, spaceID: space.id)
         let controller = WebTabController(tabID: tab.id, spaceID: space.id, configuration: configuration, state: state, isArtifact: true)
         controllers[tab.id] = controller
         controller.webView.load(request)
@@ -46,6 +57,9 @@ final class WebViewRegistry {
 
     /// Registers a web view that WebKit created for a pop-up (see `AppState.openPopup`).
     func adoptPopup(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration) -> WebTabController {
+        // WebKit's popup configuration shares the opener's content controller, which is already
+        // managed; attach does nothing then.
+        pluginScripts?.attach(configuration.userContentController, spaceID: spaceID)
         let controller = WebTabController(tabID: tabID, spaceID: spaceID, configuration: configuration, state: state)
         controllers[tabID] = controller
         return controller

@@ -147,3 +147,40 @@ public struct SitePattern: Hashable, Sendable {
         return pi == p.count
     }
 }
+
+// MARK: - The same pattern, for JavaScript
+
+extension SitePattern {
+    /// A pattern as data the plugin prelude (JavaScript, in the page) can match with, so the
+    /// parsing stays here in Swift. The app re-checks every message natively with `matches`;
+    /// this copy only decides whether the plugin's page code starts at all.
+    public struct BrowserMatcher: Codable, Equatable, Sendable {
+        /// "http" and/or "https".
+        public let schemes: [String]
+        /// "any", "domainAndSubdomains" or "exact".
+        public let hostKind: String
+        /// Lowercased, no trailing dot; empty for "any".
+        public let host: String
+        /// A regular expression for `location.pathname + location.search`, anchored with ^ and $.
+        public let pathRegex: String
+    }
+
+    public var browserMatcher: BrowserMatcher {
+        let schemes = scheme == "*" ? ["http", "https"] : [scheme]
+        let (kind, name): (String, String)
+        switch host {
+        case .any: (kind, name) = ("any", "")
+        case .domainAndSubdomains(let domain): (kind, name) = ("domainAndSubdomains", domain)
+        case .exact(let exact): (kind, name) = ("exact", exact)
+        }
+        // "*" becomes ".*"; every other ASCII punctuation character is escaped, so it matches itself.
+        let regex = path.split(separator: "*", omittingEmptySubsequences: false)
+            .map { part in
+                part.map { ch -> String in
+                    ch.isASCII && (ch.isPunctuation || ch.isSymbol) ? "\\" + String(ch) : String(ch)
+                }.joined()
+            }
+            .joined(separator: ".*")
+        return BrowserMatcher(schemes: schemes, hostKind: kind, host: name, pathRegex: "^" + regex + "$")
+    }
+}

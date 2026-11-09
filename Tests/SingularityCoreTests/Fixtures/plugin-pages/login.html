@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fixture login</title>
+  <style>
+    body { font: 15px -apple-system, sans-serif; margin: 40px; }
+    label { display: block; margin: 12px 0 4px; }
+    input { width: 280px; padding: 8px; font: inherit; }
+  </style>
+</head>
+<body>
+  <h1>Fixture login</h1>
+  <p>Test page for the fixture-filler plugin. Each field should get one button at its right edge.</p>
+  <form id="login" onsubmit="event.preventDefault(); document.getElementById('result').textContent = 'submitted: ' + this.username.value;">
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" autocomplete="username">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password">
+    <p><button type="submit">Sign in</button></p>
+  </form>
+  <h2>Guard check</h2>
+  <p>This field's button asks for a fill meant for example.com. Nothing may be filled, and the plugin's
+    log in Settings → Plugins says “blocked fill for 127.0.0.1”.</p>
+  <input id="decoy" type="text" data-fixture="wrong-host" placeholder="must stay empty">
+  <p id="result"></p>
+  <script>
+    // Shows what the page itself sees when a field changes (the fill fires input/change events).
+    for (const id of ["username", "password", "decoy"]) {
+      document.getElementById(id).addEventListener("change", (e) => console.log("page saw change on", id));
+    }
+  </script>
+</body>
+</html>

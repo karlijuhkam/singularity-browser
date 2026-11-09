@@ -36,6 +36,12 @@ public struct PluginScan: Sendable {
         return m
     }
 
+    /// The fingerprint and per-file hashes, when the files could be read.
+    public var snapshot: PluginFingerprint.Snapshot? {
+        if case .success(let snapshot) = files { return snapshot }
+        return nil
+    }
+
     public var fingerprint: String? {
         if case .success(let snapshot) = files { return snapshot.fingerprint }
         return nil
