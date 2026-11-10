@@ -449,7 +449,8 @@ private struct Arguments {
 
     func int(_ key: String) throws -> Int {
         if let value = values[key]?.intValue { return value }
-        if let value = values[key]?.doubleValue, value == value.rounded() { return Int(value) }
+        // `Int(exactly:)`: a huge number (1e19) must be an error, not a crash.
+        if let value = values[key]?.doubleValue, let exact = Int(exactly: value) { return exact }
         if let text = values[key]?.stringValue, let value = Int(text.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))) { return value }
         throw AgentToolbox.ToolError("Missing integer argument \"\(key)\".")
     }

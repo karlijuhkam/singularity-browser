@@ -52,6 +52,7 @@ final class WebTabController: NSObject {
     /// Host of the page this tab is going to (set for every main-frame navigation, redirects
     /// included). Only that host, or the page already shown, may ask for a name and password.
     @ObservationIgnored private var mainFrameHost: String?
+    @ObservationIgnored private var lastCrashReload: Date?
     /// Bumped by ⌘F so an already open find bar takes the keyboard again.
     private(set) var findFocusToken = 0
 
@@ -381,6 +382,16 @@ extension WebTabController: WKNavigationDelegate {
 
     /// The page's web content process crashed (or was killed for memory). Reload it.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // A page that crashes every time would otherwise reload forever: one retry per 10 seconds.
+        let now = Date()
+        defer { lastCrashReload = now }
+        if let last = lastCrashReload, now.timeIntervalSince(last) < 10, let url = webView.url,
+           ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            let html = LoadErrorPage.html(url: url.absoluteString, message: "This page keeps crashing, so Singularity stopped reloading it.")
+            errorNavigationURL = url
+            errorNavigation = webView.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+            return
+        }
         webView.reload()
     }
 }
@@ -403,7 +414,10 @@ extension WebTabController: WKUIDelegate {
         state?.closeTab(tabID, in: spaceID)
     }
 
+    // alert() / confirm() / prompt(). A tab that isn't on screen gets the "cancelled" answer at
+    // once: a dialog from a page you can't see would block the whole app, and a page could repeat it.
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async {
+        guard webView.window != nil else { return }
         let alert = NSAlert()
         alert.messageText = frame.request.url?.host() ?? "This page says"
         alert.informativeText = message
@@ -412,6 +426,7 @@ extension WebTabController: WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async -> Bool {
+        guard webView.window != nil else { return false }
         let alert = NSAlert()
         alert.messageText = frame.request.url?.host() ?? "This page says"
         alert.informativeText = message
@@ -426,6 +441,7 @@ extension WebTabController: WKUIDelegate {
         defaultText: String?,
         initiatedByFrame frame: WKFrameInfo
     ) async -> String? {
+        guard webView.window != nil else { return nil }
         let alert = NSAlert()
         alert.messageText = frame.request.url?.host() ?? "This page says"
         alert.informativeText = prompt

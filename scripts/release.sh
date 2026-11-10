@@ -86,6 +86,9 @@ echo "→ building release (universal)"
 ARCH_FLAGS=(--arch arm64 --arch x86_64)
 if ! swift build -c release "${ARCH_FLAGS[@]}" --product Singularity >/dev/null \
    || ! swift build -c release "${ARCH_FLAGS[@]}" --product singularity-mcp >/dev/null; then
+  if (( ! SKIP_NOTARIZE )); then
+    fail "the universal (Apple Silicon + Intel) build failed; a release must run on both."
+  fi
   echo "warning: universal build failed; building for Apple Silicon only" >&2
   ARCH_FLAGS=(--arch arm64)
   swift build -c release "${ARCH_FLAGS[@]}" --product Singularity
@@ -127,11 +130,18 @@ fi
 
 # ---- notarize -----------------------------------------------------------------------------------
 echo "→ notarizing (this usually takes a few minutes)"
-ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-xcrun stapler staple "$APP"
-# Re-zip so the stapled ticket is inside the download.
+# The upload goes under a temporary name: until Apple has accepted it and the ticket is stapled,
+# nothing called Singularity-<version>.zip exists that could be handed out by mistake.
 rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"
+UPLOAD="$DIST/.notarize-upload.zip"
+ditto -c -k --keepParent "$APP" "$UPLOAD"
+RESULT="$(xcrun notarytool submit "$UPLOAD" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1)" || { echo "$RESULT"; rm -f "$UPLOAD"; fail "notarytool failed."; }
+echo "$RESULT"
+rm -f "$UPLOAD"
+# notarytool can exit 0 with a verdict of "Invalid"; only "Accepted" may go on.
+grep -q "status: Accepted" <<<"$RESULT" || fail "Apple did not accept the build. See the log with:
+       xcrun notarytool log <submission id> --keychain-profile $NOTARY_PROFILE"
+xcrun stapler staple "$APP"
+ditto -c -k --keepParent "$APP" "$ZIP"   # zipped after stapling, so the ticket is inside the download
 spctl --assess --type execute --verbose=2 "$APP"
 echo "✓ $ZIP (signed, notarized, stapled)"

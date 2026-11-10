@@ -22,6 +22,8 @@
 	<string>0.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Karli Juhkam</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSApplicationCategoryType</key>
@@ -51,6 +53,18 @@
 	<string>A website, or a program in a terminal tab, wants to use the camera.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>A website, or a program in a terminal tab, wants to use the microphone.</string>
+	<!-- Programs in terminal tabs act as Singularity towards macOS privacy checks. Without these
+	     texts macOS refuses their requests outright instead of asking you. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>A program in a terminal tab wants to control another app.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>A program in a terminal tab wants to use files on your Desktop.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>A program in a terminal tab wants to use files in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>A program in a terminal tab, or a download, wants to use your Downloads folder.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>A website or a program in a terminal tab wants to reach devices on your local network.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Let web pages load plain http:// sites, like any browser. Applies to WKWebView content only. -->

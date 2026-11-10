@@ -9,6 +9,10 @@
 	-->
 	<!-- Under the hardened runtime, camera and microphone are blocked without these. Web pages
 	     still have to ask: macOS asks once for the app, WebKit asks for every site. -->
+	<!-- Lets programs in terminal tabs (osascript, agents) send Apple Events; macOS still asks
+	     you per target app. Terminal and iTerm carry the same entitlement. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 	<key>com.apple.security.device.camera</key>
 	<true/>
 	<key>com.apple.security.device.audio-input</key>

@@ -48,11 +48,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AppSettings()
         searchEngine = (try? container.decodeIfPresent(SearchEngine.self, forKey: .searchEngine)) ?? defaults.searchEngine
-        customSearchTemplate = try container.decodeIfPresent(String.self, forKey: .customSearchTemplate) ?? defaults.customSearchTemplate
-        terminalFontName = try container.decodeIfPresent(String.self, forKey: .terminalFontName)
-        terminalFontSize = try container.decodeIfPresent(Double.self, forKey: .terminalFontSize) ?? defaults.terminalFontSize
-        closeTerminalOnExit = try container.decodeIfPresent(Bool.self, forKey: .closeTerminalOnExit) ?? defaults.closeTerminalOnExit
-        agentApprovalTimeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .agentApprovalTimeoutSeconds)
+        // `try?` everywhere: one field of the wrong type falls back to its default instead of
+        // resetting every setting.
+        customSearchTemplate = (try? container.decodeIfPresent(String.self, forKey: .customSearchTemplate)) ?? defaults.customSearchTemplate
+        terminalFontName = (try? container.decodeIfPresent(String.self, forKey: .terminalFontName)) ?? nil
+        terminalFontSize = (try? container.decodeIfPresent(Double.self, forKey: .terminalFontSize)) ?? defaults.terminalFontSize
+        closeTerminalOnExit = (try? container.decodeIfPresent(Bool.self, forKey: .closeTerminalOnExit)) ?? defaults.closeTerminalOnExit
+        agentApprovalTimeoutSeconds = (try? container.decodeIfPresent(Int.self, forKey: .agentApprovalTimeoutSeconds))
             ?? defaults.agentApprovalTimeoutSeconds
     }
 

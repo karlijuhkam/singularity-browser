@@ -130,7 +130,12 @@ private struct AgentSettings: View {
     }
 
     private var registerCommand: String {
-        "claude mcp add -s user singularity -- '\(launcherPath)'"
+        // Opened straight from Downloads, macOS runs the app from a random temporary folder
+        // ("translocation"); that path is gone after the next launch, so don't hand it out.
+        if launcherPath.contains("/AppTranslocation/") {
+            return "# Move Singularity to the Applications folder and reopen it; the command will then appear here."
+        }
+        return "claude mcp add -s user singularity -- '\(launcherPath)'"
     }
 
     var body: some View {

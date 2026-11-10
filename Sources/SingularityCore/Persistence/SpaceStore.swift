@@ -45,18 +45,25 @@ public struct SpaceStore: Sendable {
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )) ?? []
-        for folder in folders {
+        for folder in folders.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let file = folder.appending(path: "space.json")
             guard FileManager.default.fileExists(atPath: file.path) else { continue }
             do {
                 let space = try JSONDecoder().decode(Space.self, from: Data(contentsOf: file))
+                // A copied Space folder carries the same id; two Spaces with one id would share
+                // tabs and logins and confuse every lookup. The first one (by folder name) wins.
+                if let twin = spaces.first(where: { $0.id == space.id }) {
+                    errors.append("\(folder.lastPathComponent)/space.json: skipped, it is a copy of the Space “\(twin.name)” (same id)")
+                    continue
+                }
                 spaces.append(space)
             } catch {
                 errors.append("\(folder.lastPathComponent)/space.json: \(error)")
             }
         }
 
-        let position = Dictionary(uniqueKeysWithValues: state.spaceOrder.enumerated().map { ($1, $0) })
+        // `uniquingKeysWith`: a repeated id in a hand-edited state.json must not crash the launch.
+        let position = Dictionary(state.spaceOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         spaces.sort { a, b in
             switch (position[a.id], position[b.id]) {
             case let (x?, y?): return x < y

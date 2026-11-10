@@ -6,7 +6,26 @@ import SwiftUI
 struct SingularityApp: App {
     // Lets us hook into a few AppKit app-lifecycle callbacks SwiftUI doesn't expose.
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var state = AppState(paths: .standard)
+    @State private var state: AppState
+
+    /// Held for as long as the app runs; see `InstanceLock`.
+    private static var instanceLock: InstanceLock?
+
+    init() {
+        // Before anything touches the data folder: if another copy already works on it, bring
+        // that one forward and leave. (Two copies would overwrite each other's Spaces.)
+        guard let lock = InstanceLock.acquire(paths: .standard) else {
+            let me = NSRunningApplication.current
+            let other = NSWorkspace.shared.runningApplications.first {
+                $0.processIdentifier != me.processIdentifier && $0.bundleIdentifier != nil && $0.bundleIdentifier == me.bundleIdentifier
+            }
+            other?.activate()
+            FileHandle.standardError.write(Data("Singularity is already running on \(Paths.standard.root.path).\n".utf8))
+            exit(0)
+        }
+        Self.instanceLock = lock
+        _state = State(initialValue: AppState(paths: .standard))
+    }
 
     var body: some Scene {
         // `Window` (not `WindowGroup`) = exactly one browser window; no File → New Window.
@@ -14,7 +33,10 @@ struct SingularityApp: App {
             MainView()
                 .environment(state)
                 .frame(minWidth: 820, minHeight: 520)
-                .onAppear { appDelegate.state = state }
+                .onAppear {
+                    appDelegate.state = state
+                    appDelegate.reportLoadErrors()
+                }
         }
         // Title bar is invisible and content runs underneath it, as in Arc/Safari's compact tabs.
         .windowStyle(.hiddenTitleBar)
@@ -40,6 +62,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateDockIcon()
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.updateDockIcon() }
+        }
+    }
+
+    /// Spaces or settings that couldn't be read at launch. Their files are never overwritten, but
+    /// without a message a Space would simply be gone.
+    func reportLoadErrors() {
+        guard let state, !state.loadErrors.isEmpty else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Some of your data could not be opened"
+        alert.informativeText = state.loadErrors.prefix(8).joined(separator: "\n\n")
+            + "\n\nThe files are untouched, in \(state.paths.root.path)."
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Show in Finder")
+        state.loadErrors = []
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(state.paths.spacesDirectory)
         }
     }
 
