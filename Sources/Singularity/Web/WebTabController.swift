@@ -38,6 +38,17 @@ final class WebTabController: NSObject {
     private(set) var isLoading = false
     private(set) var estimatedProgress = 0.0
 
+    // Find in page (⌘F). WKWebView on macOS has no find bar of its own; `FindBar` draws ours.
+    var isFindBarVisible = false
+    var findText = ""
+    /// False after a search that found nothing (the bar turns the field red).
+    private(set) var findFailed = false
+
+    /// The URL whose load failed, while the error page for it is showing (so Reload retries it).
+    @ObservationIgnored private var failedURL: URL?
+    /// Set between asking for the error page and it finishing loading.
+    @ObservationIgnored private var pendingErrorURL: URL?
+
     init(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration, state: AppState?, isArtifact: Bool = false) {
         self.tabID = tabID
         self.spaceID = spaceID
@@ -106,7 +117,62 @@ final class WebTabController: NSObject {
         return result as? String ?? ""
     }
 
-    func reload() { webView.reload() }
+    func reload() {
+        // On the error page, "reload" means trying the failed address again.
+        if let failedURL { load(failedURL) } else { webView.reload() }
+    }
+
+    // MARK: Find, zoom, print
+
+    func showFindBar() {
+        isFindBarVisible = true
+    }
+
+    func hideFindBar() {
+        isFindBarVisible = false
+        findFailed = false
+        webView.window?.makeFirstResponder(webView)
+    }
+
+    /// Selects and scrolls to the next (or previous) match of `findText`, wrapping around.
+    func find(backwards: Bool = false) {
+        guard !findText.isEmpty else { findFailed = false; return }
+        let configuration = WKFindConfiguration()
+        configuration.backwards = backwards
+        configuration.caseSensitive = false
+        configuration.wraps = true
+        let text = findText
+        Task {
+            let result = try? await webView.find(text, configuration: configuration)
+            // Ignore the answer if the text changed while WebKit was searching.
+            if text == findText { findFailed = !(result?.matchFound ?? false) }
+        }
+    }
+
+    func zoom(larger: Bool) { webView.pageZoom = PageZoom.next(from: webView.pageZoom, larger: larger) }
+    func resetZoom() { webView.pageZoom = 1.0 }
+
+    func printPage() {
+        guard let window = webView.window else { return }
+        let operation = webView.printOperation(with: NSPrintInfo.shared)
+        // WebKit's print view starts with an empty frame, and AppKit refuses to print that.
+        operation.view?.frame = webView.bounds
+        operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+    }
+
+    /// Replaces the blank page left by a failed load with an explanation. The address stays the
+    /// failed one, so the sidebar, ⌘L and Reload keep working on it.
+    private func showLoadError(_ error: Error) {
+        let nsError = error as NSError
+        guard LoadErrorPage.shouldShow(domain: nsError.domain, code: nsError.code) else { return }
+        let url = (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            ?? (nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
+            ?? webView.url
+        guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        pendingErrorURL = url
+        let html = LoadErrorPage.html(url: url.absoluteString, message: nsError.localizedDescription)
+        webView.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+    }
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
 
@@ -227,11 +293,61 @@ extension WebTabController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // The error page finishing is not a visit: keep it out of history.
+        if let url = pendingErrorURL {
+            pendingErrorURL = nil
+            failedURL = url
+            return
+        }
+        failedURL = nil
         guard !isArtifact else { return }
         if let url = webView.url {
             state?.recordVisit(spaceID: spaceID, url: url, title: webView.title ?? "")
         }
         Task { await fetchFavicon() }
+    }
+
+    /// The load failed before any content arrived (no connection, unknown host, bad certificate…).
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        showLoadError(error)
+    }
+
+    /// Sites behind a username and password (HTTP Basic/Digest, common on staging servers).
+    /// Everything else (certificates, client certificates) keeps WebKit's default handling.
+    func webView(_ webView: WKWebView, respondTo challenge: URLAuthenticationChallenge) async -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        let space = challenge.protectionSpace
+        let passwordMethods = [NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest, NSURLAuthenticationMethodNTLM]
+        guard passwordMethods.contains(space.authenticationMethod) else { return (.performDefaultHandling, nil) }
+        // A credential from earlier in this session is tried first; after three wrong answers, give up.
+        if challenge.previousFailureCount == 0, challenge.proposedCredential?.hasPassword == true {
+            return (.performDefaultHandling, nil)
+        }
+        guard challenge.previousFailureCount < 3 else { return (.cancelAuthenticationChallenge, nil) }
+
+        let alert = NSAlert()
+        alert.messageText = "Log in to \(space.host)"
+        var info = space.realm.flatMap { $0.isEmpty ? nil : "The site says: “\($0)”." } ?? ""
+        if space.protocol != "https", !space.isProxy() {
+            info += (info.isEmpty ? "" : "\n") + "This connection is not encrypted: the password can be read on the way."
+        }
+        if challenge.previousFailureCount > 0 { info += (info.isEmpty ? "" : "\n") + "That name or password was not accepted." }
+        alert.informativeText = info
+        let user = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
+        user.placeholderString = "Name"
+        user.stringValue = challenge.proposedCredential?.user ?? ""
+        let password = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        password.placeholderString = "Password"
+        let fields = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 54))
+        fields.addSubview(user)
+        fields.addSubview(password)
+        user.nextKeyView = password
+        alert.accessoryView = fields
+        alert.addButton(withTitle: "Log In")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = user
+        guard await present(alert) == .alertFirstButtonReturn else { return (.cancelAuthenticationChallenge, nil) }
+        // `.forSession`: remembered until the app quits, never written to the keychain.
+        return (.useCredential, URLCredential(user: user.stringValue, password: password.stringValue, persistence: .forSession))
     }
 
     /// The page's web content process crashed (or was killed for memory). Reload it.
@@ -310,7 +426,7 @@ extension WebTabController: WKUIDelegate {
 
     /// Shows an alert as a sheet on the browser window (or as a free-standing dialog if the
     /// tab isn't on screen) and waits for the user to answer.
-    private func present(_ alert: NSAlert) async -> NSApplication.ModalResponse {
+    fileprivate func present(_ alert: NSAlert) async -> NSApplication.ModalResponse {
         guard let window = webView.window else { return alert.runModal() }
         return await alert.beginSheetModal(for: window)
     }

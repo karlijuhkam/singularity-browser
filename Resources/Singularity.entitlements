@@ -7,5 +7,11 @@
 	`claude` and other tools, which cannot work inside the App Sandbox.
 	Hardened runtime is enabled at signing time (codesign -o runtime) for notarisation.
 	-->
+	<!-- Under the hardened runtime, camera and microphone are blocked without these. Web pages
+	     still have to ask: macOS asks once for the app, WebKit asks for every site. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

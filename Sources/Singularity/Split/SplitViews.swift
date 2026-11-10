@@ -16,6 +16,9 @@ struct TabContentView: View {
         if let controller = state.web.existingController(tab.id) {
             HostedView(view: controller.webView, tabID: tab.id, onDrop: onDrop)
                 .overlay(alignment: .top) { LoadingBar(controller: controller) }
+                .overlay(alignment: .topTrailing) {
+                    if controller.isFindBarVisible { FindBar(controller: controller) }
+                }
         } else if let session = state.terminals.existingSession(tab.id) {
             HostedView(view: session.view, tabID: tab.id, focusOnShow: isFocused, onDrop: onDrop)
                 .padding(8)
@@ -44,6 +47,40 @@ struct LoadingBar: View {
                 .animation(.easeOut(duration: 0.2), value: controller.estimatedProgress)
         }
         .frame(height: 2)
+    }
+}
+
+/// Find in page (⌘F): a small bar in the page's top right corner. Return finds the next match,
+/// ⇧Return the previous one, Esc closes it.
+struct FindBar: View {
+    @Bindable var controller: WebTabController
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField("Find on page", text: $controller.findText)
+                .textFieldStyle(.plain)
+                .frame(width: 180)
+                .focused($isFocused)
+                .foregroundStyle(controller.findFailed ? Color.red : Color.primary)
+                .onSubmit { controller.find(backwards: NSEvent.modifierFlags.contains(.shift)) }
+                .onChange(of: controller.findText) { controller.find() }
+                .onExitCommand { controller.hideFindBar() }
+            Button { controller.find(backwards: true) } label: { Image(systemName: "chevron.up") }
+                .accessibilityLabel("Previous match")
+            Button { controller.find() } label: { Image(systemName: "chevron.down") }
+                .accessibilityLabel("Next match")
+            Button { controller.hideFindBar() } label: { Image(systemName: "xmark") }
+                .accessibilityLabel("Close find bar")
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
+        .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
+        .padding(10)
+        .onAppear { isFocused = true }
     }
 }
 

@@ -46,6 +46,11 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Shown by macOS the first time a web page asks for the camera or microphone (video calls). -->
+	<key>NSCameraUsageDescription</key>
+	<string>A website you opened in Singularity wants to use the camera.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>A website you opened in Singularity wants to use the microphone.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Let web pages load plain http:// sites, like any browser. Applies to WKWebView content only. -->

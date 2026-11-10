@@ -54,7 +54,7 @@ All preferences are in **Singularity → Settings…** (⌘,): search engine, te
 
 | Kind | What it is |
 |---|---|
-| Web | A normal web page. Each Space has its own cookies and logins. |
+| Web | A normal web page. Each Space has its own cookies and logins. Right-click → Inspect Element opens the Web Inspector (console, network, elements). Pages can use the camera and microphone after asking you. A page that can't be loaded says why, with a Try Again button, and sites behind a name and password show a login dialog (remembered until you quit). |
 | Terminal | Your login shell in a pseudo-terminal (SwiftTerm). The tab title follows the running program. `TERM_PROGRAM=Singularity` and `SINGULARITY_SPACE=<slug>` are set. ⌘W or ⌘Q asks first while a program (such as an agent) runs. |
 | Artifact | An HTML file in the Space's `artifacts/` folder. A new file opens as a tab by itself, and an open tab reloads when its files change. |
 
@@ -107,6 +107,9 @@ To write your own (an agent can do it from the guide), see [docs/plugins/AUTHORI
 | ⌘1 … ⌘8, ⌘9 | Switch to Space 1–8, or to the last Space |
 | ⌃⇥ / ⌃⇧⇥ | Next / previous tab |
 | ⌘R, ⌘[, ⌘] | Reload, back, forward |
+| ⌘F, ⌘G / ⇧⌘G | Find on the page, next / previous match |
+| ⌘+ / ⌘− / ⌘0 | Zoom in / out / actual size |
+| ⌘P | Print |
 | ⌘\ / ⇧⌘\ | Split with the previous tab / remove the tab from its split |
 | ⌥⌘ + arrows | Move focus between split panes |
 

@@ -28,6 +28,26 @@ struct SingularityCommands: Commands {
                 .disabled(state.selectedTab == nil)
         }
 
+        // Edit → Find. Web pages only; WKWebView has no find bar, so the tab draws its own (FindBar).
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Find…") { selectedController?.showFindBar() }
+                .keyboardShortcut("f")
+                .disabled(selectedController == nil)
+            Button("Find Next") { selectedController?.find() }
+                .keyboardShortcut("g")
+                .disabled(selectedController?.findText.isEmpty != false)
+            Button("Find Previous") { selectedController?.find(backwards: true) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(selectedController?.findText.isEmpty != false)
+        }
+
+        CommandGroup(replacing: .printItem) {
+            Button("Print…") { selectedController?.printPage() }
+                .keyboardShortcut("p")
+                .disabled(selectedController == nil)
+        }
+
         // Spaces: ⌘1…⌘8 pick that Space, ⌘9 the last one (as tabs do in other browsers).
         CommandMenu("Spaces") {
             ForEach(Array(state.spaces.enumerated()), id: \.element.id) { index, space in
@@ -73,6 +93,16 @@ struct SingularityCommands: Commands {
             Button("Forward") { selectedController?.goForward() }
                 .keyboardShortcut("]")
                 .disabled(selectedController?.canGoForward != true)
+            Divider()
+            Button("Zoom In") { selectedController?.zoom(larger: true) }
+                .keyboardShortcut("+")
+                .disabled(selectedController == nil)
+            Button("Zoom Out") { selectedController?.zoom(larger: false) }
+                .keyboardShortcut("-")
+                .disabled(selectedController == nil)
+            Button("Actual Size") { selectedController?.resetZoom() }
+                .keyboardShortcut("0")
+                .disabled(selectedController == nil)
             Divider()
         }
     }
