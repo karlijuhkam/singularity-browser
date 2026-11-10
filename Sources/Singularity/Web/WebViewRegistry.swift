@@ -83,6 +83,10 @@ final class WebViewRegistry {
         // treat WKWebView as an insecure embedded browser. We append the installed Safari's version.
         configuration.applicationNameForUserAgent = Self.safariUserAgentSuffix
         configuration.preferences.isElementFullscreenEnabled = true
+        // Adds "Inspect Element" to the right-click menu. `webView.isInspectable` alone only lets
+        // Safari's Develop menu attach; the menu item needs this WebKit preference, which has no
+        // public Swift property (it is set by key, as other WKWebView browsers do).
+        configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         // Agent tools (read_page, find, click, type), in an isolated world pages can't see.
         PageAgentScript.install(in: configuration)
         return configuration
