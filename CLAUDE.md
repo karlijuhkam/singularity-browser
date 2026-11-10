@@ -60,6 +60,7 @@ Resources/plugin-host/  host.ts (background API), transpile-page.ts (page.ts com
 Plugins/             1password/ (reference plugin), template/ (copy this to start)
 docs/plugins/AUTHORING.md   the plugin authoring guide (agents first)
 Tests/SingularityCoreTests/   Swift Testing
+Tests/SingularityAppTests/    the real WebTabController in an off-screen window (error page, login sheet, find, zoom, print)
 Tests/plugins/       Bun tests for plugin logic (1password)
 ```
 
