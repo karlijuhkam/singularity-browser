@@ -343,12 +343,14 @@ extension WebTabController: WKNavigationDelegate {
         // another site could otherwise show a password dialog under its own name, over and over;
         // and a tab in the background (e.g. one an agent opened) would ask out of nowhere.
         let isPageItself = space.host == mainFrameHost || space.host == webView.url?.host()
-        guard webView.window != nil, isPageItself || space.isProxy() else { return (.cancelAuthenticationChallenge, nil) }
+        // "Use no credential" lets the server's own "401 Unauthorized" page show, instead of
+        // leaving the tab silently on the previous page.
+        guard webView.window != nil, isPageItself || space.isProxy() else { return (.useCredential, nil) }
         // A credential from earlier in this session is tried first; after three wrong answers, give up.
         if challenge.previousFailureCount == 0, challenge.proposedCredential?.hasPassword == true {
             return (.performDefaultHandling, nil)
         }
-        guard challenge.previousFailureCount < 3 else { return (.cancelAuthenticationChallenge, nil) }
+        guard challenge.previousFailureCount < 3 else { return (.useCredential, nil) }
 
         let alert = NSAlert()
         alert.messageText = space.isProxy() ? "Log in to the proxy \(space.host)" : "Log in to \(space.host)"
@@ -372,7 +374,7 @@ extension WebTabController: WKNavigationDelegate {
         alert.addButton(withTitle: "Log In")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = user
-        guard await present(alert) == .alertFirstButtonReturn else { return (.cancelAuthenticationChallenge, nil) }
+        guard await present(alert) == .alertFirstButtonReturn else { return (.useCredential, nil) }
         // `.forSession`: remembered until the app quits, never written to the keychain.
         return (.useCredential, URLCredential(user: user.stringValue, password: password.stringValue, persistence: .forSession))
     }

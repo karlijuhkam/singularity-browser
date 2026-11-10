@@ -26,7 +26,12 @@ public struct Paths: Sendable {
     }
 
     public static var standard: Paths {
-        Paths(root: FileManager.default.homeDirectoryForCurrentUser.appending(path: "Singularity", directoryHint: .isDirectory))
+        // For trying a build next to the copy you use every day: SINGULARITY_HOME=/some/folder
+        // gives that run its own Spaces, settings, plugins and agent socket.
+        if let override = ProcessInfo.processInfo.environment["SINGULARITY_HOME"], override.hasPrefix("/") {
+            return Paths(root: URL(fileURLWithPath: override, isDirectory: true))
+        }
+        return Paths(root: FileManager.default.homeDirectoryForCurrentUser.appending(path: "Singularity", directoryHint: .isDirectory))
     }
 
     public var stateFile: URL { root.appending(path: "state.json") }
