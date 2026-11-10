@@ -81,6 +81,8 @@ struct FindBar: View {
         .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
         .padding(10)
         .onAppear { isFocused = true }
+        // ⌘F while the bar is open (focus may be in the page): take the keyboard back.
+        .onChange(of: controller.findFocusToken) { isFocused = true }
     }
 }
 

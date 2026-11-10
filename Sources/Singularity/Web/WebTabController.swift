@@ -46,8 +46,14 @@ final class WebTabController: NSObject {
 
     /// The URL whose load failed, while the error page for it is showing (so Reload retries it).
     @ObservationIgnored private var failedURL: URL?
-    /// Set between asking for the error page and it finishing loading.
-    @ObservationIgnored private var pendingErrorURL: URL?
+    /// The load of the error page itself, from asking for it until it finishes or fails.
+    @ObservationIgnored private var errorNavigation: WKNavigation?
+    @ObservationIgnored private var errorNavigationURL: URL?
+    /// Host of the page this tab is going to (set for every main-frame navigation, redirects
+    /// included). Only that host, or the page already shown, may ask for a name and password.
+    @ObservationIgnored private var mainFrameHost: String?
+    /// Bumped by ⌘F so an already open find bar takes the keyboard again.
+    private(set) var findFocusToken = 0
 
     init(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration, state: AppState?, isArtifact: Bool = false) {
         self.tabID = tabID
@@ -126,6 +132,7 @@ final class WebTabController: NSObject {
 
     func showFindBar() {
         isFindBarVisible = true
+        findFocusToken += 1
     }
 
     func hideFindBar() {
@@ -164,14 +171,16 @@ final class WebTabController: NSObject {
     /// failed one, so the sidebar, ⌘L and Reload keep working on it.
     private func showLoadError(_ error: Error) {
         let nsError = error as NSError
-        guard LoadErrorPage.shouldShow(domain: nsError.domain, code: nsError.code) else { return }
+        // Artifact pages need the app's token on their first request; a plain retry would be
+        // refused, so they keep WebKit's own behaviour.
+        guard !isArtifact, LoadErrorPage.shouldShow(domain: nsError.domain, code: nsError.code) else { return }
         let url = (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
             ?? (nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
             ?? webView.url
         guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
-        pendingErrorURL = url
         let html = LoadErrorPage.html(url: url.absoluteString, message: nsError.localizedDescription)
-        webView.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+        errorNavigationURL = url
+        errorNavigation = webView.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
     }
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
@@ -212,7 +221,9 @@ final class WebTabController: NSObject {
     }
 
     private func titleOrURLChanged() {
-        let title = webView.title.flatMap { $0.isEmpty ? nil : $0 }
+        // The error page's title is not the page's name: keep the saved one (pinned tabs offline).
+        let showingError = failedURL != nil || errorNavigation != nil
+        let title = showingError ? nil : webView.title.flatMap { $0.isEmpty ? nil : $0 }
         // `url` is briefly nil during some navigations; keep the last known URL then.
         state?.webTabDidChange(tabID: tabID, spaceID: spaceID, title: title, url: webView.url)
     }
@@ -247,6 +258,7 @@ extension WebTabController: WKNavigationDelegate {
         if navigationAction.shouldPerformDownload { return .download }
 
         guard let url = navigationAction.request.url else { return .allow }
+        if navigationAction.targetFrame?.isMainFrame ?? false { mainFrameHost = url.host() }
 
         // Links like mailto:, tel:, zoommtg: are handed to the system (Mail, FaceTime, …).
         let webSchemes: Set<String> = ["http", "https", "about", "data", "blob", "file", "javascript"]
@@ -294,12 +306,11 @@ extension WebTabController: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // The error page finishing is not a visit: keep it out of history.
-        if let url = pendingErrorURL {
-            pendingErrorURL = nil
-            failedURL = url
+        if navigation === errorNavigation, errorNavigation != nil {
+            errorNavigation = nil
+            failedURL = errorNavigationURL
             return
         }
-        failedURL = nil
         guard !isArtifact else { return }
         if let url = webView.url {
             state?.recordVisit(spaceID: spaceID, url: url, title: webView.title ?? "")
@@ -309,7 +320,17 @@ extension WebTabController: WKNavigationDelegate {
 
     /// The load failed before any content arrived (no connection, unknown host, bad certificate…).
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if navigation === errorNavigation { errorNavigation = nil; return } // never loop on our own page
         showLoadError(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if navigation === errorNavigation { errorNavigation = nil }
+    }
+
+    /// Content of a new page started arriving: the error page (if any) is gone.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if navigation !== errorNavigation { failedURL = nil }
     }
 
     /// Sites behind a username and password (HTTP Basic/Digest, common on staging servers).
@@ -318,6 +339,11 @@ extension WebTabController: WKNavigationDelegate {
         let space = challenge.protectionSpace
         let passwordMethods = [NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest, NSURLAuthenticationMethodNTLM]
         guard passwordMethods.contains(space.authenticationMethod) else { return (.performDefaultHandling, nil) }
+        // Only the page itself may ask, and only while you can see it. An image or frame from
+        // another site could otherwise show a password dialog under its own name, over and over;
+        // and a tab in the background (e.g. one an agent opened) would ask out of nowhere.
+        let isPageItself = space.host == mainFrameHost || space.host == webView.url?.host()
+        guard webView.window != nil, isPageItself || space.isProxy() else { return (.cancelAuthenticationChallenge, nil) }
         // A credential from earlier in this session is tried first; after three wrong answers, give up.
         if challenge.previousFailureCount == 0, challenge.proposedCredential?.hasPassword == true {
             return (.performDefaultHandling, nil)
@@ -325,8 +351,9 @@ extension WebTabController: WKNavigationDelegate {
         guard challenge.previousFailureCount < 3 else { return (.cancelAuthenticationChallenge, nil) }
 
         let alert = NSAlert()
-        alert.messageText = "Log in to \(space.host)"
-        var info = space.realm.flatMap { $0.isEmpty ? nil : "The site says: “\($0)”." } ?? ""
+        alert.messageText = space.isProxy() ? "Log in to the proxy \(space.host)" : "Log in to \(space.host)"
+        // The realm is text chosen by the server: keep it short and clearly quoted.
+        var info = space.realm.flatMap { $0.isEmpty ? nil : "The site says: “\(String($0.prefix(80)))”." } ?? ""
         if space.protocol != "https", !space.isProxy() {
             info += (info.isEmpty ? "" : "\n") + "This connection is not encrypted: the password can be read on the way."
         }
