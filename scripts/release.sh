@@ -101,6 +101,7 @@ cp "$ROOT/Vendor/bun/bun" "$APP/Contents/Helpers/bun"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
 cp -R "$ROOT/Resources/plugin-host" "$APP/Contents/Resources/"   # plugins' host.ts
+cp "$ROOT/Resources/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/"   # licences of bundled software
 for bundle in "$BIN_DIR"/*.bundle; do
   [[ -e "$bundle" ]] && cp -R "$bundle" "$APP/Contents/Resources/"
 done

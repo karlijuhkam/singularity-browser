@@ -44,6 +44,7 @@ fi
 cp "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
 # The script every plugin's background program starts through (gives plugins their API).
 cp -R "$ROOT/Resources/plugin-host" "$APP/Contents/Resources/"
+cp "$ROOT/Resources/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/"   # licences of bundled software
 
 # SwiftPM puts target resources in <Package>_<Target>.bundle next to the binary.
 for bundle in "$BIN_DIR"/*.bundle; do
