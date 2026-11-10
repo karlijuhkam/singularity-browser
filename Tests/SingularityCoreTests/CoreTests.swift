@@ -96,6 +96,39 @@ import Testing
         #expect(space.tabsInSidebarOrder.map(\.title) == ["P", "F", "A", "B", "C"])
     }
 
+    @Test func dropsATabAtARowOfAnotherSection() {
+        let folder = Folder(name: "Docs")
+        var space = Space(name: "Work", slug: "work", colorHex: "#5E81F4", folders: [folder])
+        let tabs = (0..<5).map { BrowserTab.web(URL(string: "https://example.com/\($0)")!) }
+        tabs.forEach { space.append($0) }
+        let ids = tabs.map(\.id)
+        func rows(_ section: SidebarSection) -> [UUID] { space.sidebarItems(in: section).flatMap(\.tabIDs) }
+
+        // open → pinned (empty), then a second one above it
+        space.moveTab(ids[0], to: .pinned, atRow: 0)
+        space.moveTab(ids[1], to: .pinned, atRow: 0)
+        #expect(rows(.pinned) == [ids[1], ids[0]])
+        #expect(space.tab(ids[1])?.isPinned == true)
+        // pinned → folder, open → folder at the top
+        space.moveTab(ids[0], to: .folder(folder.id), atRow: 0)
+        space.moveTab(ids[2], to: .folder(folder.id), atRow: 0)
+        #expect(rows(.folder(folder.id)) == [ids[2], ids[0]])
+        // folder → open, between the two that are left
+        space.moveTab(ids[2], to: .open, atRow: 1)
+        #expect(rows(.open) == [ids[3], ids[2], ids[4]])
+        #expect(space.tab(ids[2])?.folderID == nil)
+        // within a section: down (row counted before the move) and up
+        space.moveTab(ids[3], to: .open, atRow: 3)
+        #expect(rows(.open) == [ids[2], ids[4], ids[3]])
+        space.moveTab(ids[3], to: .open, atRow: 0)
+        #expect(rows(.open) == [ids[3], ids[2], ids[4]])
+        // a row past the end means "last"; an unknown folder changes nothing
+        space.moveTab(ids[3], to: .open, atRow: 99)
+        #expect(rows(.open) == [ids[2], ids[4], ids[3]])
+        space.moveTab(ids[3], to: .folder(UUID()), atRow: 0)
+        #expect(rows(.open) == [ids[2], ids[4], ids[3]])
+    }
+
     @Test func moveBetweenSections() {
         var (space, folder) = makeSpace()
         let a = space.tabs(in: .open)[0].id
@@ -113,6 +146,42 @@ import Testing
         #expect(space.folders.isEmpty)
         // "F" keeps its position in the underlying array (between B and C).
         #expect(space.tabs(in: .open).map(\.title) == ["A", "B", "F", "C"])
+    }
+
+    @Test func foldersNest() throws {
+        let outer = Folder(name: "Outer"), other = Folder(name: "Other")
+        let inner = Folder(name: "Inner", parentID: outer.id)
+        let deep = Folder(name: "Deep", parentID: inner.id)
+        var space = Space(name: "Work", slug: "work", colorHex: "#5E81F4", folders: [outer, inner, other, deep])
+        for (title, folder) in [("O", outer), ("I", inner), ("D", deep), ("X", other)] {
+            var tab = BrowserTab.web(URL(string: "https://\(title).com")!, title: title)
+            tab.folderID = folder.id
+            space.append(tab)
+        }
+        #expect(space.childFolders(of: nil).map(\.name) == ["Outer", "Other"])
+        #expect(space.childFolders(of: outer.id).map(\.name) == ["Inner"])
+        #expect(space.foldersInTreeOrder.map { "\($0.depth)\($0.folder.name)" } == ["0Outer", "1Inner", "2Deep", "0Other"])
+        #expect(space.folderPath(deep.id) == "Outer / Inner / Deep")
+        // A folder shows the folders inside it before its own tabs.
+        #expect(space.tabsInSidebarOrder.map(\.title) == ["D", "I", "O", "X"])
+
+        // Not into itself or something inside it; into another folder is fine.
+        space.moveFolder(outer.id, into: deep.id)
+        space.moveFolder(outer.id, into: outer.id)
+        #expect(space.folder(outer.id)?.parentID == nil)
+        space.moveFolder(other.id, into: inner.id)
+        #expect(space.childFolders(of: inner.id).map(\.name) == ["Deep", "Other"])
+
+        // Deleting a folder moves its tabs and folders one level up.
+        space.deleteFolder(inner.id)
+        #expect(space.childFolders(of: outer.id).map(\.name) == ["Deep", "Other"])
+        #expect(space.tabs(in: .folder(outer.id)).map(\.title) == ["O", "I"])
+
+        // A folder whose parent is gone shows at the top level; old files without parentID load.
+        space.folders.append(Folder(name: "Orphan", parentID: UUID()))
+        #expect(space.childFolders(of: nil).map(\.name) == ["Outer", "Orphan"])
+        let old = try JSONDecoder().decode(Folder.self, from: Data(#"{"id":"AAAAAAAA-0000-0000-0000-000000000001","name":"F","isExpanded":true}"#.utf8))
+        #expect(old.parentID == nil)
     }
 
     @Test func closingTheSelectedTabSelectsANeighbour() {

@@ -102,3 +102,47 @@ import Testing
         #expect(name == "sleepy-test")
     }
 }
+
+@Suite struct HerdrCoreTests {
+    @Test func looksInTheUsualPlacesThenThePath() {
+        let candidates = HerdrCore.candidatePaths(home: "/Users/x", path: "/usr/bin:/opt/homebrew/bin::/custom")
+        #expect(candidates == ["/Users/x/.local/bin/hc", "/opt/homebrew/bin/hc", "/usr/local/bin/hc", "/usr/bin/hc", "/custom/hc"])
+        #expect(HerdrCore.locate(home: "/Users/x", path: "/custom", isExecutable: { $0 == "/custom/hc" }) == "/custom/hc")
+        #expect(HerdrCore.locate(home: "/Users/x", path: nil, isExecutable: { _ in false }) == nil)
+    }
+
+    @Test func namesAndArguments() {
+        let tab = UUID(uuidString: "6916BFB3-AA44-4400-83E8-6735FE2E2030")!
+        let name = HerdrCore.terminalName(tabID: tab)
+        #expect(name == "sg-6916bfb3aa44440083e86735")
+        #expect(name.count <= 32 && name.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" })
+        let run = HerdrCore.runArguments(name: name, directory: "/tmp/x y", spaceSlug: "work", shell: "/bin/zsh")
+        #expect(run.prefix(3) == ["run", "--bg", "--json"])
+        #expect(run.contains("--no-parent"))
+        #expect(run.suffix(5) == ["--", "/usr/bin/env", "SINGULARITY_SPACE=work", "/bin/zsh", "-l"])
+        #expect(run[run.firstIndex(of: "--cwd")! + 1] == "/tmp/x y")
+        #expect(HerdrCore.attachArguments(name: name).prefix(2) == ["attach", name])
+        #expect(HerdrCore.parseVersion("hc 0.1.19\n") == "0.1.19")
+        #expect(HerdrCore.parseVersion("zsh: command not found") == nil)
+    }
+
+    @Test func readsWhatHcSaysAboutATerminal() {
+        // Real answers of hc 0.1.19, shortened.
+        let live = #"{"address":"t1","argv":["/bin/zsh","-l"],"exit_code":null,"foreground":{"name":"zsh","pid":84684},"name":"sg-abc","pid":84684,"state":"live","title":""}"#
+        #expect(HerdrCore.parseGet(live) == .found(.init(state: .live, pid: 84684, exitCode: nil)))
+        let finished = #"{"address":"t1","exit_code":1,"pid":84684,"reason":"killed","state":"finished"}"#
+        #expect(HerdrCore.parseGet(finished) == .found(.init(state: .finished, pid: 84684, exitCode: 1)))
+        let missing = #"{"error":{"hint":"see `hc ls --all`","kind":"not_found","message":"no terminal \"nope\""}}"#
+        #expect(HerdrCore.parseGet(missing) == .missing)
+        let taken = #"{"error":{"kind":"name_taken","message":"a live terminal is already named \"sg-abc\""}}"#
+        #expect(HerdrCore.parseGet(taken) == .unreadable("a live terminal is already named \"sg-abc\""))
+        #expect(HerdrCore.errorMessage(taken) == "a live terminal is already named \"sg-abc\"")
+        #expect(HerdrCore.parseGet("") == .unreadable("hc gave no JSON"))
+        #expect(HerdrCore.parseGet(#"{"state":"parked","pid":0}"#) == .found(.init(state: .other("parked"), pid: nil, exitCode: nil)))
+    }
+
+    @Test func findsTheForegroundGroupByProcessID() {
+        // This test process has a terminal or it doesn't; either way a nonsense pid has none.
+        #expect(ProcessInspector.foregroundProcessGroup(ofTerminalOf: 0x7FFF_FFF0) == nil)
+    }
+}

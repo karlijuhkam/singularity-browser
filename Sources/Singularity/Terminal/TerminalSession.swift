@@ -10,6 +10,10 @@ let terminalLog = Logger(subsystem: "dev.roosa.Singularity", category: "terminal
 
 /// One terminal tab: a SwiftTerm view running the user's login shell in a pseudo-terminal (PTY).
 ///
+/// With "Run terminals through herdr-core" switched on (Settings → Terminal) the shell is a
+/// herdr-core terminal instead, and the view runs `hc attach` to show it; see `HerdrCore` and
+/// the "herdr-core" section below. Everything else (title, directory, colours) is the same.
+///
 /// The tab title follows what runs in it. Once a second we ask the PTY which process group is in
 /// the foreground (the shell at its prompt, or e.g. `claude` while it runs), read that program's
 /// name, and read the shell's current directory. No shell configuration is needed.
@@ -36,12 +40,19 @@ final class TerminalSession {
     @ObservationIgnored private var lastDirectory: String?
     /// The Space's slug, exported to the shell as SINGULARITY_SPACE.
     private let spaceSlug: String
+    /// The path of `hc` when this tab runs through herdr-core; nil for the built-in terminal.
+    @ObservationIgnored private var herdrPath: String?
+    /// The shell's process id as herdr-core reports it (the view's own child is `hc attach`).
+    @ObservationIgnored private var herdrShellPID: pid_t?
 
-    init(tabID: UUID, spaceID: UUID, spaceSlug: String, workingDirectory: String, font: NSFont, state: AppState?) {
+    /// - Parameter herdr: the installed `hc` to run the shell through, or nil for the built-in terminal.
+    init(tabID: UUID, spaceID: UUID, spaceSlug: String, workingDirectory: String, font: NSFont, state: AppState?,
+         herdr: String? = nil) {
         self.tabID = tabID
         self.spaceID = spaceID
         self.spaceSlug = spaceSlug
         self.state = state
+        self.herdrPath = herdr
         self.view = SingularityTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
 
         view.font = font
@@ -50,7 +61,8 @@ final class TerminalSession {
         view.configureNativeColors()
         view.processDelegate = self
         view.onReturnAfterExit = { [weak self] in
-            guard let self else { return }
+            // Not while a shell is running or being started (herdr-core takes a moment).
+            guard let self, !self.isRunning else { return }
             self.state?.restartTerminal(self.tabID, in: self.spaceID)
         }
         start(in: workingDirectory)
@@ -64,13 +76,21 @@ final class TerminalSession {
         }
     }
 
-    /// Called when the tab is closed or the app quits: hang up the shell and stop polling.
-    func tearDown() {
+    /// Stops showing the terminal: hang up the view's process and stop polling.
+    /// - Parameter endProgram: with herdr-core, also end the shell itself. True when the tab is
+    ///   closed; false when the app quits or the tab re-attaches, so the shell lives on. The
+    ///   built-in terminal's shell always ends with its view.
+    func tearDown(endProgram: Bool = true) {
         isClosing = true
         pollTimer?.invalidate()
         pollTimer = nil
-        if isRunning { view.terminate() }
+        if isRunning, view.process != nil { view.terminate() }
         view.removeFromSuperview()
+        if endProgram, let herdrPath {
+            let name = HerdrCore.terminalName(tabID: tabID)
+            // Not tied to this object, which is on its way out.
+            Task.detached { await Self.endHerdrTerminal(hc: herdrPath, name: name) }
+        }
     }
 
     // MARK: - Starting the shell
@@ -84,6 +104,15 @@ final class TerminalSession {
         }
         lastDirectory = directory
 
+        if let herdrPath {
+            startThroughHerdr(hc: herdrPath, shell: shell, directory: directory)
+        } else {
+            startLoginShell(shell, directory: directory)
+        }
+    }
+
+    /// The built-in terminal: the login shell is the view's own child process.
+    private func startLoginShell(_ shell: String, directory: String) {
         // argv[0] starting with "-" makes the shell a *login* shell, exactly as Terminal.app
         // starts it. That way it reads ~/.zprofile and ~/.zshrc and gets your full PATH,
         // aliases and functions, even though GUI apps start with a minimal environment.
@@ -94,6 +123,11 @@ final class TerminalSession {
             execName: "-" + (shell as NSString).lastPathComponent,
             currentDirectory: directory
         )
+        didStartProcess()
+    }
+
+    /// Common to both engines, once the view has a process.
+    private func didStartProcess() {
         isRunning = true
 
         // SwiftTerm calls this on its I/O thread after each batch of output. We only need the
@@ -106,11 +140,121 @@ final class TerminalSession {
             }
         }
 
+        pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             // Timers scheduled from the main thread fire on the main thread.
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
+    }
+
+    // MARK: - herdr-core
+
+    /// Finds the tab's herdr terminal (it is still there after a restart of the app) or starts
+    /// one, then runs `hc attach` in the view. Any surprise falls back to the built-in terminal.
+    private func startThroughHerdr(hc: String, shell: String, directory: String) {
+        let name = HerdrCore.terminalName(tabID: tabID)
+        let slug = spaceSlug
+        isRunning = true // "starting": the tab isn't offered a new shell meanwhile
+        Task { [weak self] in
+            let outcome = await Self.prepareHerdrTerminal(hc: hc, name: name, directory: directory, spaceSlug: slug, shell: shell)
+            guard let self, !self.isClosing else { return }
+            switch outcome {
+            case .success(let terminal):
+                self.herdrShellPID = terminal.pid
+                self.view.startProcess(
+                    executable: hc,
+                    args: HerdrCore.attachArguments(name: name),
+                    environment: Self.environment(shell: shell, spaceSlug: slug),
+                    execName: nil,
+                    currentDirectory: directory
+                )
+                self.didStartProcess()
+            case .failure(let problem):
+                terminalLog.notice("tab \(self.tabID, privacy: .public): herdr-core not used: \(problem.message, privacy: .public)")
+                self.herdrPath = nil
+                self.view.feed(text: "\u{1b}[2m[herdr-core couldn't be used (\(problem.message)); this is the built-in terminal.]\u{1b}[0m\r\n")
+                self.startLoginShell(shell, directory: directory)
+            }
+        }
+    }
+
+    private struct HerdrProblem: Error {
+        let message: String
+    }
+
+    private static func hc(_ path: String, _ arguments: [String], timeout: Duration = .seconds(15)) async -> CommandResult {
+        await CommandBroker.run(path: path, arguments: arguments, timeout: timeout)
+    }
+
+    /// The tab's live herdr terminal: the one from before, or a new one.
+    private nonisolated static func prepareHerdrTerminal(hc path: String, name: String, directory: String, spaceSlug: String,
+                                                         shell: String) async -> Result<HerdrCore.Terminal, HerdrProblem> {
+        func get() async -> HerdrCore.Lookup {
+            let result = await hc(path, ["get", name, "--json"])
+            if result.timedOut { return .unreadable("hc didn't answer") }
+            // Errors come as JSON too, on stdout or stderr depending on the version.
+            return HerdrCore.parseGet(result.stdout.isEmpty ? result.stderr : result.stdout)
+        }
+        var lookup = await get()
+        if case .found(let terminal) = lookup, terminal.state != .live {
+            // The shell from last time has ended: clear it away and start afresh.
+            _ = await hc(path, ["rm", name, "--json"])
+            lookup = .missing
+        }
+        if lookup == .missing {
+            let run = await hc(path, HerdrCore.runArguments(name: name, directory: directory, spaceSlug: spaceSlug, shell: shell))
+            guard run.status == 0, !run.timedOut else {
+                let said = HerdrCore.errorMessage(run.stdout) ?? HerdrCore.errorMessage(run.stderr)
+                return .failure(HerdrProblem(message: said ?? (run.timedOut ? "hc run didn't answer" : "hc run failed")))
+            }
+            lookup = await get()
+        }
+        switch lookup {
+        case .found(let terminal) where terminal.state == .live: return .success(terminal)
+        case .found: return .failure(HerdrProblem(message: "the shell ended at once"))
+        case .missing: return .failure(HerdrProblem(message: "hc lost the terminal it just started"))
+        case .unreadable(let why): return .failure(HerdrProblem(message: why))
+        }
+    }
+
+    /// The tab was closed: end the shell (`hc kill` hangs up, then escalates) and remove the
+    /// finished terminal from herdr-core's list.
+    private nonisolated static func endHerdrTerminal(hc path: String, name: String) async {
+        _ = await hc(path, ["kill", name, "--json"])
+        for _ in 0..<25 {
+            let result = await hc(path, ["get", name, "--json"])
+            switch HerdrCore.parseGet(result.stdout.isEmpty ? result.stderr : result.stdout) {
+            case .found(let terminal) where terminal.state == .live:
+                try? await Task.sleep(for: .milliseconds(200))
+            case .found:
+                _ = await hc(path, ["rm", name, "--json"])
+                return
+            case .missing, .unreadable:
+                return
+            }
+        }
+    }
+
+    /// `hc attach` ended. Either the shell ended (then this is an ordinary exit), or only the
+    /// view let go of it (the detach key, ctrl+\ by default, or herdr-core restarting).
+    private func herdrAttachEnded(hc path: String) {
+        let name = HerdrCore.terminalName(tabID: tabID)
+        Task { [weak self] in
+            let result = await Self.hc(path, ["get", name, "--json"])
+            let lookup = HerdrCore.parseGet(result.stdout.isEmpty ? result.stderr : result.stdout)
+            guard let self, !self.isClosing else { return }
+            switch lookup {
+            case .found(let terminal) where terminal.state == .live:
+                self.view.feed(text: "\r\n\u{1b}[2m[Detached. The shell is still running in herdr-core. Press Return to show it again.]\u{1b}[0m\r\n")
+            case .found(let terminal):
+                _ = await Self.hc(path, ["rm", name, "--json"])
+                guard !self.isClosing else { return }
+                self.shellEnded(exitCode: terminal.exitCode)
+            case .missing, .unreadable:
+                self.shellEnded(exitCode: nil)
+            }
+        }
     }
 
     /// The app's own environment (which carries SSH_AUTH_SOCK, TMPDIR, …) plus terminal settings.
@@ -136,8 +280,9 @@ final class TerminalSession {
     /// Works out the foreground program, current directory and title, and passes them to AppState.
     private func refresh() {
         guard isRunning, let process = view.process else { return }
-        let shellPID = process.shellPid
-        let group = ProcessInspector.foregroundProcessGroup(ptyFileDescriptor: process.childfd)
+        // With herdr-core the view's child is `hc attach`; the shell is herdr-core's.
+        let shellPID = herdrShellPID ?? process.shellPid
+        let group = foregroundGroup()
         let isShellInForeground = group == nil || group == shellPID
 
         // A title belongs to the program that set it; forget it once that program is gone.
@@ -169,6 +314,23 @@ final class TerminalSession {
             workingDirectory: lastDirectory.map { HomePath.abbreviate($0) }
         )
     }
+
+    /// The process group that has the keyboard: the shell at its prompt, or the program it runs.
+    private func foregroundGroup() -> pid_t? {
+        if let herdrShellPID { return ProcessInspector.foregroundProcessGroup(ofTerminalOf: herdrShellPID) }
+        return view.process.flatMap { ProcessInspector.foregroundProcessGroup(ptyFileDescriptor: $0.childfd) }
+    }
+
+    /// The shell is gone: close the tab (a normal exit, if the setting says so) or say what happened.
+    private func shellEnded(exitCode: Int32?) {
+        if exitCode == 0, state?.settings.closeTerminalOnExit ?? true {
+            // `exit` or Ctrl-D at the prompt: close the tab, like most terminals do.
+            state?.closeTab(tabID, in: spaceID, confirmIfBusy: false)
+        } else {
+            let reason = exitCode == 0 ? "exited" : (exitCode.map { "exit code \($0)" } ?? "terminated by a signal")
+            view.feed(text: "\r\n\u{1b}[2m[Process ended: \(reason). Press Return to start a new shell.]\u{1b}[0m\r\n")
+        }
+    }
 }
 
 // MARK: - SwiftTerm callbacks
@@ -181,7 +343,7 @@ extension TerminalSession: @MainActor LocalProcessTerminalViewDelegate {
     /// A program set the window title with an escape sequence (OSC 0/2).
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
         programTitle = title
-        programTitleGroup = view.process.flatMap { ProcessInspector.foregroundProcessGroup(ptyFileDescriptor: $0.childfd) }
+        programTitleGroup = foregroundGroup()
         refresh()
     }
 
@@ -197,12 +359,10 @@ extension TerminalSession: @MainActor LocalProcessTerminalViewDelegate {
         pollTimer = nil
         guard !isClosing else { return }
 
-        if exitCode == 0, state?.settings.closeTerminalOnExit ?? true {
-            // `exit` or Ctrl-D at the prompt: close the tab, like most terminals do.
-            state?.closeTab(tabID, in: spaceID, confirmIfBusy: false)
+        if let herdrPath {
+            herdrAttachEnded(hc: herdrPath)
         } else {
-            let reason = exitCode == 0 ? "exited" : (exitCode.map { "exit code \($0)" } ?? "terminated by a signal")
-            view.feed(text: "\r\n\u{1b}[2m[Process ended: \(reason). Press Return to start a new shell.]\u{1b}[0m\r\n")
+            shellEnded(exitCode: exitCode)
         }
     }
 }

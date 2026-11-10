@@ -13,6 +13,7 @@ struct SpaceEditorSheet: View {
     @State private var workingDirectory = "~"
     @State private var agentsEnabled = false
     @State private var agentPolicy: AgentPolicy = .ask
+    @State private var agentInspection = false
 
     private var existing: Space? { request.spaceID.flatMap { state.space($0) } }
 
@@ -68,6 +69,18 @@ struct SpaceEditorSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                if agentsEnabled {
+                    Toggle(isOn: $agentInspection) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Let agents see console and network")
+                            Text("Agents can then read console errors and failed requests, only on sites you also switch on in the site settings (the button next to the address). Requests and responses can contain passwords and tokens.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
                 if let existing {
                     LabeledContent("Folder on disk") {
                         Text("~/Singularity/spaces/\(existing.slug)")
@@ -95,6 +108,7 @@ struct SpaceEditorSheet: View {
                 workingDirectory = existing.workingDirectory
                 agentsEnabled = existing.agentsEnabled
                 agentPolicy = existing.agentPolicy
+                agentInspection = existing.agentInspection
             } else {
                 // Pick the first colour no other Space uses yet.
                 let used = Set(state.spaces.map(\.colorHex))
@@ -108,9 +122,11 @@ struct SpaceEditorSheet: View {
         if let existing {
             state.updateSpace(existing.id, name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
                               agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
+            state.setAgentInspection(agentInspection, spaceID: existing.id)
         } else {
-            state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
-                              agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
+            let space = state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
+                                          agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
+            state.setAgentInspection(agentInspection, spaceID: space.id)
         }
         dismiss()
     }

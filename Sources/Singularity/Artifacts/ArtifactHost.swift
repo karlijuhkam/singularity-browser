@@ -17,10 +17,12 @@ final class ArtifactHost {
     @ObservationIgnored private var server: ArtifactServer?
     @ObservationIgnored private var watcher: ArtifactWatcher?
     @ObservationIgnored private let onChange: @MainActor ([ArtifactWatcher.Change]) -> Void
+    @ObservationIgnored private let scripts: ArtifactScriptService?
 
-    init(spaceID: UUID, root: URL, onChange: @escaping @MainActor ([ArtifactWatcher.Change]) -> Void) {
+    init(spaceID: UUID, root: URL, scripts: ArtifactScriptService?, onChange: @escaping @MainActor ([ArtifactWatcher.Change]) -> Void) {
         self.spaceID = spaceID
         self.root = root
+        self.scripts = scripts
         self.onChange = onChange
     }
 
@@ -55,7 +57,7 @@ final class ArtifactHost {
     /// Creates the folder, starts the server and starts watching the folder.
     func start() async throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let server = try ArtifactServer(root: root, token: token)
+        let server = try ArtifactServer(root: root, token: token, scripts: scripts)
         let port = try await server.start()
         self.server = server
 
@@ -87,6 +89,8 @@ final class ArtifactHost {
 @Observable
 final class ArtifactHosts {
     @ObservationIgnored weak var state: AppState?
+    /// Compiles TypeScript/TSX artifacts (set by AppState; shared by all Spaces).
+    @ObservationIgnored var scripts: ArtifactScriptService?
     private var hosts: [UUID: ArtifactHost] = [:]
     @ObservationIgnored private var starting: [UUID: Task<ArtifactHost?, Never>] = [:]
 
@@ -101,8 +105,9 @@ final class ArtifactHosts {
         if let pending = starting[space.id] { return await pending.value }
 
         let spaceID = space.id
+        let scripts = scripts
         let task = Task { [weak self] () -> ArtifactHost? in
-            let host = ArtifactHost(spaceID: spaceID, root: root) { [weak self] changes in
+            let host = ArtifactHost(spaceID: spaceID, root: root, scripts: scripts) { [weak self] changes in
                 self?.state?.artifactsDidChange(spaceID: spaceID, changes: changes)
             }
             do {

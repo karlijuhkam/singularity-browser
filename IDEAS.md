@@ -1,15 +1,34 @@
-# Ideas parking lot
+# Ideas
 
-Things that came up while building but are not in the v1 brief. Nothing here gets built without an explicit decision.
+Things that came up while building but were not in the v1 brief.
 
-- Drag and drop tabs between sections (pinned ↔ folder ↔ open). v1 uses context menus for moves and drag only to reorder within a section.
-- Download progress UI (v1 saves straight to ~/Downloads without UI).
-- Artifact tabs whose file was deleted currently show the server's "Not Found"; could close or mark them instead.
-- HTTP Range requests on the artifact server (seeking in large video/audio artifacts).
-- "Show Tab" button in the agent approval sheet, so you can look at the page an agent wants to act on before allowing it (considered in Phase 5, left out).
-- **TypeScript/TSX artifacts via the bundled Bun** (owner wants this; after plugins round 1). Agents could write `app.tsx` (e.g. React components) and the artifact tab just opens it, with no build step and no CDN script. The Swift artifact server (FlyingFox, token cookie, Host check) stays as it is; Bun only compiles. When a `.ts`/`.tsx` page or import is requested, Singularity compiles it with Bun under the plugin sandbox profile (read the Space's `artifacts/`, write a cache folder, no network) and serves plain JavaScript. It reuses the sandboxed-Bun code from plugins (SandboxProfile, PluginProcess flags, Bun.Transpiler). Open question: npm imports. Either none or a small vendored set (React) first; arbitrary packages would need the plugins' "declared and pinned" rule. Still no API routes or server-side code on the artifact server.
-- Ghostty as the terminal engine, if Ghostty ever ships a stable embeddable terminal *view*. As of Nov 2026 only libghostty-vt (emulation core, no rendering/PTY/input) is stable, which would mean writing our own renderer; SwiftTerm already covers all of that.
-- **Web-extension compatibility** (parked; decision: native plugins instead). Spikes in Nov 2026. Safari: the 1Password Safari extension wasn't usable in a WKWebView app; PlugInKit found 0 plugins, so there is no native messaging. Chrome: the 1Password Chrome extension under WKWebExtension lacked APIs (e.g. `chrome.notifications`), and shims weren't enough. So Singularity plugins (`docs/plugins/AUTHORING.md`) replace extensions.
-- **Import from Arc** (owner request; a separate project, to brainstorm later). Arc keeps its sidebar in a local file, and it maps closely onto Spaces, pinned tabs and folders. Logins and cookies are a separate, harder question.
-- **Developer tools and site settings** (being designed with the owner; a design doc will follow). Agents reading console errors and failed network responses per Space and site; a site settings button next to the address with camera, microphone and screen permissions, device choice and per-site plugin switches; and a fix for right-click Inspect Element.
-- **Plugin storage API** (round 2+). A `singularity.storage` for plugin backgrounds; round 1 has none (only the data folder).
+**Owner decision, 2026-11-10: everything in this file is approved to be built, except the section "Decided against".** An agent picking up work here does not need to ask whether an item is in scope; this decision is the scope change. What still applies:
+
+- Build in the order listed, one item at a time, unless the owner says otherwise.
+- The projects under "Approved: projects" each need a written design the owner has approved before code is written (`docs/superpowers/specs/`). Open questions noted on an item go to the owner.
+- The hard constraints and "don't loosen without the owner" rules in `CLAUDE.md` still hold, including asking before adding a dependency.
+- When an item is finished, remove it from this file.
+- New ideas go under "New, not yet decided" and are **not** approved until the owner says so.
+
+## Approved: projects
+
+- (none left)
+
+## Approved, but blocked outside the project
+
+- **Ghostty as the terminal engine.** Approved, but it cannot be built sensibly yet. Last checked 2026-11-10: `libghostty-vt` 1.0.0 (2026-11-06) is the only stable library; it is the emulation core (parser, screen state, key encoding) with no drawing, fonts or PTY. The API that has those (`include/ghostty.h`) calls itself internal, for Ghostty's own macOS app only, with no stability promise. A Swift framework "that handles the entire terminal view" is planned without a date. So building on it would still mean writing our own renderer, and SwiftTerm already covers all of that. Before starting, check again whether Ghostty ships a stable embeddable terminal *view*. If it does, build it; if not, leave this item and tell the owner.
+
+## New, not yet decided
+
+Nothing here gets built without an explicit decision from the owner.
+
+- **React shipped inside Singularity, for TSX artifacts.** TS/TSX artifacts are built (`docs/superpowers/specs/2026-11-10-ts-artifacts-design.md`) but ship no packages: a TSX page that uses React needs an import map pointing at files next to it or at a CDN. Bundling React (MIT) would make `app.tsx` work with nothing else, and is a new dependency, so it waits for the owner. Arbitrary npm packages would need the plugins' "declared and pinned" rule.
+- **Arc favourites and split views in the Arc import.** The import (`docs/superpowers/specs/2026-11-11-arc-import-design.md`) leaves out Arc's favourites (they belong to an Arc profile, not a Space) and turns a split view into plain tabs. Both could be mapped if the owner misses them.
+- **Console and network for artifact tabs.** `read_console` / `read_network` only cover web tabs (as designed). Agents that build artifacts would get a lot from seeing their own page's errors; the artifact origin changes port on every launch, so it needs its own switch rather than a per-site one.
+- **Device choice and screen sharing in site settings.** Left out of the site settings panel: WebKit has no public API for either (see the "As built" section of `docs/superpowers/specs/2026-11-10-devtools-site-settings-design.md`). Revisit if WebKit adds one.
+
+## Decided against
+
+Do not build. Kept so the question isn't reopened without new facts.
+
+- **Web-extension compatibility.** Decision: native plugins instead. Spikes in Nov 2026. Safari: the 1Password Safari extension wasn't usable in a WKWebView app; PlugInKit found 0 plugins, so there is no native messaging. Chrome: the 1Password Chrome extension under WKWebExtension lacked APIs (e.g. `chrome.notifications`), and shims weren't enough. So Singularity plugins (`docs/plugins/AUTHORING.md`) replace extensions.

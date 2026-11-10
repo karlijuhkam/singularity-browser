@@ -38,6 +38,9 @@ struct MainView: View {
         .sheet(item: $state.nameRequest) { request in
             NameSheet(request: request)
         }
+        .sheet(isPresented: $state.isImportingFromArc) {
+            ArcImportSheet()
+        }
         .onAppear {
             state.openSettingsWindow = { [openSettings] in openSettings() }
             state.loadSelectedTab()

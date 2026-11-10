@@ -157,6 +157,12 @@ type CommandResult = { status: number; stdout: string; stderr: string; timedOut:
 singularity.onPageMessage(handler: (message: PageMessage) => unknown | Promise<unknown>): void
 singularity.run(command: string, args: string[]): Promise<CommandResult>
 singularity.log(...values: unknown[]): void
+
+singularity.storage.get(key: string): Promise<unknown>          // undefined when nothing is saved
+singularity.storage.set(key: string, value: unknown): Promise<void>
+singularity.storage.delete(key: string): Promise<boolean>       // false when there was nothing to remove
+singularity.storage.keys(): Promise<string[]>
+singularity.storage.clear(): Promise<void>
 ```
 
 **`onPageMessage(handler)`** handles every `singularity.send(payload)` from this plugin's page script. What the handler returns (or resolves to) is the answer; it must be JSON. `undefined` becomes `null`. A thrown error becomes `{ error: "<message>" }`. With no handler the answer is `{ error: "no handler" }`. Registering again replaces the handler. Several messages can be in progress at once.
@@ -175,7 +181,23 @@ singularity.log(...values: unknown[]): void
 
 Other things to know:
 
-- **No storage API in round 1.** The plugin's data folder (`HOME` and `TMPDIR` point to it) is writable with ordinary file APIs, but there is no `singularity.storage`. Keep state in memory or in files there.
+**`storage`** is a small key → value store for the background program. It survives restarts of the plugin and of Singularity, and is the place for settings and small state (what the user chose, when something last ran, a cache you can rebuild).
+
+```ts
+const seen = ((await singularity.storage.get("seenHosts")) as string[] | undefined) ?? [];
+if (!seen.includes(frameHost)) {
+  await singularity.storage.set("seenHosts", [...seen, frameHost]);
+}
+```
+
+- Keys are strings of 1 to 256 characters. Values are JSON: objects, arrays, strings, numbers, booleans, `null`. What you get back is a copy; change it and `set` it again to save.
+- `set` and `delete` resolve when the change is on disk. A crash or power cut leaves the old store or the new one, never half of one. Changes are written in the order you made them.
+- The whole store holds at most 5 MB. `set` rejects with `storage is full` beyond that, and with a `TypeError` for a value that isn't JSON (a function, a `BigInt`, `undefined`) or a bad key. The store is unchanged then.
+- There is no "read, change, write" in one step. Two handlers that both read a list, add to it and write it back can lose one addition. Do such an update without an `await` between `get` finishing and `set` starting, or keep the working copy in a variable of your own.
+- **Only the background has it.** A page script asks the background with `singularity.send`.
+- It is one file, `storage.json`, in the plugin's data folder (`HOME` and `TMPDIR` point to that folder, and ordinary file APIs still work there for anything bigger or not JSON). If the file can't be read as JSON it is renamed to `storage.unreadable-<time>.json`, the log says so, and the store starts empty.
+- **It is not a safe.** The store is a plain file on the user's disk, unencrypted, readable by any program the user runs. **Never store passwords, tokens or other secrets**; fetch them when needed from where they already live (as the 1Password plugin does with `op`).
+- Removing a plugin's data (Settings → Plugins) removes its store.
 - **Unhandled promise rejections and uncaught exceptions are logged, not fatal.** If the file fails to load, the plugin exits with status 1 and may be restarted. More than 3 crashes in 60 seconds stops it.
 - **Limits:** a single message larger than 16 MB, or more than 16 MB of messages the plugin hasn't read yet, stops the plugin. A page `send` payload is at most 256 KB.
 - **Packages:** you may import npm packages (see Packages). Local files too: `import { x } from "./logic.ts"`.
@@ -311,7 +333,7 @@ The full list of accepted risks for round 1 is in the spec (`docs/superpowers/sp
 
 - An approved plugin's background program can read the command-line **arguments** (not the environment) of the user's other processes, because macOS's sandbox can't block that. Reviewers should keep this in mind, and plugins must never put secrets into arguments of programs they run.
 - Tabs restored at launch may get plugin scripts only on their next load.
-- Round 1 has no network for a plugin's own code, no storage API, no icons beyond `data:image/` URLs, and no page-script imports.
+- Round 1 has no network for a plugin's own code, no icons beyond `data:image/` URLs, and no page-script imports. Storage (`singularity.storage`) is for the background program only and is not encrypted.
 
 ## Worked example: an email provider hint
 
@@ -455,5 +477,6 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 6. **Packages.** Open `package.json`: few dependencies, exact versions, known names. Look at `bun.lock` for unexpected packages. Be extra careful with anything large.
 7. **Code quality.** Plain readable TypeScript. No minified, obfuscated or generated code, no strange encodings, no `atob`/base64 blobs.
 8. **No code from the data folder.** The data folder is writable and never reviewed: no `import()`, `require`, `eval` or `new Function` of anything read from it (or built at run time) in `background.ts`.
+9. **No secrets in storage.** `singularity.storage` and the data folder are plain files. Search `background.ts` for `storage.set` and file writes: a password, token, session cookie or one-time code being saved is a reason to reject.
 
 If a plugin passes these, approving it is reasonable. If any step is unclear, ask the author or don't approve.

@@ -5,6 +5,8 @@
 #   scripts/build-app.sh                 # debug build, ad-hoc signed
 #   CONFIG=release scripts/build-app.sh  # release build
 #   SIGN_IDENTITY="Apple Development: …" scripts/build-app.sh
+#   APP=/private/tmp/sg-app/Singularity.app scripts/build-app.sh
+#       # a second bundle somewhere else, leaving a copy that runs from build/ alone
 #
 # Why a script: there is no Xcode project. A macOS .app is just a folder with a
 # fixed layout (Contents/MacOS/<binary>, Contents/Info.plist, Contents/Resources),
@@ -15,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${CONFIG:-debug}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"   # "-" means ad-hoc signing
-APP="$ROOT/build/Singularity.app"
+APP="${APP:-$ROOT/build/Singularity.app}"
 
 cd "$ROOT"
 source "$ROOT/scripts/env.sh"

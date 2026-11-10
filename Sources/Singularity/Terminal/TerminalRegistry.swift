@@ -23,18 +23,22 @@ final class TerminalRegistry {
             spaceSlug: space.slug,
             workingDirectory: tab.workingDirectory ?? space.workingDirectory,
             font: state?.terminalFont ?? .monospacedSystemFont(ofSize: 13, weight: .regular),
-            state: state
+            state: state,
+            // Settings → Terminal: through the owner's herdr-core, when it is switched on and installed.
+            herdr: state?.settings.terminalUsesHerdrCore == true ? HerdrCore.locate() : nil
         )
         sessions[tab.id] = session
         return session
     }
 
-    /// Replaces an exited session with a fresh shell in the same tab.
+    /// Replaces an exited session with a fresh shell in the same tab. (With herdr-core: shows
+    /// the tab's shell again if it is still running there, else starts a fresh one.)
     func restart(_ tab: BrowserTab, in space: Space) {
-        removeSessions(for: [tab.id])
+        sessions.removeValue(forKey: tab.id)?.tearDown(endProgram: false)
         _ = session(for: tab, in: space)
     }
 
+    /// The tabs are being closed: their shells end.
     func removeSessions(for tabIDs: [UUID]) {
         for id in tabIDs {
             sessions.removeValue(forKey: id)?.tearDown()
@@ -53,7 +57,11 @@ final class TerminalRegistry {
         }
     }
 
+    /// The app quits. Shells of the built-in terminal end with it; herdr-core's keep running
+    /// and their tabs find them again at the next launch.
     func tearDownAll() {
-        removeSessions(for: Array(sessions.keys))
+        for id in Array(sessions.keys) {
+            sessions.removeValue(forKey: id)?.tearDown(endProgram: false)
+        }
     }
 }

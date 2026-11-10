@@ -5,11 +5,13 @@ import Testing
 import WebKit
 @testable import Singularity
 
+extension AppTests {
 /// The web-tab features that only exist with a real WKWebView in a real window.
 /// The window sits far off screen, so nothing flashes up while the tests run.
 @MainActor
 @Suite(.serialized) struct WebTabTests {
     private func makeTab() -> (WebTabController, NSWindow) {
+        MainRunLoopGuard.start
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let controller = WebTabController(tabID: UUID(), spaceID: UUID(), configuration: configuration, state: nil)
@@ -139,6 +141,7 @@ import WebKit
     private func allSubviews(of view: NSView) -> [NSView] {
         view.subviews.flatMap { [$0] + allSubviews(of: $0) }
     }
+}
 }
 
 /// A tiny local site behind HTTP Basic auth (name "u", password "p"), run with the system Python.

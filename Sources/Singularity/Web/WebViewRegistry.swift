@@ -65,6 +65,11 @@ final class WebViewRegistry {
         return controller
     }
 
+    /// The live web views of a Space's tabs.
+    func controllers(in spaceID: UUID) -> [WebTabController] {
+        controllers.values.filter { $0.spaceID == spaceID }
+    }
+
     func removeControllers(for tabIDs: [UUID]) {
         for id in tabIDs {
             controllers.removeValue(forKey: id)?.tearDown()

@@ -1,7 +1,9 @@
 # Developer tools and site settings: design
 
-Status: **draft, waiting for the owner's approval.** Nothing here is built yet, except the two
-small pieces listed under "Already shipped".
+Status: **built on 2026-11-10.** The owner handed the open design choices to the builder
+("I'll allow you to choose where design choices are needed and will review in the end"), so the
+calls marked "my call" below stand until that review. What was built, and what was left out and
+why, is under "As built" at the end.
 
 ## Intent: why
 
@@ -188,7 +190,38 @@ removes them. Settings → Data & privacy gets "Reset site settings" per Space.
   the answer starts with "N earlier entries were dropped". 64 KB applies to each payload and
   each body separately; a tab keeps at most 4 MB in total, dropping the oldest first.
 
-## Open question for the owner
+## As built (2026-11-10)
 
-Is the panel list (connection, camera / microphone / screen, device, agents switch, plugin
-switches) complete, or is something missing?
+Built as designed, with these differences. All are the builder's calls, for the owner's review.
+
+- **Device choice: left out.** WebKit has no public API to choose the camera, microphone or
+  speakers for a page; the page picks among what `enumerateDevices()` lists. The design said not
+  to fake it with script injection, so the panel has no Device row.
+- **Screen sharing: left out.** The public `WKUIDelegate` only has a permission callback for
+  camera and microphone (`requestMediaCapturePermissionFor`); the one for `getDisplayMedia` is
+  private. The panel has no Screen row.
+- **Camera and microphone.** "Allow" covers the page of the tab only: a frame from another site
+  inside it still gets WebKit's question. "Block" covers everything in the page.
+- **Capture is main frame only.** Frames are never captured, also frames of the same site.
+- **Two scripts, not one.** A collector in the page's world, and a relay in a content world of
+  the app's own that holds the message handler. A handler in the page's world would have been
+  visible to every page the web view loads, which the anti-goal forbids. Both scripts compare
+  `location.origin` with the switched-on sites before doing anything, and the app checks the
+  sender of every message against the two switches again (`CaptureBridge`).
+- **Request payloads sent as a `Request` object or a stream are not captured** (reading them
+  would mean copying every such request up front). The entry says so.
+- **A tab that hasn't been loaded since launch** answers "nothing was collected" instead of
+  being loaded by the read.
+- **Plugin switches** are applied in the plugin's prelude (the page script doesn't start), for
+  the page and for frames inside it (a frame also looks at the tab's site). There is no second,
+  native check per message: the switch only narrows, so a miss can't grant anything.
+- **Reset site settings** is in Settings → Data & privacy, under "Clear…" per Space.
+
+Where things are: `Sources/SingularityCore/Sites/` (model, rules, the capture store; unit
+tests in `SiteTests.swift`), `Sources/Singularity/Sites/` (the scripts, the bridge, the panel),
+`AgentToolbox.readCapture`, `Tests/SingularityAppTests/PageCaptureTests.swift` (the fixture page
+in a real web view).
+
+Owner's hands-on checks still open: the look of the panel; Allow and Block for camera and
+microphone on a real site; a plugin switched off for one site; "why is the page broken?" asked
+of Claude Code on a local dev server.

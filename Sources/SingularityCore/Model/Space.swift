@@ -23,6 +23,12 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     public var agentPolicy: AgentPolicy
     /// Remembered split views (see SplitLayout.swift). A tab is in at most one.
     public var splits: [SplitGroup]
+    /// "Let agents see console and network" for this Space (off by default). A site must be
+    /// switched on as well (`SiteSettings.agentsCanInspect`); see `InspectionRules`.
+    public var agentInspection: Bool
+    /// The owner's per-site choices (camera, microphone, agents, plugins), keyed by site
+    /// ("https://example.com"). Sites with nothing chosen are not listed.
+    public var siteSettings: [String: SiteSettings]
 
     public init(
         id: UUID = UUID(),
@@ -35,7 +41,9 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         selectedTabID: UUID? = nil,
         agentsEnabled: Bool = false,
         agentPolicy: AgentPolicy = .ask,
-        splits: [SplitGroup] = []
+        splits: [SplitGroup] = [],
+        agentInspection: Bool = false,
+        siteSettings: [String: SiteSettings] = [:]
     ) {
         self.id = id
         self.name = name
@@ -48,6 +56,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         self.agentsEnabled = agentsEnabled
         self.agentPolicy = agentPolicy
         self.splits = splits
+        self.agentInspection = agentInspection
+        self.siteSettings = siteSettings
     }
 
     /// Decoding by hand so that space.json files written before a field existed still load
@@ -65,6 +75,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         agentsEnabled = try container.decodeIfPresent(Bool.self, forKey: .agentsEnabled) ?? false
         agentPolicy = try container.decodeIfPresent(AgentPolicy.self, forKey: .agentPolicy) ?? .ask
         splits = try container.decodeIfPresent([SplitGroup].self, forKey: .splits) ?? []
+        agentInspection = try container.decodeIfPresent(Bool.self, forKey: .agentInspection) ?? false
+        siteSettings = (try? container.decodeIfPresent([String: SiteSettings].self, forKey: .siteSettings)) ?? [:]
     }
 
     // MARK: - Reading
@@ -81,14 +93,86 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         tabs.filter { $0.section == section }
     }
 
-    /// Tabs in the order they appear in the sidebar: pinned, then each folder, then open tabs.
+    /// Tabs in the order they appear in the sidebar: pinned, then the folders, then open tabs.
     public var tabsInSidebarOrder: [BrowserTab] {
-        var result = tabs(in: .pinned)
-        for folder in folders {
-            result += tabs(in: .folder(folder.id))
+        sidebarSections.flatMap { tabs(in: $0) }
+    }
+
+    /// The sidebar's sections from top to bottom. A folder shows the folders inside it first and
+    /// its own tabs after them, so its section comes after those of the folders inside it.
+    public var sidebarSections: [SidebarSection] {
+        var result: [SidebarSection] = [.pinned]
+        func visit(_ parentID: UUID?) {
+            for folder in childFolders(of: parentID) {
+                visit(folder.id)
+                result.append(.folder(folder.id))
+            }
         }
-        result += tabs(in: .open)
+        visit(nil)
+        return result + [.open]
+    }
+
+    // MARK: - Folders (a tree: see `Folder.parentID`)
+
+    public func folder(_ id: UUID) -> Folder? {
+        folders.first { $0.id == id }
+    }
+
+    /// The folders directly inside a folder, or the top-level ones for nil. A folder whose parent
+    /// no longer exists counts as top-level, so it can never disappear from the sidebar.
+    public func childFolders(of parentID: UUID?) -> [Folder] {
+        folders.filter { child in
+            let parent = child.parentID.flatMap { folder($0) }?.id
+            return parent == parentID
+        }
+    }
+
+    /// Every folder with how deep it is nested (0 = top level), parents before their children.
+    public var foldersInTreeOrder: [(folder: Folder, depth: Int)] {
+        var result: [(folder: Folder, depth: Int)] = []
+        func visit(_ parentID: UUID?, _ depth: Int) {
+            for folder in childFolders(of: parentID) {
+                result.append((folder, depth))
+                visit(folder.id, depth + 1)
+            }
+        }
+        visit(nil, 0)
         return result
+    }
+
+    /// "Outer / Inner": a folder's name with the folders it is inside.
+    public func folderPath(_ id: UUID) -> String {
+        var names: [String] = []
+        var seen = Set<UUID>()
+        var current = folder(id)
+        while let folder = current, seen.insert(folder.id).inserted {
+            names.insert(folder.name, at: 0)
+            current = folder.parentID.flatMap { self.folder($0) }
+        }
+        return names.joined(separator: " / ")
+    }
+
+    /// Whether `id` is `ancestorID` or somewhere inside it.
+    public func isFolder(_ id: UUID, inside ancestorID: UUID) -> Bool {
+        var seen = Set<UUID>()
+        var current = folder(id)
+        while let folder = current, seen.insert(folder.id).inserted {
+            if folder.id == ancestorID { return true }
+            current = folder.parentID.flatMap { self.folder($0) }
+        }
+        return false
+    }
+
+    /// Puts a folder inside another one (nil = top level), as the last folder there. Refused when
+    /// the target is the folder itself or inside it: that would cut the folder off from the tree.
+    public mutating func moveFolder(_ id: UUID, into parentID: UUID?) {
+        guard let index = folders.firstIndex(where: { $0.id == id }) else { return }
+        if let parentID {
+            guard folder(parentID) != nil, !isFolder(parentID, inside: id) else { return }
+        }
+        var moved = folders.remove(at: index)
+        moved.parentID = parentID
+        folders.append(moved)
     }
 
     // MARK: - Changing
@@ -176,12 +260,18 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         tabs.append(tab)
     }
 
-    /// Deletes a folder. Its tabs are kept and move to the open section.
+    /// Deletes a folder and keeps what was in it: its tabs and the folders inside it move one
+    /// level up (tabs of a top-level folder go to the open section).
     public mutating func deleteFolder(_ id: UUID) {
+        guard let deleted = folder(id) else { return }
+        let parentID = deleted.parentID.flatMap { folder($0) }?.id
         folders.removeAll { $0.id == id }
+        for index in folders.indices where folders[index].parentID == id {
+            folders[index].parentID = parentID
+        }
         for index in tabs.indices where tabs[index].folderID == id {
-            tabs[index].folderID = nil
-            tabs[index].isPinned = false
+            tabs[index].folderID = parentID
+            if parentID == nil { tabs[index].isPinned = false }
         }
     }
 }

@@ -76,6 +76,19 @@ private struct GeneralSettings: View {
 
 private struct TerminalSettings: View {
     @Environment(AppState.self) private var state
+    @State private var hcPath: String?
+    @State private var hcVersion: String?
+    @State private var hcChecked = false
+
+    private var herdrStatus: String {
+        let what = "Shells then belong to herdr-core, your own installed copy: they keep running when Singularity quits, and a terminal tab shows its shell again, as it was, at the next launch. Closing a tab still ends its shell. Applies to terminals opened from now on."
+        guard hcChecked else { return what }
+        guard let hcPath else {
+            return "hc wasn’t found (looked in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin and your PATH). Install herdr-core to use this. " + what
+        }
+        let found = "Found " + hcPath.replacingOccurrences(of: NSHomeDirectory(), with: "~") + (hcVersion.map { " (version \($0))" } ?? "") + ". "
+        return found + what + " herdr-core’s interface is a preview; if anything goes wrong a tab falls back to the built-in terminal."
+    }
 
     /// Installed font families whose fonts are monospaced (checked once).
     private static let monospacedFamilies: [String] = {
@@ -112,6 +125,24 @@ private struct TerminalSettings: View {
             Text("Off: the tab stays open and Return starts a new shell. Terminals always use your login shell.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            Section("herdr-core") {
+                Toggle("Run terminals through herdr-core (hc)", isOn: settingBinding(state, \.terminalUsesHerdrCore))
+                    .disabled(hcPath == nil && !state.settings.terminalUsesHerdrCore)
+                Text(herdrStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .task {
+                // Looking for hc and asking its version, once per visit to this pane.
+                hcPath = HerdrCore.locate()
+                if let hcPath {
+                    let result = await CommandBroker.run(path: hcPath, arguments: ["--version"], timeout: .seconds(5))
+                    hcVersion = HerdrCore.parseVersion(result.stdout)
+                }
+                hcChecked = true
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -157,8 +188,16 @@ private struct AgentSettings: View {
                             .toggleStyle(.switch)
                             .help("Allow agents in this Space")
                     }
+                    if space.agentsEnabled {
+                        Toggle("Let agents see console and network", isOn: Binding(
+                            get: { state.space(space.id)?.agentInspection ?? false },
+                            set: { state.setAgentInspection($0, spaceID: space.id) }
+                        ))
+                        .font(.callout)
+                        .padding(.leading, 18)
+                    }
                 }
-                Text("Agents only see Spaces that are switched on. Read only: look, never act. Ask before acting: you confirm each action. Allow everything: no questions, still logged.")
+                Text("Agents only see Spaces that are switched on. Read only: look, never act. Ask before acting: you confirm each action. Allow everything: no questions, still logged. Console and network: only on sites you also switch on in the site settings, next to the address; what agents read there can contain passwords and tokens.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -230,12 +269,14 @@ private struct DataSettings: View {
         case history = "Clear History"
         case siteData = "Clear Cookies & Site Data"
         case agentLog = "Clear Agent Log"
+        case siteSettings = "Reset Site Settings"
 
         func explanation(_ space: String) -> String {
             switch self {
             case .history: return "Forgets the pages visited in “\(space)” (the palette's suggestions). Open tabs stay."
             case .siteData: return "Deletes all cookies, logins, local storage and cached files of “\(space)”. You'll be signed out of every site in this Space."
             case .agentLog: return "Deletes the record of everything agents did in “\(space)”."
+            case .siteSettings: return "Forgets every per-site choice in “\(space)”: camera and microphone, which sites agents may see console and network of, and plugins switched off for a site."
             }
         }
     }
@@ -269,6 +310,7 @@ private struct DataSettings: View {
                             Button(ClearKind.history.rawValue) { pending = PendingClear(space: space, kind: .history) }
                             Button(ClearKind.siteData.rawValue) { pending = PendingClear(space: space, kind: .siteData) }
                             Button(ClearKind.agentLog.rawValue) { pending = PendingClear(space: space, kind: .agentLog) }
+                            Button(ClearKind.siteSettings.rawValue) { pending = PendingClear(space: space, kind: .siteSettings) }
                         }
                         .fixedSize()
                     }
@@ -301,6 +343,9 @@ private struct DataSettings: View {
             done = message
         case .agentLog:
             state.clearAgentLog(spaceID: request.space.id)
+            done = message
+        case .siteSettings:
+            state.resetSiteSettings(spaceID: request.space.id)
             done = message
         case .siteData:
             Task {

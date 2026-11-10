@@ -386,4 +386,23 @@ extension Space {
             if let tab = byID[id] { tabs[slot] = tab }
         }
     }
+
+    /// Moves a single tab to row `row` of a section (a drop between rows in the sidebar; `row`
+    /// counts the rows of `sidebarItems(in: section)` as they are before the move). Works within
+    /// a section too. Tabs that are part of a split are left alone: their row stands for the split.
+    public mutating func moveTab(_ id: UUID, to section: SidebarSection, atRow row: Int) {
+        guard let tab = tab(id), splitGroup(containing: id) == nil else { return }
+        if case .folder(let folderID) = section, !folders.contains(where: { $0.id == folderID }) { return }
+
+        // Taking the tab out of the same section shifts the rows below it up by one.
+        var target = row
+        if tab.section == section,
+           let current = sidebarItems(in: section).firstIndex(of: .tab(id)), current < row {
+            target -= 1
+        }
+        moveTab(id, to: section) // now the section's last row
+        let items = sidebarItems(in: section)
+        guard let last = items.firstIndex(of: .tab(id)) else { return }
+        moveSidebarItems(in: section, fromOffsets: [last], toOffset: max(0, min(target, last)))
+    }
 }

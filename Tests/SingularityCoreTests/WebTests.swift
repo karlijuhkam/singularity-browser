@@ -71,3 +71,32 @@ import Testing
         #expect(settings.searchEngine == .kagi)
     }
 }
+
+@Suite struct DownloadTests {
+    @Test func picksAFreeNameAndNeverAPath() {
+        let folder = URL(fileURLWithPath: "/Users/x/Downloads")
+        let taken: Set<String> = ["report.pdf", "report (2).pdf", "README"]
+        let exists: (URL) -> Bool = { taken.contains($0.lastPathComponent) }
+        #expect(DownloadNaming.destination(suggestedFilename: "new.zip", folder: folder, exists: exists).lastPathComponent == "new.zip")
+        #expect(DownloadNaming.destination(suggestedFilename: "report.pdf", folder: folder, exists: exists).lastPathComponent == "report (3).pdf")
+        #expect(DownloadNaming.destination(suggestedFilename: "README", folder: folder, exists: exists).lastPathComponent == "README (2)")
+        let sneaky = DownloadNaming.destination(suggestedFilename: "../../.ssh/authorized_keys", folder: folder, exists: exists)
+        #expect(sneaky.path == "/Users/x/Downloads/authorized_keys")
+        #expect(DownloadNaming.destination(suggestedFilename: ".zshrc", folder: folder, exists: exists).lastPathComponent == "zshrc")
+        #expect(DownloadNaming.destination(suggestedFilename: "", folder: folder, exists: exists).lastPathComponent == "download")
+    }
+
+    @Test func statusTextAndFraction() {
+        #expect(DownloadText.size(512) == "512 bytes")
+        #expect(DownloadText.size(3_100_000) == "3.1 MB")
+        #expect(DownloadText.size(12_400_000) == "12 MB")
+        #expect(DownloadText.status(phase: .running, received: 3_100_000, total: 12_000_000) == "3.1 MB of 12 MB")
+        #expect(DownloadText.status(phase: .running, received: 3_100_000, total: nil) == "3.1 MB")
+        #expect(DownloadText.status(phase: .finished, received: 12_000_000, total: 12_000_000) == "12 MB")
+        #expect(DownloadText.status(phase: .cancelled, received: 1, total: 2) == "Cancelled")
+        #expect(DownloadText.status(phase: .failed("offline"), received: 1, total: 2) == "Failed: offline")
+        #expect(DownloadText.fraction(received: 5, total: 10) == 0.5)
+        #expect(DownloadText.fraction(received: 5, total: nil) == nil)
+        #expect(DownloadText.fraction(received: 5, total: -1) == nil)
+    }
+}

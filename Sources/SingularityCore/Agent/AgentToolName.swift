@@ -9,8 +9,7 @@ public enum AgentToolName {
 
     /// The per-Space tools, in the order they are listed.
     public static let spaceTools = [
-        "list_tabs", "open", "navigate", "close", "read_page", "find", "click", "type", "screenshot",
-    ]
+        "list_tabs", "open", "navigate", "close", "read_page", "find", "click", "type", "screenshot", "read_console", "read_network"]
 
     public static func make(slug: String, tool: String) -> String {
         slug + separator + tool

@@ -32,7 +32,7 @@ import Foundation
 /// a token, the prelude also checks the click wasn't hijacked (see `genuineClick` below).
 enum PluginPrelude {
     /// - Parameters:
-    ///   - configJSON: `{"pluginID", "handlerName", "pageSites", "pageAdditions", "fillForms"}`, the
+    ///   - configJSON: `{"pluginID", "handlerName", "pageSites", "pageAdditions", "fillForms", "offSites"}`, the
     ///     site lists as `SitePattern.BrowserMatcher` arrays (see `PluginScripts`).
     ///   - secret: from `PluginPageRequest.makeSecret()` (64 hex digits).
     static func source(configJSON: String, secret: String) -> String {
@@ -132,7 +132,13 @@ enum PluginPrelude {
           return new RegExp(m.pathRegex).test(path);
         });
       };
-      const siteMatches = matchesAny(config.pageSites) && matchesAny(config.pageAdditions);
+      // The owner can switch a plugin off for a site (site settings). That covers the page itself
+      // and everything inside it: a frame also looks at the site of the tab's page.
+      const offSites = config.offSites || [];
+      const ancestors = location.ancestorOrigins;
+      const tabSite = ancestors && ancestors.length ? ancestors[ancestors.length - 1] : location.origin;
+      const switchedOff = offSites.includes(location.origin) || offSites.includes(tabSite);
+      const siteMatches = !switchedOff && matchesAny(config.pageSites) && matchesAny(config.pageAdditions);
       const fillAllowed = siteMatches && matchesAny(config.fillForms);
 
       // ---- 3. Locks: no network, no site data, no code from strings ----------------------------------

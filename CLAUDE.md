@@ -5,7 +5,7 @@ A native macOS browser whose organising unit is the **Space**. The sidebar holds
 ## The scope rule
 **If it is not a tab type, it is not in v1.**
 
-If you want to add something that is not in the brief, write it to `IDEAS.md` instead of building it. Ask before adding any dependency not listed below.
+If you want to add something that is not in the brief, write it to `IDEAS.md` under "New, not yet decided" instead of building it. Ask before adding any dependency not listed below.
 
 ## Explicitly out of scope for v1
 Do not build, scaffold, or leave TODOs for:
@@ -14,6 +14,8 @@ sync of any kind · browser extensions (WebExtensions/WKWebExtension; Singularit
 **Scope change (owner decision, after Phase 4):** tiling / split view is *in* v1, built before Phase 5: nested splits (any pane splits right or down), Arc-style split groups, created via context menu, drag and drop, keyboard and palette.
 
 **Scope change (owner decision, plugins round 1):** Singularity plugins (not a tab type) are in v1; see the spec (`docs/superpowers/specs/2026-11-09-plugins-design.md`).
+
+**Scope change (owner decision, 2026-11-10):** everything listed in `IDEAS.md` is approved to be built, except its sections "Decided against" and "New, not yet decided". `IDEAS.md` has the order and the rules (projects need an owner-approved design first; small items don't). Where an approved item overlaps the out-of-scope list above (e.g. the plugin storage API, download UI), the item in `IDEAS.md` wins; the rest of the list still holds.
 
 ## Hard constraints
 - Swift + SwiftUI (AppKit where SwiftUI falls short). No Electron, no web-based app chrome.
@@ -29,8 +31,15 @@ Sources/
     Model/           Space, Folder, BrowserTab (TabKind enum: .web, .terminal, .artifact)
     Persistence/     Paths (~/Singularity layout), SpaceStore (JSON), HistoryStore (jsonl), Slug
     Palette/         FuzzyMatcher, URLInput (URL vs search text)
-    Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath
-    Artifacts/       ArtifactFiles (path containment, MIME types, page listing), ArtifactAuth (token checks)
+    Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath,
+                     HerdrCore (optional engine: finding hc, names, arguments, reading `hc get`)
+    Artifacts/       ArtifactFiles (path containment, MIME types, page listing, missing-file page, Range parsing),
+                     ArtifactAuth (token checks), ArtifactScripts (TS/TSX: what is compiled, module resolution, shell
+                     page, error module, ArtifactCompiler)
+    Sites/           SiteSettings (per-site camera/microphone/agents/plugin switches), SiteInfo, MediaRules,
+                     InspectionRules (console/network: Space switch × site switch), PageCapture (the in-memory store)
+    Import/          ArcImport (reads Arc's StorableSidebar.json, builds Spaces)
+    Web/             LoadErrorPage, PageZoom, Downloads (file naming, status text)
     Agent/           AgentToolName (<slug>.<tool> naming), UntrustedContent (wrapping page text for agents),
                      AgentPolicy (readOnly / ask / allowAll + the approval rules table), AgentLog (agent-log.jsonl)
     Plugins/         PluginManifest, SitePattern, CommandPolicy, PluginPackages, PluginApproval (fingerprint, status,
@@ -46,7 +55,11 @@ Sources/
     Palette/         Command palette overlay (Cmd+T / Cmd+K)
     Terminal/        TerminalRegistry, TerminalSession (SwiftTerm view + login shell + title polling)
     Artifacts/       ArtifactServer (FlyingFox, static files only), ArtifactWatcher (FSEvents),
-                     ArtifactHost(s) (per-Space token + server + watcher), ArtifactBridge (window.singularity)
+                     ArtifactHost(s) (per-Space token + server + watcher), ArtifactBridge (window.singularity),
+                     ArtifactScriptService (compiled TS/TSX, cached in memory)
+    Sites/           PageCaptureScript (console/network collector + relay, CaptureBridge), SiteSettingsPanel
+    Downloads/       DownloadCenter (this run's downloads), DownloadsPane (sidebar list)
+    Import/          ArcImportSheet (File → Import from Arc…)
     MCP/             MCPSocketListener (Unix socket), MCPHub (one MCP SDK Server per connection),
                      AgentToolbox (tool definitions + implementations), PageAgentScript (read_page/find/click/type JS)
     Agent/           AgentApprovals (policy checks, one confirmation sheet at a time, "Allow on this site"),
@@ -56,11 +69,14 @@ Sources/
     Split/           SplitViews (recursive panes + draggable gaps), PaneContainerView (hosts a tab's view; drop
                      overlay during tab drags; click-to-focus monitor), PaneDragHandle (pane header drag source)
   singularity-mcp/   Stdio launcher agents start: relays bytes to ~/Singularity/.run/mcp.sock, starts the app if needed
-Resources/plugin-host/  host.ts (background API), transpile-page.ts (page.ts compiler), empty bunfig.toml
+Resources/plugin-host/  host.ts (background API, incl. singularity.storage), transpile-page.ts (page.ts compiler),
+                        transpile-artifact.ts (TS/TSX artifacts), empty bunfig.toml
 Plugins/             1password/ (reference plugin), template/ (copy this to start)
 docs/plugins/AUTHORING.md   the plugin authoring guide (agents first)
 Tests/SingularityCoreTests/   Swift Testing
-Tests/SingularityAppTests/    the real WebTabController in an off-screen window (error page, login sheet, find, zoom, print)
+Tests/SingularityAppTests/    real AppKit/WebKit in off-screen windows: the web tab (error page, login sheet, find, zoom,
+                              print), the agent approval sheet, the console/network collector against a fixture site.
+                              Every suite is nested in `AppTests` (serialized) and starts `MainRunLoopGuard` first; see AppTests.swift
 Tests/plugins/       Bun tests for plugin logic (1password)
 ```
 
@@ -79,6 +95,12 @@ Key decisions:
   - WKWebView takes almost any drop, so panes put a transparent `PaneDropOverlay` on top only while a tab is dragged (private UTI `dev.roosa.singularity.tab`, declared in Info.plist).
   - Pane headers sit in the window's invisible title-bar strip, where macOS starts a window drag before asking the view (`mouseDownCanMoveWindow` is not enough). `PaneDragHandleView` switches `window.isMovable` off while hovered. Never put SwiftUI `.help()` on chrome in that strip: it adds an overlay view that eats the click.
 - **Plugins** (spec `docs/superpowers/specs/2026-11-09-plugins-design.md`, guide `docs/plugins/AUTHORING.md`). Plugin = folder in `~/Singularity/plugins/<id>` with `plugin.json`, optional `background.ts` (bundled Bun) and `page.ts`. Background runs under `sandbox-exec` with a generated SBPL profile (no network, reads its folder, writes its data folder) and a minimal env; programs only via `singularity.run` for declared commands at paths pinned at approval (`CommandPolicy.refused`). Every file is fingerprinted (dotfiles, node_modules; a top-level `.git` is skipped, and unreadable in the sandbox; symlinks and hard-linked files are refused); any change pauses the plugin until re-approved, except code edits in development mode; widened permissions and package files always need approval. Packages: exact registry versions + `bun.lock`, installed at approval with `--ignore-scripts`, staged. Page scripts run in an isolated `WKContentWorld` after `PluginPrelude` (no network/eval/cookies/storage; frames still loading that the world can reach via `window[n]` are locked best effort, check with `scripts/probe-plugin-frames.sh`; real-click guards on buttons); DOM routes can't be blocked, so review matters. `FillGuard`: a fill needs frame host = `forHost` (or subdomain), `fillForms` match, and a genuine click. Don't loosen these without the owner.
+- **Site settings and "console and network" for agents** (spec `docs/superpowers/specs/2026-11-10-devtools-site-settings-design.md`). Per Space and site (origin), in `space.json` (`Space.siteSettings`): camera/microphone Ask/Allow/Block (`WebTabController.decideMediaCapturePermissionsFor` → `MediaRules`), "Let agents see console and network", and plugins switched off for the site. The panel is the button at the right of the address row. Capture is **off unless switched on twice** (`Space.agentInspection` and the site's switch; `InspectionRules`); then `read_console` / `read_network` appear as tools. WKWebView has no console/network API, so `PageCaptureScript` injects a collector into the *page's* world (wraps console.error/warn, fetch, XHR; failures only) plus a relay in our own content world that holds the message handler; both do nothing unless `location.origin` is a switched-on site, and `CaptureBridge` checks every message's sender against the switches again. Everything captured is untrusted page content, lives in memory per tab (`PageCapture`), is never logged, and is dropped when the tab leaves the site or a switch goes off. These scripts and the per-site plugin switches are rebuilt by `PluginScripts` (it owns every content controller's user scripts: `spaceScripts`, `offSites`) and apply from a page's next load. Device choice and screen sharing were left out: WebKit has no public API.
+- **TypeScript/TSX artifacts** (spec `docs/superpowers/specs/2026-11-10-ts-artifacts-design.md`). The artifact server compiles `.ts/.tsx/.jsx/.mts` on request: `transpile-artifact.ts` runs in the plugin sandbox on a *copy* of the file (`PluginPageCompiler.runHostScript`), one file in, one module out, imports left as written. `./util` also finds `util.ts` etc. (`ArtifactScripts.resolveModule`, same containment rules). No packages are shipped: bare imports go through the page's import map. A script opened as a page gets a small shell page (plus the folder's `importmap.json`); `app.tsx`/`index.tsx`/`main.tsx` open a tab by themselves only when their folder has no HTML page. Compile errors come back as a module that shows them. Still no API routes.
+- **herdr-core terminals** (spec `docs/superpowers/specs/2026-11-11-herdr-core-terminal-design.md`). Settings → Terminal, off by default: the shell is started with the owner's installed `hc run --name sg-<tab id>` and the SwiftTerm view runs `hc attach` instead of the login shell, so shells outlive the app and a tab finds its shell again by name. Closing a tab ends the shell (`hc kill`/`hc rm`), quitting doesn't (`tearDown(endProgram:)`). The shell's pid comes from `hc get`; the foreground group from `proc_pidinfo`. Anything unexpected falls back to the built-in terminal. Test with `HC_SESSION=<name>` so the owner's own herdr core isn't touched.
+- **Import from Arc** (spec `docs/superpowers/specs/2026-11-11-arc-import-design.md`): File → Import from Arc… reads `~/Library/Application Support/Arc/StorableSidebar.json` and makes new Spaces (pinned tabs, folders keep their nesting via `Folder.parentID`; within a folder the sidebar lists folders first, then tabs, optionally the unpinned tabs). No logins.
+- **Plugin storage**: `singularity.storage` (get/set/delete/keys/clear) lives entirely in `host.ts`, as one atomically replaced `storage.json` in the plugin's data folder, which the plugin could write anyway. No new permission, nothing on the app side. Not encrypted: the guide and the review checklist say no secrets.
+- **Small things from IDEAS.md**: "Show Tab" in the approval sheet (a button in the alert's accessory view, so it doesn't answer the question; restarts the timeout); an artifact tab whose file is gone is marked in the sidebar and shows a "file is missing" page until the file returns; downloads are listed in the sidebar (`DownloadCenter`, in memory); tabs can be dragged between Pinned, folders and Tabs (`Space.moveTab(_:to:atRow:)`, `onInsert` + drop targets on headers and folders); the artifact server answers `Range` requests.
 - **Settings window** (⌘,, SwiftUI `Settings` scene, `Sources/Singularity/Settings/`): General (search engine: `AppSettings.searchTemplate`, a URL with `%s`), Terminal (font, size, close on exit), Agents (all Spaces' agent switch + policy via `AppState.updateSpace`, approval timeout, the `claude mcp add` command for this copy of the app), Data & privacy (paths, per-Space clear history / site data / agent log). Stored in `~/Singularity/settings.json` (`AppSettings`, tolerant decoding); always change it through `AppState.updateSettings`.
 - **Web tab basics** (`WebTabController`): `developerExtrasEnabled` (set by key) gives right-click → Inspect Element; a failed load shows `LoadErrorPage` (Core) via `loadSimulatedRequest`, so the address stays the failed one and Reload retries it; HTTP Basic/Digest sites get a login dialog (`.forSession` credentials, never the keychain); find in page is our own `FindBar` over `webView.find` (WKWebView has no find bar on macOS); zoom uses `pageZoom` and the `PageZoom` ladder. Camera and microphone need the two usage strings in Info.plist *and* the two entitlements in `Singularity.entitlements`; WebKit then asks per site.
 - **Launch safety.** `InstanceLock` (Core): an `flock` on `<root>/.run/lock` taken in `SingularityApp.init` before `AppState` exists; a second copy on the same data folder activates the first and exits. `SpaceStore.load` skips a Space folder whose id is already loaded (a copied folder) and reports it; load errors are shown in an alert at launch (`AppDelegate.reportLoadErrors`), and unreadable files are never overwritten. Dialogs from pages (alert/confirm/prompt, HTTP login) are only shown for tabs that are on screen.
@@ -89,6 +111,7 @@ Key decisions:
 No Xcode project: SwiftPM + scripts. The scripts need full Xcode (macOS 27 SDK; SwiftUI's `@State` macro plugin and current SwiftTerm both require it). Xcode is installed on the external drive at `/Volumes/Zealot/Xcode.app`. `scripts/env.sh` points builds at it with `DEVELOPER_DIR`. The system default stays on the Command Line Tools on purpose, so `git` keeps working when the drive is unplugged. **Do not run `xcode-select -s`.** Override the location with `XCODE_APP=…`.
 - `scripts/build-app.sh`: builds, assembles and signs `build/Singularity.app` (ad-hoc, or `SIGN_IDENTITY=…`)
 - `scripts/run.sh`: build, then quit any running copy and launch
+- **A full bundle next to the owner's running copy** (needed for anything that uses the bundled Bun: plugins, TS/TSX artifacts): `APP=/private/tmp/sg-app/Singularity.app scripts/build-app.sh`, then run its `Contents/MacOS/Singularity` with `SINGULARITY_HOME` as below. Never run plain `scripts/build-app.sh` or `scripts/run.sh` while the owner's copy runs from `build/`: they replace that bundle.
 - **Trying a build next to the owner's running copy:** `SINGULARITY_HOME=/private/tmp/sg-test .build/out/Products/Debug/Singularity` runs a second copy with its own data folder and agent socket (keep the path short: Unix sockets allow ~100 characters); drive it with `SINGULARITY_MCP_SOCKET=$SINGULARITY_HOME/.run/mcp.sock singularity-mcp`. Never quit the owner's copy for a test.
 - `scripts/test.sh`: unit tests (Swift Testing), then `Vendor/bun/bun test Tests/plugins` when Bun has been fetched
 - `scripts/probe-plugin-frames.sh`: manual check (not in test.sh) after changing `PluginPrelude.swift`: runs the real prelude in a WKWebView against a local server and prints locked/UNLOCKED per frame-insertion route

@@ -60,6 +60,14 @@ public enum PluginPageCompiler {
     ///   - hostFolder: the folder with transpile-page.ts and the empty bunfig.toml
     ///     (`Contents/Resources/plugin-host`).
     public static func transpile(source: String, runtime: URL, hostFolder: URL) -> Result<String, Failure> {
+        runHostScript("transpile-page.ts", inputName: "page.ts", source: source, runtime: runtime, hostFolder: hostFolder)
+    }
+
+    /// Runs one of the plugin host's compile scripts on a copy of `source` (saved as `inputName`,
+    /// whose extension tells Bun what it is) and returns what the script printed. Also used for
+    /// artifacts (`ArtifactCompiler`). `errorLimit`: how much of the script's complaint is kept.
+    static func runHostScript(_ script: String, inputName: String, source: String, runtime: URL, hostFolder: URL,
+                              errorLimit: Int = 500) -> Result<String, Failure> {
         let fm = FileManager.default
         // A fresh folder per run: <tmp>/in holds the copy of page.ts (read-only for Bun),
         // <tmp>/work is Bun's HOME and TMPDIR (its only writable place), <tmp>/out the results.
@@ -75,7 +83,7 @@ public enum PluginPageCompiler {
                 try fm.createDirectory(at: dir, withIntermediateDirectories: true,
                                        attributes: [.posixPermissions: 0o700])
             }
-            try Data(source.utf8).write(to: input.appending(path: "page.ts"))
+            try Data(source.utf8).write(to: input.appending(path: inputName))
             for file in [stdoutFile, stderrFile] { try Data().write(to: file) }
         } catch {
             return .failure(.failed("couldn't create a temporary folder"))
@@ -101,7 +109,7 @@ public enum PluginPageCompiler {
         process.executableURL = URL(filePath: "/usr/bin/sandbox-exec")
         // Same flags as plugin background programs (see PluginProcess.start).
         process.arguments = ["-p", profile, runtimePath, "--config=" + hostPath + "/bunfig.toml", "--no-env-file",
-                             "--no-install", "run", hostPath + "/transpile-page.ts", inputPath + "/page.ts"]
+                             "--no-install", "run", hostPath + "/" + script, inputPath + "/" + inputName]
         process.currentDirectoryURL = URL(filePath: workPath, directoryHint: .isDirectory)
         process.environment = PluginProcess.environment(dataFolder: workPath)
         process.standardInput = FileHandle.nullDevice
@@ -132,7 +140,7 @@ public enum PluginPageCompiler {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard process.terminationStatus == 0 else {
             if process.terminationStatus == 1, !errorText.isEmpty {
-                return .failure(.refused(String(errorText.prefix(500))))
+                return .failure(.refused(String(errorText.prefix(errorLimit))))
             }
             return .failure(.failed("Bun exited with status \(process.terminationStatus) \(errorText.prefix(300))"))
         }

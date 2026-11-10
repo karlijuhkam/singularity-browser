@@ -21,7 +21,8 @@ Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is sy
 
 - **Spaces** are the circles on the left. Each Space has its own tabs, logins and cookies. Click **+** to add one; right-click → **Edit Space…** to rename it, change its colour or set its terminal folder.
 - **⌘T** opens the command palette. Type a URL, a search, a tab name or a command such as "New Folder" or "Split Right with…".
-- **Pin** a tab or move it into a **folder** by right-clicking it in the sidebar.
+- **Pin** a tab or move it into a **folder** by dragging it there in the sidebar, or by right-clicking it.
+- **Coming from Arc?** File → **Import from Arc…** brings its Spaces, pinned tabs and folders over (not the logins).
 - **⌥⌘T** opens a **terminal** in the Space's folder. It runs your normal login shell with your `.zshrc`.
 - **Split view:** drag a tab from the sidebar onto the edge of the page, or right-click → **Open in Split View**. Drag a pane's title bar to move it, and drag the gaps to resize.
 
@@ -44,7 +45,8 @@ All preferences are in **Singularity → Settings…** (⌘,): search engine, te
 
    > Using the singularity browser tools, find the "Install" button on swift.org and click it.
 
-   A sheet asks you to confirm: **Allow**, **Allow on swift.org** (stops asking for that site until you quit), or **Deny**. You can see what agents did under **Agent activity** in the sidebar.
+   A sheet asks you to confirm: **Allow**, **Allow on swift.org** (stops asking for that site until you quit), or **Deny**. **Show Tab** brings the page up behind the sheet first. You can see what agents did under **Agent activity** in the sidebar.
+4. Optional, for debugging your own sites: let agents read a page's **console errors and failed network calls**. It is off unless you switch it on twice: "Let agents see console and network" for the Space (Edit Space…), and again for the site in the **site settings** (the button at the right of the address). What agents read there can contain passwords and tokens, so switch it on for your dev servers, not for your bank.
 
 ---
 
@@ -54,9 +56,9 @@ All preferences are in **Singularity → Settings…** (⌘,): search engine, te
 
 | Kind | What it is |
 |---|---|
-| Web | A normal web page. Each Space has its own cookies and logins. Right-click → Inspect Element opens the Web Inspector (console, network, elements). Pages can use the camera and microphone after asking you. A page that can't be loaded says why, with a Try Again button, and sites behind a name and password show a login dialog (remembered until you quit). |
-| Terminal | Your login shell in a pseudo-terminal (SwiftTerm). The tab title follows the running program. `TERM_PROGRAM=Singularity` and `SINGULARITY_SPACE=<slug>` are set. ⌘W or ⌘Q asks first while a program (such as an agent) runs. |
-| Artifact | An HTML file in the Space's `artifacts/` folder. A new file opens as a tab by itself, and an open tab reloads when its files change. |
+| Web | A normal web page. Each Space has its own cookies and logins. Right-click → Inspect Element opens the Web Inspector (console, network, elements). Pages can use the camera and microphone after asking you; the site settings button next to the address remembers Allow or Block per site, and switches plugins off for a site. Downloads go to ~/Downloads and are listed at the bottom of the sidebar while the app runs. A page that can't be loaded says why, with a Try Again button, and sites behind a name and password show a login dialog (remembered until you quit). |
+| Terminal | Your login shell in a pseudo-terminal (SwiftTerm). The tab title follows the running program. `TERM_PROGRAM=Singularity` and `SINGULARITY_SPACE=<slug>` are set. ⌘W or ⌘Q asks first while a program (such as an agent) runs. With [herdr-core](https://github.com/herdrdev/herdr-core) installed, Settings → Terminal can run shells through it, so they keep running when Singularity quits. |
+| Artifact | An HTML file in the Space's `artifacts/` folder. A new file opens as a tab by itself, and an open tab reloads when its files change. TypeScript and TSX files work without a build step: they are compiled as the page asks for them (`import "./util"` finds `util.ts`), and `app.tsx` on its own opens as a page. Packages such as React are not included; point an import map at them. |
 
 **Artifacts** are served by a small web server for each Space, on `127.0.0.1` with a random port and a token for each launch. They behave like a normal website: ES modules and `fetch()` work. Artifact pages also get `window.singularity`:
 

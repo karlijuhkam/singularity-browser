@@ -17,12 +17,20 @@ struct SidebarView: View {
                 SpaceRail()
                     .frame(width: 48)
                 VStack(alignment: .leading, spacing: 6) {
-                    AddressRow()
+                    // The site settings button is a sibling of the address button, not inside it:
+                    // a click on it must not open the palette.
+                    HStack(spacing: 2) {
+                        AddressRow()
+                        SiteSettingsButton()
+                    }
                     if let space = state.selectedSpace {
                         TabList(space: space)
                         if space.agentsEnabled || !(state.agentLogs[space.id] ?? []).isEmpty {
                             AgentLogPane(space: space)
                         }
+                    }
+                    if !state.downloads.items.isEmpty {
+                        DownloadsPane()
                     }
                     HStack(spacing: 0) {
                         NewTabButton()
@@ -117,6 +125,8 @@ private struct AddressRow: View {
 private struct TabList: View {
     @Environment(AppState.self) private var state
     let space: Space
+    /// True while a tab is being dragged (from the sidebar or a pane header).
+    @State private var isDraggingTab = false
 
     var body: some View {
         // Selecting a row in the List selects the tab.
@@ -128,32 +138,100 @@ private struct TabList: View {
         List(selection: selection) {
             let pinned = space.sidebarItems(in: .pinned)
             if !pinned.isEmpty {
-                Section("Pinned") {
+                Section {
                     ForEach(pinned) { item in
                         SidebarItemRow(item: item, space: space)
                     }
                     .onMove { state.moveSidebarItems(in: .pinned, fromOffsets: $0, toOffset: $1) }
+                    .onInsert(of: TabDrop.types) { row, providers in drop(providers, in: .pinned, atRow: row) }
+                } header: {
+                    SectionDropHeader(title: "Pinned", section: .pinned)
                 }
             }
 
             if !space.folders.isEmpty {
                 Section("Folders") {
-                    ForEach(space.folders) { folder in
+                    // Top-level folders; each FolderGroup lists the folders inside it itself.
+                    ForEach(space.childFolders(of: nil)) { folder in
                         FolderGroup(folder: folder, space: space)
                     }
                 }
             }
 
-            Section("Tabs") {
+            Section {
                 ForEach(space.sidebarItems(in: .open)) { item in
                     SidebarItemRow(item: item, space: space)
                 }
                 .onMove { state.moveSidebarItems(in: .open, fromOffsets: $0, toOffset: $1) }
+                .onInsert(of: TabDrop.types) { row, providers in drop(providers, in: .open, atRow: row) }
+            } header: {
+                SectionDropHeader(title: "Tabs", section: .open)
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        // With nothing pinned there is no Pinned section to drop on, so one appears for the drag.
+        .overlay(alignment: .top) {
+            if isDraggingTab, space.sidebarItems(in: .pinned).isEmpty {
+                PinDropZone()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TabDragSession.didBegin)) { _ in isDraggingTab = true }
+        .onReceive(NotificationCenter.default.publisher(for: TabDragSession.didEnd)) { _ in isDraggingTab = false }
     }
+
+    /// A tab dropped between two rows of a section (`onMove` only covers drags within one section).
+    private func drop(_ providers: [NSItemProvider], in section: SidebarSection, atRow row: Int) {
+        TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section, atRow: row) }
+    }
+}
+
+/// A section title that also takes a dropped tab (it goes to the end of the section). Needed
+/// when the section has no rows to drop between.
+private struct SectionDropHeader: View {
+    @Environment(AppState.self) private var state
+    let title: String
+    let section: SidebarSection
+    @State private var isTargeted = false
+
+    var body: some View {
+        Text(title)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(dropHighlight(isTargeted))
+            .onDrop(of: TabDrop.types, isTargeted: $isTargeted) { providers in
+                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section) }
+            }
+    }
+}
+
+/// Shown at the top of the tab list while a tab is dragged and nothing is pinned yet.
+private struct PinDropZone: View {
+    @Environment(AppState.self) private var state
+    @State private var isTargeted = false
+
+    var body: some View {
+        Label("Drop here to pin", systemImage: "pin")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 26)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
+                                  style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            )
+            .padding(.horizontal, 8)
+            .onDrop(of: TabDrop.types, isTargeted: $isTargeted) { providers in
+                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .pinned) }
+            }
+    }
+}
+
+/// The tint behind a header or folder while a dragged tab hovers over it.
+private func dropHighlight(_ isTargeted: Bool) -> some View {
+    RoundedRectangle(cornerRadius: 5, style: .continuous)
+        .fill(Color.accentColor.opacity(isTargeted ? 0.25 : 0))
 }
 
 /// A sidebar row: a single tab (selectable List row), or a split shown as one row of chips.
@@ -225,6 +303,7 @@ private struct FolderGroup: View {
     @Environment(AppState.self) private var state
     let folder: Folder
     let space: Space
+    @State private var isDropTargeted = false
 
     var body: some View {
         let expanded = Binding(
@@ -232,19 +311,45 @@ private struct FolderGroup: View {
             set: { state.setFolderExpanded(folder.id, $0) }
         )
         DisclosureGroup(isExpanded: expanded) {
+            // Folders inside this one first (the List indents them), then this folder's tabs.
+            ForEach(space.childFolders(of: folder.id)) { child in
+                FolderGroup(folder: child, space: space)
+            }
             ForEach(space.sidebarItems(in: .folder(folder.id))) { item in
                 SidebarItemRow(item: item, space: space)
             }
             .onMove { state.moveSidebarItems(in: .folder(folder.id), fromOffsets: $0, toOffset: $1) }
+            .onInsert(of: TabDrop.types) { row, providers in
+                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id), atRow: row) }
+            }
         } label: {
             Label(folder.name, systemImage: folder.isExpanded ? "folder" : "folder.fill")
+                // A tab dropped on the folder itself goes to the end of it (also when collapsed or empty).
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .background(dropHighlight(isDropTargeted))
+                .onDrop(of: TabDrop.types, isTargeted: $isDropTargeted) { providers in
+                    TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id)) }
+                }
                 .contextMenu {
                     Button("Rename…") {
                         state.nameRequest = NameRequest(title: "Rename Folder", initialValue: folder.name) { name in
                             state.renameFolder(folder.id, to: name)
                         }
                     }
-                    Button("Delete Folder (keep tabs)") { state.deleteFolder(folder.id) }
+                    Button("New Folder Inside…") { state.promptNewFolder(inside: folder.id) }
+                    Menu("Move Folder to") {
+                        Button("Top Level") { state.moveFolder(folder.id, into: nil) }
+                            .disabled(folder.parentID == nil)
+                        // Not into itself or a folder inside it.
+                        let targets = space.foldersInTreeOrder.filter { !space.isFolder($0.folder.id, inside: folder.id) }
+                        if !targets.isEmpty { Divider() }
+                        ForEach(targets, id: \.folder.id) { target in
+                            Button(space.folderPath(target.folder.id)) { state.moveFolder(folder.id, into: target.folder.id) }
+                                .disabled(folder.parentID == target.folder.id)
+                        }
+                    }
+                    Button("Delete Folder (keep contents)") { state.deleteFolder(folder.id) }
                 }
         }
     }

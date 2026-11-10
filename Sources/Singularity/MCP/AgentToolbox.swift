@@ -46,7 +46,24 @@ final class AgentToolbox {
         let ref: Value = .object(["type": "integer", "description": "An element ref from read_page or find, e.g. 12 for [12]."])
         let url: Value = .object(["type": "string", "description": "An absolute http(s) URL."])
 
-        return [
+        // Console and network: only listed while the Space's switch is on (a site needs its own as well).
+        let since: Value = .object(["type": "integer", "description": "The cursor from an earlier answer, to get only what is newer."])
+        let inspection = !InspectionRules.isSpaceOn(space) ? [] : [
+            Tool(name: name("read_console"),
+                 description: inSpace + "read the console problems of the page in a web tab: errors, warnings, uncaught exceptions, "
+                    + "unhandled promise rejections and resources that failed to load. Only for sites the user switched on in site settings; "
+                    + "collected from the page's next load after that.",
+                 inputSchema: Self.schema(["tab_id": tabID, "since": since], required: ["tab_id"]),
+                 annotations: .init(readOnlyHint: true)),
+            Tool(name: name("read_network"),
+                 description: inSpace + "read the failed network calls of the page in a web tab: fetch and XMLHttpRequest calls that got "
+                    + "status 400 or higher, or no answer, with request payload, response body and headers (logins hidden). "
+                    + "Only for sites the user switched on in site settings.",
+                 inputSchema: Self.schema(["tab_id": tabID, "since": since], required: ["tab_id"]),
+                 annotations: .init(readOnlyHint: true)),
+        ]
+
+        return inspection + [
             Tool(name: name("list_tabs"),
                  description: inSpace + "list all tabs (web pages, terminals, artifacts) with their tab_id, title and URL.",
                  inputSchema: Self.schema([:]),
@@ -113,6 +130,8 @@ final class AgentToolbox {
         var tabID: UUID?
         var args: [String: String] = [:]
         var decision = "auto"
+        /// When set, the log keeps this instead of the result (console and network content is never logged).
+        var logResult: String?
 
         init(client: String) {
             self.client = client
@@ -166,6 +185,9 @@ final class AgentToolbox {
                                                         text: args.string("text"), submit: args.bool("submit") ?? false,
                                                         record: record))])
         case "screenshot": return .init(content: [try await screenshot(space, tabID: args.tabID(), record: record)])
+        case "read_console", "read_network":
+            return .init(content: [.plain(try readCapture(space, tabID: args.tabID(), since: try? args.int("since"),
+                                                          network: tool == "read_network", record: record))])
         default: throw ToolError("Unknown tool \(name).")
         }
     }
@@ -187,7 +209,6 @@ final class AgentToolbox {
     }
 
     private func listTabs(_ space: Space) throws -> String {
-        let folders = Dictionary(uniqueKeysWithValues: space.folders.map { ($0.id, $0.name) })
         let tabs = space.tabsInSidebarOrder.map { tab -> [String: Any] in
             var entry: [String: Any] = ["tab_id": tab.id.uuidString.lowercased(), "title": tab.displayTitle]
             switch tab.kind {
@@ -198,7 +219,7 @@ final class AgentToolbox {
             switch tab.section {
             case .pinned: entry["section"] = "pinned"
             case .open: entry["section"] = "open"
-            case .folder(let id): entry["section"] = "folder: " + (folders[id] ?? "?")
+            case .folder(let id): entry["section"] = "folder: " + space.folderPath(id) // "Outer / Inner" for a nested folder
             }
             if tab.id == space.selectedTabID { entry["selected"] = true }
             // On screen right now: the selected tab, or any pane of its split (in the Space being shown).
@@ -311,6 +332,37 @@ final class AgentToolbox {
         return .image(data: png.base64EncodedString(), mimeType: "image/png", annotations: nil, _meta: nil)
     }
 
+    /// `read_console` / `read_network`: what the capture script collected for the tab's page. A
+    /// read, so it passes under every policy; the gate is the owner's two switches (Space and
+    /// site), checked here as they are now. Refuses whole, never returns part of the data.
+    private func readCapture(_ space: Space, tabID: UUID, since: Int?, network: Bool, record: CallRecord) throws -> String {
+        guard let state else { throw ToolError("Browser is shutting down.") }
+        let current = state.space(space.id) ?? space
+        guard let tab = current.tab(tabID) else {
+            throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space. Call \(AgentToolName.make(slug: space.slug, tool: "list_tabs")).")
+        }
+        record.tabID = tabID
+        guard case .web = tab.kind else {
+            throw ToolError("Console and network can only be read for web tabs, not terminals or artifacts.")
+        }
+        let controller = state.web.existingController(tabID)
+        let url = controller?.webView.url ?? tab.url
+        let site = SiteInfo.site(of: url)
+        guard InspectionRules.isAllowed(current, site: site), let site else {
+            record.logResult = "refused: not switched on"
+            throw ToolError(InspectionRules.refusal(space: current, site: site))
+        }
+        guard let controller else {
+            record.logResult = "tab not loaded"
+            return "This tab hasn't been loaded since Singularity started, so nothing was collected. Use read_page to load it first."
+        }
+        let capture = controller.capture(forSite: site)
+        let report = network ? capture.networkReport(since: since) : capture.consoleReport(since: since)
+        // The log records that a read happened, never what was read.
+        record.logResult = "\(report.count) \(network ? "failed requests" : "console entries")"
+        return UntrustedContent.wrap(report.text, source: url?.absoluteString ?? site)
+    }
+
     // MARK: - Approvals and logging
 
     /// Asks the policy (and maybe the user). Throws, with a message for the agent, if not allowed.
@@ -326,8 +378,14 @@ final class AgentToolbox {
 
     private func request(_ record: CallRecord, _ space: Space, action: String, detail: String,
                          url: URL? = nil, tabTitle: String? = nil, text: String? = nil) -> AgentApprovals.Request {
-        AgentApprovals.Request(actor: AgentApprovals.displayName(forClient: record.client), action: action, detail: detail,
-                               url: url?.absoluteString, spaceName: space.name, tabTitle: tabTitle, text: text)
+        var request = AgentApprovals.Request(actor: AgentApprovals.displayName(forClient: record.client), action: action,
+                                             detail: detail, url: url?.absoluteString, spaceName: space.name,
+                                             tabTitle: tabTitle, text: text)
+        // "Show Tab" in the sheet: agent tabs load in the background, so the user may not have seen the page.
+        if let tabID = record.tabID {
+            request.showTab = { [weak state] in state?.showTab(tabID, in: space.id) }
+        }
+        return request
     }
 
     /// While a click or type runs, checks every navigation of the page: the origins the user
@@ -362,7 +420,7 @@ final class AgentToolbox {
         }
         let entry = AgentLogEntry(
             client: record.client, tool: tool, tabID: record.tabID, args: record.args, decision: record.decision,
-            ok: !(result.isError ?? false), result: parts.joined(separator: " "),
+            ok: !(result.isError ?? false), result: record.logResult ?? parts.joined(separator: " "),
             milliseconds: Int(Date().timeIntervalSince(record.started) * 1000))
         state?.appendAgentLog(entry, spaceID: spaceID)
     }

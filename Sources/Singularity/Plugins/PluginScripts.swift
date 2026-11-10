@@ -41,6 +41,8 @@ final class PluginScripts {
         let access: PluginPageAccess
         let configJSON: String
         let javascript: String
+        /// The sites the plugin is switched off on (part of `configJSON`; a change means rebuild).
+        var offSites: [String] = []
     }
 
     /// A content controller we manage. Popup tabs share their opener's controller, so this is per
@@ -73,6 +75,15 @@ final class PluginScripts {
     /// Finds the tab a web view belongs to (set by AppState: `WebViewRegistry.tabID(for:)`).
     var tabID: (WKWebView) -> UUID? = { _ in nil }
 
+    /// The app's own scripts that depend on a Space's settings (the console and network collector,
+    /// `PageCaptureScript`). Asked on every rebuild; `signature` changes when the scripts do.
+    var spaceScripts: (UUID) -> (signature: String, scripts: [WKUserScript]) = { _ in ("", []) }
+    /// Called once for every content controller that starts being managed (to register the
+    /// app's message handlers that may only be added once per controller).
+    var onAttach: (WKUserContentController) -> Void = { _ in }
+    /// The sites (origins) a plugin is switched off on in a Space (site settings).
+    var offSites: (_ spaceID: UUID, _ pluginID: String) -> [String] = { _, _ in [] }
+
     private var attached: [ObjectIdentifier: Attached] = [:]
     /// Plugin id -> the fingerprint it was prepared for, the outcome and when. In memory only.
     /// `.changed` outcomes are never kept (the next scan brings a new fingerprint); `.failed` ones
@@ -104,6 +115,7 @@ final class PluginScripts {
         let base = controller.userScripts.filter { script in !ours.contains { $0 === script } }
         let entry = Attached(controller: controller, spaceID: spaceID, baseScripts: base)
         attached[key] = entry
+        onAttach(controller)
         update(entry, with: preparedPlugins(for: spaceID))
     }
 
@@ -164,10 +176,11 @@ final class PluginScripts {
                       let approval = plugin.approval, let fingerprint = plugin.snapshot?.fingerprint,
                       let entry = compiled[id], entry.fingerprint == fingerprint,
                       case .success(let javascript) = entry.result,
-                      let config = Self.configJSON(pluginID: id, manifest: manifest) else { return nil }
+                      case let off = offSites(spaceID, id),
+                      let config = Self.configJSON(pluginID: id, manifest: manifest, offSites: off) else { return nil }
                 return Prepared(pluginID: id, fingerprint: fingerprint,
                                 access: PluginPageAccess(manifest: manifest, approved: approval.permissions),
-                                configJSON: config, javascript: javascript)
+                                configJSON: config, javascript: javascript, offSites: off)
             }
     }
 
@@ -210,9 +223,10 @@ final class PluginScripts {
     /// Rebuilds a controller when its plugins (or their versions) changed.
     private func update(_ entry: Attached, with plugins: [Prepared]) {
         guard let controller = entry.controller else { return }
-        let signature = plugins.map { "\($0.pluginID)@\($0.fingerprint)" }
-        guard signature != entry.signature else { return }
         let spaceID = entry.spaceID
+        let own = spaceScripts(spaceID)
+        let signature = plugins.map { "\($0.pluginID)@\($0.fingerprint)#\($0.offSites.joined(separator: ","))" } + ["space:" + own.signature]
+        guard signature != entry.signature else { return }
         var bridges: [String: (fingerprint: String, secret: String, bridge: PluginPageBridge)] = [:]
         var kept: Set<String> = []
         for prepared in plugins {
@@ -232,7 +246,8 @@ final class PluginScripts {
         entry.pluginScripts = Self.rebuild(
             controller,
             plugins: plugins.map { ($0, bridges[$0.pluginID]!.secret, bridges[$0.pluginID]!.bridge) },
-            baseScripts: entry.baseScripts, previousPluginIDs: entry.pluginIDs, keepHandlers: kept)
+            baseScripts: entry.baseScripts + own.scripts, previousPluginIDs: entry.pluginIDs, keepHandlers: kept)
+            + own.scripts // ours too: never mistaken for a popup's base scripts
         entry.bridges = bridges
         entry.signature = signature
         entry.pluginIDs = plugins.map(\.pluginID)
@@ -280,13 +295,15 @@ final class PluginScripts {
 
     /// The prelude's configuration: the plugin id, the handler name and its site lists as
     /// `SitePattern.BrowserMatcher`s (JSON, which is also valid JavaScript).
-    static func configJSON(pluginID: String, manifest: PluginManifest) -> String? {
+    static func configJSON(pluginID: String, manifest: PluginManifest, offSites: [String] = []) -> String? {
         struct Config: Encodable {
             let pluginID: String
             let handlerName: String
             let pageSites: [SitePattern.BrowserMatcher]
             let pageAdditions: [SitePattern.BrowserMatcher]
             let fillForms: [SitePattern.BrowserMatcher]
+            /// Origins the owner switched this plugin off on (site settings).
+            let offSites: [String]
         }
         func matchers(_ texts: [String]) -> [SitePattern.BrowserMatcher] {
             texts.compactMap { try? SitePattern($0).browserMatcher }
@@ -294,7 +311,7 @@ final class PluginScripts {
         let config = Config(pluginID: pluginID, handlerName: handlerName,
                             pageSites: matchers(manifest.page?.sites ?? []),
                             pageAdditions: matchers(manifest.permissions.pageAdditions),
-                            fillForms: matchers(manifest.permissions.fillForms))
+                            fillForms: matchers(manifest.permissions.fillForms), offSites: offSites)
         guard let data = try? JSONEncoder().encode(config) else { return nil }
         return String(data: data, encoding: .utf8)
     }

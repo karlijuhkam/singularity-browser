@@ -28,6 +28,8 @@ final class AppState {
     var spaceEditor: SpaceEditorRequest?
     /// Non-nil while a small "enter a name" sheet is shown (folders).
     var nameRequest: NameRequest?
+    /// File → Import from Arc… is showing.
+    var isImportingFromArc = false
     /// Problems found while loading files from disk, shown once in the sidebar.
     var loadErrors: [String] = []
     /// The Settings window's selected tab (so a palette command can open it on Plugins).
@@ -42,6 +44,8 @@ final class AppState {
     let favicons: FaviconStore
     /// Approval policy checks and confirmation sheets for agent actions.
     let approvals = AgentApprovals()
+    /// Downloads of this run, for the sidebar's Downloads list.
+    let downloads = DownloadCenter()
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
     /// Plugins' page scripts in each Space's web views.
@@ -63,6 +67,9 @@ final class AppState {
     @ObservationIgnored private var activeTerminalBySpace: [UUID: UUID] = [:]
     /// Per Space: the tab selected before the current one (⌘\ splits the current tab with it).
     @ObservationIgnored private var previousTabBySpace: [UUID: UUID] = [:]
+    /// Artifact tabs whose file is gone (deleted, renamed, moved). The sidebar marks them; the tab
+    /// itself shows the server's "file is missing" page and comes back when the file does.
+    private(set) var missingArtifactTabs: Set<UUID> = []
     /// Per Space: artifact pages we already know about, so only genuinely new files open a tab.
     @ObservationIgnored private var knownArtifactPages: [UUID: Set<String>] = [:]
 
@@ -86,6 +93,10 @@ final class AppState {
                                            hostFolder: bundle.appending(path: "Contents/Resources/plugin-host",
                                                                         directoryHint: .isDirectory))
 
+        artifacts.scripts = ArtifactScriptService(
+            runtime: bundle.appending(path: "Contents/Helpers/bun"),
+            hostFolder: bundle.appending(path: "Contents/Resources/plugin-host", directoryHint: .isDirectory))
+
         settings = store.loadSettings()
         let loaded = store.load()
         spaces = loaded.spaces
@@ -101,6 +112,16 @@ final class AppState {
         web.pluginScripts = pluginScripts
         pluginScripts.tabID = { [weak web] webView in web?.tabID(for: webView) }
         plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
+        // Site settings: the console/network collector for switched-on sites, and plugins switched off per site.
+        let captureBridge = CaptureBridge(state: self)
+        pluginScripts.onAttach = { controller in captureBridge.install(in: controller) }
+        pluginScripts.spaceScripts = { [weak self] spaceID in
+            let sites = self?.space(spaceID).map(InspectionRules.capturedSites) ?? []
+            return (sites.joined(separator: " "), PageCaptureScript.scripts(sites: sites))
+        }
+        pluginScripts.offSites = { [weak self] spaceID, pluginID in
+            self?.space(spaceID)?.sitesWherePluginIsOff(pluginID) ?? []
+        }
         terminals.state = self
         artifacts.state = self
 
@@ -162,6 +183,25 @@ final class AppState {
         return space
     }
 
+    /// Adds the chosen Arc Spaces as new Spaces (agents off, nothing loaded until a tab is shown)
+    /// and selects the first of them.
+    func importArcSpaces(_ arcSpaces: [ArcImport.ArcSpace], options: ArcImport.Options) {
+        var taken = Set(spaces.map(\.slug)).union(slugsOnDisk())
+        var first: UUID?
+        for arc in arcSpaces {
+            let slug = Slug.unique(from: arc.name, existing: taken)
+            taken.insert(slug)
+            let used = Set(spaces.map(\.colorHex))
+            let fallback = SpaceColors.presets.first { !used.contains($0) } ?? SpaceColors.presets[0]
+            let space = ArcImport.makeSpace(from: arc, slug: slug, fallbackColorHex: fallback, options: options)
+            spaces.append(space)
+            markDirty(space.id)
+            first = first ?? space.id
+        }
+        stateFileDirty = true
+        if let first { selectSpace(first) } else { scheduleSave() }
+    }
+
     func updateSpace(_ id: UUID, name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool,
                      agentPolicy: AgentPolicy) {
         let wasEnabled = space(id)?.agentsEnabled
@@ -174,14 +214,51 @@ final class AppState {
         }
         // Tool descriptions mention the Space's name, so a rename also counts as a change.
         if wasEnabled != agentsEnabled || agentsEnabled { mcp?.toolsChanged() }
+        if wasEnabled != agentsEnabled { siteSettingsDidChange(id) } // agents off also ends console/network capture
+    }
+
+    // MARK: - Site settings
+
+    /// The Space's "Let agents see console and network" switch.
+    func setAgentInspection(_ on: Bool, spaceID: UUID) {
+        guard let space = space(spaceID), space.agentInspection != on else { return }
+        mutateSpace(spaceID) { $0.agentInspection = on }
+        mcp?.toolsChanged() // read_console and read_network appear or go
+        siteSettingsDidChange(spaceID)
+    }
+
+    /// Changes the owner's choices for one site ("https://example.com") in a Space.
+    func updateSiteSettings(spaceID: UUID, site: String, _ change: (inout SiteSettings) -> Void) {
+        guard let space = space(spaceID) else { return }
+        var settings = space.settings(forSite: site)
+        change(&settings)
+        guard settings != space.settings(forSite: site) else { return }
+        mutateSpace(spaceID) { $0.setSettings(settings, forSite: site) }
+        siteSettingsDidChange(spaceID)
+    }
+
+    /// Settings → Data & privacy: forgets every per-site choice of a Space.
+    func resetSiteSettings(spaceID: UUID) {
+        mutateSpace(spaceID) { $0.siteSettings = [:] }
+        siteSettingsDidChange(spaceID)
+    }
+
+    /// Scripts follow the settings from each page's next load; what was captured for a site that
+    /// is no longer switched on is dropped right away.
+    private func siteSettingsDidChange(_ spaceID: UUID) {
+        pluginScripts.scheduleRefresh()
+        guard let space = space(spaceID) else { return }
+        for controller in web.controllers(in: spaceID)
+        where !InspectionRules.isAllowed(space, site: SiteInfo.site(of: controller.webView.url)) {
+            controller.clearCapture()
+        }
     }
 
     /// ⌃⇥ / ⌃⇧⇥: the next or previous tab in sidebar order, wrapping around. A split counts once
     /// (its whole row), so stepping through the sidebar feels like stepping through rows.
     func selectAdjacentTab(_ step: Int) {
         guard let space = selectedSpace else { return }
-        let rows = [SidebarSection.pinned] + space.folders.map { .folder($0.id) } + [.open]
-        let items = rows.flatMap { space.sidebarItems(in: $0) }
+        let items = space.sidebarSections.flatMap { space.sidebarItems(in: $0) }
         guard !items.isEmpty else { return }
         let current = space.selectedTabID.flatMap { id in items.firstIndex { $0.tabIDs.contains(id) } }
         let next = current.map { ($0 + step + items.count) % items.count } ?? 0
@@ -224,6 +301,12 @@ final class AppState {
         }
         // WebKit refuses to delete a data store that is still in use, so wait a moment
         // for the web views we just closed to be torn down.
+        //
+        // WebKit only sets itself up when the first web view (or configuration) is made. Until
+        // then `remove(forIdentifier:)` crashes inside WebKit (it sends its answer to a main run
+        // loop it hasn't created yet): deleting a Space right after launch, before any page was
+        // shown, took the app down. Making a configuration is enough to set WebKit up.
+        _ = WKWebViewConfiguration()
         Task {
             try? await Task.sleep(for: .seconds(1))
             do {
@@ -243,6 +326,13 @@ final class AppState {
         }
         mutateSpace(spaceID) { $0.selectedTabID = tabID }
         loadSelectedTab()
+    }
+
+    /// Switches to the tab's Space (if needed) and selects the tab.
+    func showTab(_ tabID: UUID, in spaceID: UUID) {
+        guard space(spaceID)?.tab(tabID) != nil else { return }
+        if selectedSpaceID != spaceID { selectSpace(spaceID) }
+        selectTab(tabID)
     }
 
     /// Opens a URL in a new tab and selects it (in the current Space unless one is given).
@@ -297,6 +387,7 @@ final class AppState {
         web.removeControllers(for: [tabID])
         terminals.removeSessions(for: [tabID])
         mutateSpace(spaceID) { $0.closeTab(tabID) }
+        missingArtifactTabs.remove(tabID)
         if spaceID == selectedSpaceID { loadSelectedTab() }
     }
 
@@ -314,6 +405,12 @@ final class AppState {
         mutateSpace(spaceID) { $0.moveTab(tabID, to: section) }
     }
 
+    /// A tab dropped between two rows of a section (possibly coming from another section).
+    func moveTab(_ tabID: UUID, to section: SidebarSection, atRow row: Int) {
+        guard let spaceID = selectedSpaceID else { return }
+        mutateSpace(spaceID) { $0.moveTab(tabID, to: section, atRow: row) }
+    }
+
     /// Reorders sidebar rows (a split's row moves all its tabs).
     func moveSidebarItems(in section: SidebarSection, fromOffsets offsets: IndexSet, toOffset destination: Int) {
         guard let spaceID = selectedSpaceID else { return }
@@ -323,11 +420,23 @@ final class AppState {
     // MARK: - Folders
 
     @discardableResult
-    func createFolder(named name: String) -> Folder? {
+    func createFolder(named name: String, inside parentID: UUID? = nil) -> Folder? {
         guard let spaceID = selectedSpaceID else { return nil }
-        let folder = Folder(name: name)
-        mutateSpace(spaceID) { $0.folders.append(folder) }
+        let folder = Folder(name: name, parentID: parentID)
+        mutateSpace(spaceID) { space in
+            space.folders.append(folder)
+            // Open the folder it went into, so the new one is on screen.
+            if let index = space.folders.firstIndex(where: { $0.id == parentID }) {
+                space.folders[index].isExpanded = true
+            }
+        }
         return folder
+    }
+
+    /// Puts a folder inside another one, or at the top level (nil).
+    func moveFolder(_ folderID: UUID, into parentID: UUID?) {
+        guard let spaceID = selectedSpaceID else { return }
+        mutateSpace(spaceID) { $0.moveFolder(folderID, into: parentID) }
     }
 
     func renameFolder(_ folderID: UUID, to name: String) {
@@ -354,9 +463,10 @@ final class AppState {
     }
 
     /// Asks for a folder name, creates the folder, and optionally moves a tab into it.
-    func promptNewFolder(moving tabID: UUID? = nil) {
+    /// `parentID` makes it a folder inside that folder.
+    func promptNewFolder(moving tabID: UUID? = nil, inside parentID: UUID? = nil) {
         nameRequest = NameRequest(title: "New Folder", initialValue: "") { [weak self] name in
-            guard let self, let folder = self.createFolder(named: name) else { return }
+            guard let self, let folder = self.createFolder(named: name, inside: parentID) else { return }
             if let tabID { self.moveTab(tabID, to: .folder(folder.id)) }
         }
     }
@@ -385,6 +495,7 @@ final class AppState {
                 }
             }
         }
+        if url != nil, space(spaceID)?.tab(tabID)?.isArtifact == true { refreshMissingArtifacts(spaceID: spaceID) }
     }
 
     /// Called by TerminalSession about once a second; only writes when something changed.
@@ -667,8 +778,21 @@ final class AppState {
         let host = await artifacts.ensureStarted(space, root: paths.artifactsDirectory(space.slug))
         if let host, knownArtifactPages[space.id] == nil {
             knownArtifactPages[space.id] = Set(host.pages)
+            refreshMissingArtifacts(spaceID: space.id)
         }
         return host
+    }
+
+    /// Re-checks which of the Space's artifact tabs still have their file.
+    private func refreshMissingArtifacts(spaceID: UUID) {
+        guard let space = space(spaceID), let root = artifacts.host(spaceID)?.root else { return }
+        var missing = missingArtifactTabs.subtracting(space.tabs.map(\.id))
+        for tab in space.tabs {
+            if let path = tab.artifactPath, !ArtifactFiles.exists(relativePath: path, root: root) {
+                missing.insert(tab.id)
+            }
+        }
+        if missing != missingArtifactTabs { missingArtifactTabs = missing }
     }
 
     // MARK: - Artifacts
@@ -678,17 +802,22 @@ final class AppState {
     func artifactsDidChange(spaceID: UUID, changes: [ArtifactWatcher.Change]) {
         guard let space = space(spaceID) else { return }
         var known = knownArtifactPages[spaceID] ?? []
+        let root = artifacts.host(spaceID)?.root
         var reloadAll = false
         var pagesToReload = Set<String>()
 
         for change in changes {
             let path = change.relativePath
-            let isPage = ArtifactFiles.isArtifactPage(path)
+            // HTML pages, and a script that is "the app" (app.tsx, …) of a folder without one.
+            let isPage = root.map { ArtifactFiles.isArtifactPage(path, root: $0) } ?? ArtifactFiles.isArtifactPage(path)
             switch change.kind {
             case .removed:
                 known.remove(path)
+                pagesToReload.insert(path) // the tab shows "file is missing" until it comes back
             case .changed where isPage:
                 pagesToReload.insert(path)
+                // A script that is a page is also a module other pages may import.
+                if ArtifactScripts.isEntryScript(path) { reloadAll = true }
                 if known.insert(path).inserted, !space.tabs.contains(where: { $0.artifactPath == path }) {
                     mutateSpace(spaceID) { $0.append(.artifact(path: path)) }
                 }
@@ -702,6 +831,7 @@ final class AppState {
             guard let path = tab.artifactPath, reloadAll || pagesToReload.contains(path) else { continue }
             web.existingController(tab.id)?.reload()
         }
+        refreshMissingArtifacts(spaceID: spaceID)
     }
 
     /// Opens an artifact page (or selects its tab if one is already open).
@@ -717,6 +847,7 @@ final class AppState {
             $0.selectedTabID = tab.id
         }
         loadSelectedTab()
+        refreshMissingArtifacts(spaceID: space.id)
     }
 
     func revealArtifactsFolder() {

@@ -140,6 +140,96 @@ struct PluginProcessTests {
         #expect(try await recorder.reply(3) == .object(["error": .string("boom")]))
     }
 
+    @Test(.timeLimit(.minutes(1))) func storageKeepsValuesAcrossRestarts() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        func storage(_ parts: JSONValue...) -> JSONValue { .object(["storage": .array(parts)]) }
+
+        let first = try makeProcess(ws)
+        let recorder = Recorder()
+        recorder.attach(first)
+        try first.start()
+        first.send(message(1, storage(.string("get"), .string("missing"))))
+        #expect(try await recorder.reply(1) == .object(["value": .string("<undefined>")]))
+        first.send(message(2, storage(.string("set"), .string("settings"), .object(["theme": .string("dark"), "n": .number(3)]))))
+        #expect(try await recorder.reply(2) == .object(["ok": .bool(true)]))
+        first.send(message(3, storage(.string("set"), .string("list"), .array([.number(1), .null, .string("a")]))))
+        _ = try await recorder.reply(3)
+        first.send(message(4, storage(.string("copy"))))
+        #expect(try await recorder.reply(4) == .object(["value": .object(["a": .number(1)])]))
+        first.send(message(5, storage(.string("delete"), .string("o"))))
+        #expect(try await recorder.reply(5) == .object(["deleted": .bool(true)]))
+        first.send(message(6, storage(.string("delete"), .string("o"))))
+        #expect(try await recorder.reply(6) == .object(["deleted": .bool(false)]))
+        first.stop()
+
+        // The file is whole, readable JSON in the data folder, and no temporary file is left.
+        let file = ws.data.appending(path: "storage.json")
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]
+        #expect(saved?.keys.sorted() == ["list", "settings"])
+        #expect(!FileManager.default.fileExists(atPath: ws.data.appending(path: "storage.json.tmp").path))
+
+        // A new process (a restart of the plugin or of Singularity) finds the same values.
+        let second = try makeProcess(ws)
+        let again = Recorder()
+        again.attach(second)
+        try second.start()
+        defer { second.stop() }
+        second.send(message(1, storage(.string("get"), .string("settings"))))
+        #expect(try await again.reply(1) == .object(["value": .object(["theme": .string("dark"), "n": .number(3)])]))
+        second.send(message(2, storage(.string("keys"))))
+        #expect(try await again.reply(2) == .object(["keys": .array([.string("settings"), .string("list")])]))
+        second.send(message(3, storage(.string("clear"))))
+        _ = try await again.reply(3)
+        second.send(message(4, storage(.string("keys"))))
+        #expect(try await again.reply(4) == .object(["keys": .array([])]))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func storageRefusesBadValuesAndSurvivesABrokenFile() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        func storage(_ parts: JSONValue...) -> JSONValue { .object(["storage": .array(parts)]) }
+        // A store someone (or a crash of an older version) left unreadable.
+        try FileManager.default.createDirectory(at: ws.data, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: ws.data.appending(path: "storage.json"))
+
+        let process = try makeProcess(ws)
+        let recorder = Recorder()
+        recorder.attach(process)
+        try process.start()
+        defer { process.stop() }
+
+        // The broken file is set aside, said in the log, and the store works.
+        process.send(message(1, storage(.string("keys"))))
+        #expect(try await recorder.reply(1) == .object(["keys": .array([])]))
+        let names = try FileManager.default.contentsOfDirectory(atPath: ws.data.path)
+        #expect(names.contains { $0.hasPrefix("storage.unreadable-") })
+        #expect(recorder.logLines.contains { $0.level == "error" && $0.message.contains("storage.json couldn't be read") })
+
+        func error(_ id: Int) async throws -> String {
+            guard case .object(let fields) = try await recorder.reply(id), case .string(let text)? = fields["storageError"] else {
+                Issue.record("expected a storage error for \(id)")
+                return ""
+            }
+            return text
+        }
+        process.send(message(2, storage(.string("bad"))))
+        #expect(try await error(2).contains("must be JSON"))
+        process.send(message(3, storage(.string("huge"))))
+        #expect(try await error(3).contains("storage is full"))
+        process.send(message(4, storage(.string("get"), .string(""))))
+        #expect(try await error(4).contains("storage key"))
+        // Nothing of the refused values was kept.
+        process.send(message(5, storage(.string("keys"))))
+        #expect(try await recorder.reply(5) == .object(["keys": .array([])]))
+
+        // Fifty changes at once all land, and the file is whole afterwards.
+        process.send(message(6, storage(.string("burst"))))
+        #expect(try await recorder.reply(6) == .object(["keys": .number(50)]))
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: ws.data.appending(path: "storage.json"))) as? [String: Any]
+        #expect(saved?.count == 50)
+    }
+
     @Test(.timeLimit(.minutes(1))) func repliesNoHandler() async throws {
         let ws = try makeWorkspace(background: #"console.log("no handler here");"#)
         defer { ws.remove() }

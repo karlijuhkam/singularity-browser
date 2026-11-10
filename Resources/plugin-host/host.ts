@@ -15,6 +15,7 @@
 //
 //     singularity.onPageMessage(async ({ tabID, frameHost, payload }) => {
 //       const result = await singularity.run("op", ["item", "list", "--format", "json"]);
+//       await singularity.storage.set("lastListed", Date.now());   // kept across restarts
 //       return { items: JSON.parse(result.stdout) };      // becomes the page script's answer
 //     });
 //
@@ -36,6 +37,7 @@
 // log (see below) so a stray print can't break a message. The Swift side of this protocol is
 // Sources/SingularityCore/Plugins/PluginWire.swift and PluginProcess.swift.
 
+import { mkdir, rename } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 // ---- Writing messages -------------------------------------------------------------------------
@@ -94,6 +96,134 @@ process.on("uncaughtException", (error: unknown) => {
   log("error", ["uncaught exception: " + describeError(error)]);
 });
 
+// ---- Storage ----------------------------------------------------------------------------------
+//
+// singularity.storage: a small key → value store that survives restarts of the plugin and of
+// Singularity. It lives in one file, <data folder>/storage.json, the folder the plugin may write
+// anyway (HOME points to it). So it gives a plugin nothing it couldn't do with file APIs; it
+// spares every plugin writing the careful version of "save some JSON":
+//
+// - the file is read once, on first use, and kept in memory;
+// - every change writes the whole store to a temporary file and renames it over the old one, so
+//   a crash or power cut leaves either the old store or the new one, never half a file;
+// - changes are written one after another, in the order they were made, and a call's promise
+//   resolves when its change is on disk;
+// - a file that can't be read as a JSON object is moved aside (storage.unreadable-<time>.json)
+//   and the store starts empty, so one bad write can't lock a plugin out for good.
+
+const STORAGE_MAX_BYTES = 5 * 1024 * 1024;
+const STORAGE_MAX_KEY_LENGTH = 256;
+
+function storageFolder(): string {
+  const home = process.env.HOME;
+  if (!home) throw new Error("storage isn't available: the plugin has no data folder");
+  return home;
+}
+
+let storageValues: Map<string, unknown> | null = null;
+let storageLoading: Promise<Map<string, unknown>> | null = null;
+// The tail of the queue of writes; each write starts when the one before it has finished.
+let storageWrites: Promise<void> = Promise.resolve();
+
+function loadStorage(): Promise<Map<string, unknown>> {
+  if (storageValues) return Promise.resolve(storageValues);
+  storageLoading ??= (async () => {
+    const path = storageFolder() + "/storage.json";
+    const values = new Map<string, unknown>();
+    const file = Bun.file(path);
+    if (await file.exists()) {
+      try {
+        const parsed = JSON.parse(await file.text());
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+        for (const [key, value] of Object.entries(parsed)) values.set(key, value);
+      } catch (error) {
+        const aside = storageFolder() + "/storage.unreadable-" + Date.now() + ".json";
+        try { await rename(path, aside); } catch { /* the next write replaces it anyway */ }
+        log("error", ["storage: storage.json couldn't be read (" + errorMessage(error) + "); it was set aside and the store starts empty"]);
+      }
+    }
+    storageValues = values;
+    return values;
+  })();
+  return storageLoading;
+}
+
+/** Queues writing the store as it is now; resolves when that is on disk. */
+function saveStorage(values: Map<string, unknown>): Promise<void> {
+  const text = JSON.stringify(Object.fromEntries(values));
+  const write = storageWrites.then(async () => {
+    const folder = storageFolder();
+    await mkdir(folder, { recursive: true });
+    const temporary = folder + "/storage.json.tmp";
+    await Bun.write(temporary, text);
+    await rename(temporary, folder + "/storage.json");
+  });
+  // A failed write must not block the ones after it.
+  storageWrites = write.catch(() => {});
+  return write;
+}
+
+function checkStorageKey(key: unknown): asserts key is string {
+  if (typeof key !== "string" || key.length === 0 || key.length > STORAGE_MAX_KEY_LENGTH) {
+    throw new TypeError("a storage key is a string of 1 to " + STORAGE_MAX_KEY_LENGTH + " characters");
+  }
+}
+
+const storage = Object.freeze({
+  /** The value saved under `key`, or `undefined`. A copy: changing it doesn't change the store. */
+  async get(key: string): Promise<unknown> {
+    checkStorageKey(key);
+    const values = await loadStorage();
+    return values.has(key) ? structuredClone(values.get(key)) : undefined;
+  },
+
+  /**
+   * Saves a JSON value (object, array, string, number, boolean or null) under `key`, replacing
+   * what was there. Resolves when it is on disk. Rejects when the value isn't JSON or the store
+   * would grow beyond 5 MB; the store is then unchanged.
+   */
+  async set(key: string, value: unknown): Promise<void> {
+    checkStorageKey(key);
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(value);
+    } catch (error) {
+      throw new TypeError("a storage value must be JSON: " + errorMessage(error));
+    }
+    if (json === undefined) throw new TypeError("a storage value must be JSON (to remove a key, use storage.delete)");
+    const values = await loadStorage();
+    const next = new Map(values);
+    next.set(key, JSON.parse(json)); // a copy, as JSON sees it (no Dates, no undefined fields)
+    if (Buffer.byteLength(JSON.stringify(Object.fromEntries(next))) > STORAGE_MAX_BYTES) {
+      throw new RangeError("storage is full: a plugin's store holds at most 5 MB");
+    }
+    values.set(key, next.get(key));
+    await saveStorage(values);
+  },
+
+  /** Removes `key`. Resolves to whether there was something to remove. */
+  async delete(key: string): Promise<boolean> {
+    checkStorageKey(key);
+    const values = await loadStorage();
+    if (!values.delete(key)) return false;
+    await saveStorage(values);
+    return true;
+  },
+
+  /** All keys, in the order they were first saved. */
+  async keys(): Promise<string[]> {
+    return [...(await loadStorage()).keys()];
+  },
+
+  /** Removes everything. */
+  async clear(): Promise<void> {
+    const values = await loadStorage();
+    if (values.size === 0) return;
+    values.clear();
+    await saveStorage(values);
+  },
+});
+
 // ---- The `singularity` API --------------------------------------------------------------------
 
 type PageMessage = { tabID: string; frameHost: string; payload: unknown };
@@ -131,6 +261,12 @@ const singularity = Object.freeze({
       send({ kind: "runCommand", callID, command, arguments: args });
     });
   },
+
+  /**
+   * A small key → value store that survives restarts: `await singularity.storage.set("seen", [1, 2])`,
+   * `await singularity.storage.get("seen")`. Kept in the plugin's data folder; see "Storage" above.
+   */
+  storage,
 
   /** Writes a line to the plugin's log (shown in Singularity's settings). Same as console.log. */
   log(...values: unknown[]): void {

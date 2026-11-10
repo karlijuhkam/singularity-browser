@@ -19,6 +19,8 @@ struct SingularityCommands: Commands {
             Divider()
             Button("New Folder…") { state.promptNewFolder() }
             Button("New Space…") { state.spaceEditor = SpaceEditorRequest(spaceID: nil) }
+            Divider()
+            Button("Import from Arc…") { state.isImportingFromArc = true }
         }
 
         // Replaces File → Close (which would close the whole window) with Close Tab.

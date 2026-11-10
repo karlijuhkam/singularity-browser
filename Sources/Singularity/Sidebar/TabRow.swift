@@ -10,6 +10,8 @@ struct TabRow: View {
     let space: Space
     @State private var isHovering = false
 
+    private var isMissing: Bool { state.missingArtifactTabs.contains(tab.id) }
+
     var body: some View {
         HStack(spacing: 8) {
             TabIcon(tab: tab, space: space)
@@ -17,6 +19,9 @@ struct TabRow: View {
             Text(tab.displayTitle)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                // An artifact whose file was deleted: struck through and dimmed.
+                .strikethrough(isMissing)
+                .foregroundStyle(isMissing ? .secondary : .primary)
             Spacer(minLength: 0)
             AgentBadge(tab: tab)
             if isHovering {
@@ -34,7 +39,7 @@ struct TabRow: View {
         }
         .agentBusyBackground(tab.id)
         .onHover { isHovering = $0 }
-        .help(tab.url?.absoluteString ?? "")
+        .help(isMissing ? "The file of this artifact is missing" : (tab.url?.absoluteString ?? ""))
         .contextMenu { TabContextMenu(tab: tab, space: space) }
         // Lets the row be dragged onto the page to build a split.
         .itemProvider { TabDrag.provider(for: tab.id) }
@@ -49,8 +54,9 @@ struct TabIcon: View {
 
     var body: some View {
         if tab.isArtifact {
-            Image(systemName: "doc.richtext")
-                .foregroundStyle(.secondary)
+            let isMissing = state.missingArtifactTabs.contains(tab.id)
+            Image(systemName: isMissing ? "questionmark.square.dashed" : "doc.richtext")
+                .foregroundStyle(isMissing ? .tertiary : .secondary)
         } else if tab.isTerminal {
             let session = state.terminals.existingSession(tab.id)
             Image(systemName: session?.foregroundProgram != nil ? "terminal.fill" : "terminal")
@@ -82,6 +88,25 @@ enum TabDrag {
     }
 }
 
+/// Reading the dragged tab back out of a drop in the sidebar.
+@MainActor
+enum TabDrop {
+    static let types = [UTType.singularityTab]
+
+    /// Hands the dragged tab's id to `action` on the main thread. (Item providers deliver their
+    /// data asynchronously, on a background queue.)
+    @discardableResult
+    static func handle(_ providers: [NSItemProvider], action: @escaping @MainActor (UUID) -> Void) -> Bool {
+        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.singularityTab.identifier) })
+        else { return false }
+        _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.singularityTab.identifier) { data, _ in
+            guard let data, let id = UUID(uuidString: String(decoding: data, as: UTF8.self)) else { return }
+            Task { @MainActor in action(id) }
+        }
+        return true
+    }
+}
+
 /// The right-click menu of a tab (sidebar rows and split chips).
 struct TabContextMenu: View {
     @Environment(AppState.self) private var state
@@ -94,9 +119,9 @@ struct TabContextMenu: View {
         }
 
         Menu("Move to Folder") {
-            ForEach(space.folders) { folder in
-                Button(folder.name) { state.moveTab(tab.id, to: .folder(folder.id)) }
-                    .disabled(tab.folderID == folder.id)
+            ForEach(space.foldersInTreeOrder, id: \.folder.id) { entry in
+                Button(space.folderPath(entry.folder.id)) { state.moveTab(tab.id, to: .folder(entry.folder.id)) }
+                    .disabled(tab.folderID == entry.folder.id)
             }
             if !space.folders.isEmpty { Divider() }
             Button("New Folder…") { state.promptNewFolder(moving: tab.id) }
@@ -131,6 +156,7 @@ struct TabContextMenu: View {
                 let file = state.paths.artifactsDirectory(space.slug).appending(path: path)
                 NSWorkspace.shared.activateFileViewerSelecting([file])
             }
+            .disabled(state.missingArtifactTabs.contains(tab.id))
         }
 
         if let url = tab.url {

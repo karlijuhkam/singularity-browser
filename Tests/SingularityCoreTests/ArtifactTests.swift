@@ -28,6 +28,38 @@ import Testing
         #expect(ArtifactFiles.resolve(requestPath: "/app.mjs", root: root) != nil)
     }
 
+    @Test func knowsWhenAnArtifactTabsFileIsGone() throws {
+        let (root, base) = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try Data("x".utf8).write(to: root.appending(path: "100% done #1?.html"))
+        #expect(ArtifactFiles.exists(relativePath: "index.html", root: root))
+        #expect(ArtifactFiles.exists(relativePath: "report/index.html", root: root))
+        #expect(ArtifactFiles.exists(relativePath: "100% done #1?.html", root: root))
+        #expect(!ArtifactFiles.exists(relativePath: "gone.html", root: root))
+        try FileManager.default.removeItem(at: root.appending(path: "report/index.html"))
+        #expect(!ArtifactFiles.exists(relativePath: "report/index.html", root: root))
+    }
+
+    @Test func relativePathOfADeletedFileBehindASymlink() throws {
+        let (root, base) = try makeTree()
+        defer { try? FileManager.default.removeItem(at: base) }
+        // <tmp>/link → <tmp>/artifacts; the watcher may report paths through either name.
+        let link = base.appending(path: "link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        #expect(ArtifactFiles.relativePath(of: link.appending(path: "report/index.html"), in: root) == "report/index.html")
+        #expect(ArtifactFiles.relativePath(of: link.appending(path: "report/deleted.html"), in: root) == "report/deleted.html")
+        #expect(ArtifactFiles.relativePath(of: base.appending(path: "deleted.html"), in: root) == nil)
+    }
+
+    @Test func missingPageIsOnlyForPageLoadsAndEscapesThePath() {
+        #expect(ArtifactMissingPage.wantsHTML(accept: "text/html,application/xhtml+xml,*/*;q=0.8"))
+        #expect(!ArtifactMissingPage.wantsHTML(accept: "*/*"))
+        #expect(!ArtifactMissingPage.wantsHTML(accept: nil))
+        let html = ArtifactMissingPage.html(requestPath: "/a%20b/%3Cscript%3E.html")
+        #expect(html.contains("a b/&lt;script&gt;.html"))
+        #expect(!html.contains("<script>"))
+    }
+
     @Test func refusesEverythingOutsideOrHidden() throws {
         let (root, base) = try makeTree()
         defer { try? FileManager.default.removeItem(at: base) }
@@ -105,5 +137,28 @@ import Testing
     @Test func tokensAreRandomAndLong() {
         let a = ArtifactAuth.makeToken(), b = ArtifactAuth.makeToken()
         #expect(a.count == 64 && a != b)
+    }
+}
+
+@Suite struct ArtifactRangeTests {
+    @Test func parsesSingleRanges() {
+        #expect(ArtifactRange.parse(header: nil, fileSize: 1000) == .full)
+        #expect(ArtifactRange.parse(header: "bytes=0-499", fileSize: 1000) == .partial(0...499))
+        #expect(ArtifactRange.parse(header: "bytes=500-", fileSize: 1000) == .partial(500...999))
+        #expect(ArtifactRange.parse(header: "bytes=-200", fileSize: 1000) == .partial(800...999))
+        #expect(ArtifactRange.parse(header: "bytes=-5000", fileSize: 1000) == .partial(0...999))
+        #expect(ArtifactRange.parse(header: "Bytes=0-0", fileSize: 1000) == .partial(0...0))
+        // An end past the file is cut to the file.
+        #expect(ArtifactRange.parse(header: "bytes=900-5000", fileSize: 1000) == .partial(900...999))
+    }
+
+    @Test func refusesOrIgnoresTheRest() {
+        #expect(ArtifactRange.parse(header: "bytes=1000-", fileSize: 1000) == .unsatisfiable)
+        #expect(ArtifactRange.parse(header: "bytes=0-", fileSize: 0) == .unsatisfiable)
+        #expect(ArtifactRange.parse(header: "bytes=-0", fileSize: 1000) == .unsatisfiable)
+        // Not understood: the whole file.
+        for header in ["bytes=0-10,20-30", "items=0-10", "bytes=abc-", "bytes=10-5", "bytes=", "bytes=-", "bytes=+1-5", "bytes=1--5"] {
+            #expect(ArtifactRange.parse(header: header, fileSize: 1000) == .full, "\(header)")
+        }
     }
 }

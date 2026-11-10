@@ -39,6 +39,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var terminalFontSize: Double = 13
     /// `exit` (or Ctrl-D) at the prompt closes the terminal tab.
     public var closeTerminalOnExit: Bool = true
+    /// Run terminal tabs through the owner's installed herdr-core (`hc`), so shells outlive the
+    /// app (see `HerdrCore`). Off by default; falls back to the built-in terminal when `hc` is missing.
+    public var terminalUsesHerdrCore: Bool = false
     /// How long an agent approval sheet waits before counting as "Deny".
     public var agentApprovalTimeoutSeconds: Int = 120
 
@@ -54,6 +57,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         terminalFontName = (try? container.decodeIfPresent(String.self, forKey: .terminalFontName)) ?? nil
         terminalFontSize = (try? container.decodeIfPresent(Double.self, forKey: .terminalFontSize)) ?? defaults.terminalFontSize
         closeTerminalOnExit = (try? container.decodeIfPresent(Bool.self, forKey: .closeTerminalOnExit)) ?? defaults.closeTerminalOnExit
+        terminalUsesHerdrCore = (try? container.decodeIfPresent(Bool.self, forKey: .terminalUsesHerdrCore)) ?? defaults.terminalUsesHerdrCore
         agentApprovalTimeoutSeconds = (try? container.decodeIfPresent(Int.self, forKey: .agentApprovalTimeoutSeconds))
             ?? defaults.agentApprovalTimeoutSeconds
     }

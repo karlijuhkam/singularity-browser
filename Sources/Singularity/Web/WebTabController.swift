@@ -53,6 +53,11 @@ final class WebTabController: NSObject {
     /// included). Only that host, or the page already shown, may ask for a name and password.
     @ObservationIgnored private var mainFrameHost: String?
     @ObservationIgnored private var lastCrashReload: Date?
+    /// Console problems and failed requests of the page, for agents (`read_console`,
+    /// `read_network`). Only filled for sites the owner switched on; see `PageCaptureScript`.
+    @ObservationIgnored private var capture = PageCapture()
+    /// The site `capture` belongs to. Entries of one site are never shown for another.
+    @ObservationIgnored private var captureSite: String?
     /// Bumped by ⌘F so an already open find bar takes the keyboard again.
     private(set) var findFocusToken = 0
 
@@ -77,6 +82,27 @@ final class WebTabController: NSObject {
 
     func load(_ url: URL) {
         webView.load(URLRequest(url: url))
+    }
+
+    // MARK: - Console and network capture
+
+    func recordCapture(json: String, site: String) {
+        if captureSite != site {
+            capture.clear()
+            captureSite = site
+        }
+        capture.record(json: json)
+    }
+
+    /// What was captured for `site` (empty when the tab's capture belongs to another site).
+    func capture(forSite site: String) -> PageCapture {
+        captureSite == site ? capture : PageCapture()
+    }
+
+    /// Forgets what was captured (the site was switched off, or the tab left the site).
+    func clearCapture() {
+        capture.clear()
+        captureSite = nil
     }
 
     /// Waits until the page has finished loading (or `timeout` passes).
@@ -332,6 +358,8 @@ extension WebTabController: WKNavigationDelegate {
     /// Content of a new page started arriving: the error page (if any) is gone.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if navigation !== errorNavigation { failedURL = nil }
+        // The tab left the site its console and network entries belong to: they go.
+        if captureSite != nil, SiteInfo.site(of: webView.url) != captureSite { clearCapture() }
     }
 
     /// Sites behind a username and password (HTTP Basic/Digest, common on staging servers).
@@ -454,6 +482,30 @@ extension WebTabController: WKUIDelegate {
         return await present(alert) == .alertFirstButtonReturn ? field.stringValue : nil
     }
 
+    /// A page asks for the camera or the microphone. The owner's choice for the site (site
+    /// settings: Ask / Allow / Block) decides; "Ask" is WebKit's own question, as before.
+    func webView(_ webView: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
+                 initiatedBy frame: WKFrameInfo, type: WKMediaCaptureType) async -> WKPermissionDecision {
+        guard let space = state?.space(spaceID), let pageSite = SiteInfo.site(of: webView.url) else { return .prompt }
+        var components = URLComponents()
+        components.scheme = origin.protocol
+        components.host = origin.host
+        if origin.port != 0 { components.port = origin.port }
+        let kind: MediaRules.Kind
+        switch type {
+        case .camera: kind = .camera
+        case .microphone: kind = .microphone
+        case .cameraAndMicrophone: kind = .cameraAndMicrophone
+        @unknown default: return .prompt
+        }
+        switch MediaRules.decide(kind, settings: space.settings(forSite: pageSite),
+                                 requestingSite: SiteInfo.site(of: components.url), pageSite: pageSite) {
+        case .grant: return .grant
+        case .deny: return .deny
+        case .prompt: return .prompt
+        }
+    }
+
     /// `<input type="file">`.
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo) async -> [URL]? {
         let panel = NSOpenPanel()
@@ -480,30 +532,26 @@ extension WebTabController: WKUIDelegate {
 // MARK: - WKDownloadDelegate
 
 extension WebTabController: WKDownloadDelegate {
-    /// Saves straight into ~/Downloads, adding " (2)", " (3)", … if the name is taken.
+    /// Saves straight into ~/Downloads, adding " (2)", " (3)", … if the name is taken, and lists
+    /// the download in the sidebar (`DownloadCenter`).
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String) async -> URL? {
-        let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        let name = (suggestedFilename as NSString).lastPathComponent // never trust a path from the server
-        let base = (name as NSString).deletingPathExtension
-        let ext = (name as NSString).pathExtension
-        var candidate = folder.appending(path: name)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            let numbered = ext.isEmpty ? "\(base) (\(counter))" : "\(base) (\(counter)).\(ext)"
-            candidate = folder.appending(path: numbered)
-            counter += 1
+        if let state {
+            return state.downloads.begin(download, suggestedFilename: suggestedFilename,
+                                         expectedBytes: response.expectedContentLength)
         }
-        return candidate
+        // No app state (tests): just pick the file.
+        let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        return DownloadNaming.destination(suggestedFilename: suggestedFilename, folder: folder) {
+            FileManager.default.fileExists(atPath: $0.path)
+        }
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        // Makes the Downloads stack in the Dock bounce, as Safari does.
-        if let url = download.progress.fileURL {
-            DistributedNotificationCenter.default().post(name: .init("com.apple.DownloadFileFinished"), object: url.path)
-        }
+        state?.downloads.finished(download)
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         NSLog("Singularity: download failed: \(error.localizedDescription)")
+        state?.downloads.failed(download, error: error)
     }
 }
