@@ -145,6 +145,38 @@ import Testing
         command = "/usr/local/bin/other"
         """
         #expect(AgentConnect.registeredLauncher(.codex, configText: commandUnderLaterTable) == nil)
+        let arrayOfTables = """
+        [[mcp_servers.singularity]]
+        command = "/Applications/Singularity.app/Contents/MacOS/singularity-mcp"
+        """
+        #expect(AgentConnect.registeredLauncher(.codex, configText: arrayOfTables) == nil)
+        let emptyCommand = """
+        [mcp_servers.singularity]
+        command = ""
+        """
+        #expect(AgentConnect.registeredLauncher(.codex, configText: emptyCommand) == nil)
+    }
+
+    @Test func codexQuotedInlineKey() {
+        let text = """
+        [mcp_servers]
+        "singularity" = { command = "/Applications/Singularity.app/Contents/MacOS/singularity-mcp" }
+        """
+        #expect(AgentConnect.registeredLauncher(.codex, configText: text) == launcher)
+    }
+
+    /// A damaged inline table must read as "no entry", never hang.
+    @Test func codexDamagedInlineTableIsNil() {
+        let damaged = [
+            "[mcp_servers]\nsingularity = { ] }",
+            "[mcp_servers]\nsingularity = { a = 1 ] }",
+            "[mcp_servers]\nsingularity = { a = \"open",
+            "[mcp_servers]\nsingularity = { a = 1, ",
+            "[mcp_servers]\nsingularity = { = }",
+        ]
+        for text in damaged {
+            #expect(AgentConnect.registeredLauncher(.codex, configText: text) == nil, "\(text)")
+        }
     }
 
     // MARK: Status

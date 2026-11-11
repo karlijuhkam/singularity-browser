@@ -190,12 +190,14 @@ public enum AgentConnect {
                 return quotedString(value)
             }
             // Skip this pair: up to the next comma that is outside strings and brackets.
-            guard let next = afterValue(rest) else { return nil }
+            // Each round must move forward, or a damaged file could make this loop forever.
+            guard let next = afterValue(rest), next.startIndex > rest.startIndex else { return nil }
             rest = next
         }
     }
 
-    /// The text after the current `key = value` pair's value, or nil when a string never ends.
+    /// The text after the current `key = value` pair's value, or nil when the text is damaged
+    /// (a string never ends, or a `]` closes nothing).
     private static func afterValue(_ text: Substring) -> Substring? {
         var depth = 0
         var quote: Character?
@@ -212,7 +214,10 @@ public enum AgentConnect {
                 case "\"", "'": quote = char
                 case "[", "{": depth += 1
                 case "]", "}":
-                    if depth == 0 { return text[index...] } // end of the inline table
+                    if depth == 0 {
+                        // "}" ends the inline table; a "]" with nothing open is damage.
+                        return char == "}" ? text[index...] : nil
+                    }
                     depth -= 1
                 case ",":
                     if depth == 0 { return text[text.index(after: index)...] }
