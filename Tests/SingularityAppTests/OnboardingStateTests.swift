@@ -10,19 +10,6 @@ extension AppTests {
     private func makeRoot() -> URL { TestAppState.makeRoot() }
     private func shutDown(_ state: AppState) { TestAppState.shutDown(state) }
 
-    private struct TimedOut: Error, CustomStringConvertible {
-        let description: String
-    }
-
-    /// Polls `condition` every 20 ms until it holds; fails the test after `limit`.
-    private func waitUntil(_ what: String, limit: Duration = .seconds(5), _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + limit
-        while !condition() {
-            guard ContinuousClock.now < deadline else { throw TimedOut(description: "waited \(limit) for \(what)") }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-    }
-
     private func spaceFolders(_ root: URL) -> Set<String> {
         Set((try? FileManager.default.contentsOfDirectory(atPath: Paths(root: root).spacesDirectory.path)) ?? [])
     }
@@ -266,6 +253,40 @@ extension AppTests {
         state.isImportingFromArc = false
         state.closeTabCommand()
         #expect(state.space(id)?.tabs.isEmpty == true)
+    }
+
+    /// An Add that finishes after the user left the flow (or step 4) asks for no approval sheet,
+    /// and a reopened flow never starts with one: ⌘W works from step 1.
+    @Test func aLatePluginReviewLeavesNoSheetBehind() throws {
+        MainRunLoopGuard.start
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let state = TestAppState.make(root: root)
+        defer { shutDown(state) }
+        for _ in 0..<3 { state.advanceWelcome() }
+        #expect(state.onboarding?.step == .plugins)
+        state.reviewWelcomePlugin("1password")
+        #expect(state.welcomePluginReview == "1password")
+        state.welcomePluginReview = nil
+
+        // Skip setup while the copy runs; the Add finishes afterwards.
+        state.closeWelcome()
+        state.reviewWelcomePlugin("1password")
+        #expect(state.welcomePluginReview == nil)
+        state.showWelcome()
+        #expect(!state.welcomeSheetIsOpen)
+        // Not on step 4 either: nothing.
+        state.reviewWelcomePlugin("1password")
+        #expect(state.welcomePluginReview == nil)
+
+        // Reopening clears a sheet left set by any other route.
+        state.welcomePluginReview = "1password"
+        state.showWelcome()
+        #expect(state.welcomePluginReview == nil)
+        #expect(!state.welcomeSheetIsOpen)
+        state.closeTabCommand()
+        #expect(state.onboarding == nil)
     }
 
     /// Step 4's row: Add while the plugin isn't in the plugins folder, a spinner while it is copied,

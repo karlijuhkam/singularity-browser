@@ -218,7 +218,7 @@ struct PluginsStep: View {
         case .add:
             Button("Add") { add(plugin) }
         case .review:
-            Button("Review…") { state.welcomePluginReview = plugin.id }
+            Button("Review…") { state.reviewWelcomePlugin(plugin.id) }
         case .added:
             Text("Added").foregroundStyle(.secondary)
         }
@@ -233,7 +233,7 @@ struct PluginsStep: View {
             defer { adding.remove(plugin.id) }
             do {
                 let id = try await state.plugins.addPlugin(from: plugin.folder)
-                state.welcomePluginReview = id
+                state.reviewWelcomePlugin(id) // nothing if the flow was left meanwhile
             } catch {
                 // `PluginManagerError.addFailed` describes itself with the installer's `userMessage`.
                 errors[plugin.id] = error.localizedDescription

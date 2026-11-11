@@ -39,6 +39,7 @@ final class AppState {
     var welcomeCoversWindow: Bool { onboarding != nil }
     /// The plugin whose approval sheet step 4 of the welcome flow shows (its id), nil when none.
     /// Kept here rather than in the step's view so that ⌘W can see the sheet (`welcomeSheetIsOpen`).
+    /// Set it with `reviewWelcomePlugin` (only on step 4); the sheet's binding clears it.
     var welcomePluginReview: String?
     /// A sheet is open over the welcome flow: the Arc import, or a plugin's approval from step 4.
     var welcomeSheetIsOpen: Bool { welcomeCoversWindow && (isImportingFromArc || welcomePluginReview != nil) }
@@ -279,6 +280,15 @@ final class AppState {
     func showWelcome() {
         onboarding = OnboardingFlow()
         palette = nil
+        welcomePluginReview = nil
+    }
+
+    /// Step 4's Review…, or a finished Add: shows the plugin's approval sheet, but only while the
+    /// flow is on step 4. An Add that finishes after the user left the flow (Skip setup, Esc) or
+    /// the step must not leave a sheet waiting for the next time the flow opens.
+    func reviewWelcomePlugin(_ id: String) {
+        guard onboarding?.step == .plugins else { return }
+        welcomePluginReview = id
     }
 
     /// Skip setup, Esc, or finishing the last step. Also called by every command that takes the

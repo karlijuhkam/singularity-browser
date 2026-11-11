@@ -104,7 +104,7 @@ final class OrbMetalView: MTKView {
     private(set) var cursor = OrbRenderer.defaultCursor
     /// Where the pointer last touched the sphere (a unit vector, view space, y up).
     private(set) var targetCursor = OrbRenderer.defaultCursor
-    /// Frames drawn so far (read by `OrbViewTests`: one still frame under Reduce Motion).
+    /// Frames drawn so far (read by `OrbTests`: one still frame under Reduce Motion).
     private(set) var framesDrawn = 0
     private var trackingArea: NSTrackingArea?
     /// When the pointer last moved over the orb, or the window last became key (the idle count's start).

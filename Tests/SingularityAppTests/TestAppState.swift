@@ -48,3 +48,17 @@ enum TestAppState {
         }
     }
 }
+
+private struct TimedOut: Error, CustomStringConvertible {
+    let description: String
+}
+
+/// Polls `condition` every 20 ms until it holds; throws (failing the test) after `limit`.
+@MainActor
+func waitUntil(_ what: String, limit: Duration = .seconds(5), _ condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now + limit
+    while !condition() {
+        guard ContinuousClock.now < deadline else { throw TimedOut(description: "waited \(limit) for \(what)") }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+}

@@ -96,19 +96,19 @@ extension AppTests {
             _ = MainRunLoopGuard.start
             let (window, view) = hostOrb()
             defer { window.close() }
-            try await Task.sleep(for: .milliseconds(300)) // the first frame, drawn on being shown
-            #expect(view.framesDrawn >= 1)
+            try await waitUntil("the first frame, drawn on being shown") { view.framesDrawn >= 1 }
+            // Let any frame still owed for being shown come in before counting.
+            try await Task.sleep(for: .milliseconds(100))
             let before = view.framesDrawn
 
             view.reduceMotion = true
             #expect(view.isPaused && view.enableSetNeedsDisplay)
-            try await Task.sleep(for: .milliseconds(300))
-            #expect(view.framesDrawn == before + 1, "drawn \(view.framesDrawn - before) frames")
-
+            try await waitUntil("the still frame") { view.framesDrawn > before }
+            // Then it holds: no more frames, also not for the pointer.
             view.pointerMoved(to: CGPoint(x: 72, y: 72))
             #expect(view.targetCursor == OrbRenderer.defaultCursor)
             try await Task.sleep(for: .milliseconds(300))
-            #expect(view.framesDrawn == before + 1)
+            #expect(view.framesDrawn == before + 1, "drawn \(view.framesDrawn - before) frames")
             #expect(view.isPaused)
         }
     }

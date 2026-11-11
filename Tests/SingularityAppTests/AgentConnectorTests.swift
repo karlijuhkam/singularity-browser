@@ -185,6 +185,7 @@ extension AppTests {
         /// Both Copy buttons (an agent row's command, step 4's prompt) go through `CopyText.copy`,
         /// which replaces what is on the pasteboard. A private named pasteboard, never the user's.
         @Test func copyPutsTheTextOnThePasteboard() throws {
+            _ = MainRunLoopGuard.start
             let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.roosa.singularity.tests.\(UUID().uuidString)"))
             defer { pasteboard.releaseGlobally() }
             pasteboard.clearContents()

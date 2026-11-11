@@ -6,47 +6,88 @@ import Testing
 /// Opt-in, never part of `scripts/test.sh`: Connect and Update with the REAL `claude` and `codex`,
 /// run through the real login shell (`AgentLoginShell`), against throwaway config folders.
 ///
-///     SINGULARITY_REAL_AGENTS=1 CLAUDE_CONFIG_DIR=/private/tmp/sg-agents \
-///     CODEX_HOME=/private/tmp/sg-agents/.codex swift test --filter RealAgentConnectTests
+///     source scripts/env.sh && SINGULARITY_REAL_AGENTS=1 CLAUDE_CONFIG_DIR=/private/tmp/sg-agents-1 \
+///     CODEX_HOME=/private/tmp/sg-agents-1/.codex swift test --filter RealAgentConnectTests
 ///
 /// The two variables pass through the login shell to the agents, so `claude mcp add -s user`
 /// writes `$CLAUDE_CONFIG_DIR/.claude.json` and `codex mcp add` writes `$CODEX_HOME/config.toml`:
 /// exactly the files `AgentConnect.configFile(_:home:)` reads with home = `CLAUDE_CONFIG_DIR`.
-/// Each test refuses to run unless both point inside /private/tmp that way, so the real
-/// `~/.claude.json` and `~/.codex/config.toml` are never touched. The launcher paths don't exist,
-/// so nothing an agent might try to start can reach a copy of the app.
+/// Before anything runs, each test checks (`throwawayHome`) that both variables name such a folder,
+/// both in this process and as the login shell sees them (the user's shell files could change
+/// them), so the real `~/.claude.json` and `~/.codex/config.toml` are never touched. The launcher
+/// paths don't exist, so nothing an agent might try to start can reach a copy of the app.
 private let realAgentsRequested = ProcessInfo.processInfo.environment["SINGULARITY_REAL_AGENTS"] == "1"
 
 extension AppTests {
     @MainActor
     @Suite(.serialized, .enabled(if: realAgentsRequested, "opt-in: set SINGULARITY_REAL_AGENTS=1, CLAUDE_CONFIG_DIR and CODEX_HOME"))
     struct RealAgentConnectTests {
-        /// The throwaway home (`CLAUDE_CONFIG_DIR`), emptied, with an empty `.codex` folder in it.
-        /// Nil, with an issue recorded, unless `CLAUDE_CONFIG_DIR` is a folder inside /private/tmp
-        /// and `CODEX_HOME` is its `.codex`.
-        private func throwawayHome() -> URL? {
+        /// Left in the folder by the first test, so later tests know the folder is the suite's own.
+        private static let marker = ".singularity-real-agents-test"
+
+        /// The throwaway home (`CLAUDE_CONFIG_DIR`) with no agent config in it and an empty
+        /// `.codex` folder. Nil, with an issue recorded, unless:
+        /// - `CLAUDE_CONFIG_DIR` is exactly `/private/tmp/sg-agents-<letters, digits, - or _>` and
+        ///   `CODEX_HOME` is exactly its `/.codex`;
+        /// - the folder doesn't exist yet, or holds this suite's marker (it is never removed, and
+        ///   nothing in a folder this suite didn't make is touched);
+        /// - the login shell the connector uses reports the same two paths.
+        /// Only the files the agents write for the test (`.claude.json`, `.codex/`) are removed.
+        private func throwawayHome() async -> URL? {
             let environment = ProcessInfo.processInfo.environment
             guard let claude = environment["CLAUDE_CONFIG_DIR"], let codex = environment["CODEX_HOME"] else {
                 Issue.record("CLAUDE_CONFIG_DIR and CODEX_HOME must both be set: refusing to run against the real config")
                 return nil
             }
-            let home: String = claude.hasSuffix("/") ? String(claude.dropLast()) : claude
-            let components: [String] = home.split(separator: "/").map(String.init)
-            let codexHome: String = home + "/.codex"
-            guard home.hasPrefix("/private/tmp/"), components.count >= 3, !components.contains(".."),
-                  codex == codexHome || codex == codexHome + "/" else {
-                Issue.record("CLAUDE_CONFIG_DIR must be a folder inside /private/tmp and CODEX_HOME its .codex (got \(claude) and \(codex)): refusing to run")
+            let prefix = "/private/tmp/sg-agents-"
+            let name = claude.hasPrefix(prefix) ? String(claude.dropFirst(prefix.count)) : ""
+            let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+            guard !name.isEmpty, name.unicodeScalars.allSatisfy({ allowed.contains($0) }), codex == claude + "/.codex" else {
+                Issue.record("CLAUDE_CONFIG_DIR must be /private/tmp/sg-agents-<name> and CODEX_HOME exactly its /.codex (got \(claude) and \(codex)): refusing to run")
                 return nil
             }
-            let url = URL(filePath: home, directoryHint: .isDirectory)
-            try? FileManager.default.removeItem(at: url)
+
+            let home = URL(filePath: claude, directoryHint: .isDirectory)
+            let files = FileManager.default
+            let marker = home.appending(path: Self.marker)
+            if files.fileExists(atPath: home.path) {
+                guard files.fileExists(atPath: marker.path) else {
+                    Issue.record("\(claude) exists and was not made by this suite: refusing to touch it. Use a new folder name.")
+                    return nil
+                }
+            } else {
+                do {
+                    try files.createDirectory(at: home, withIntermediateDirectories: false)
+                    try Data().write(to: marker)
+                } catch {
+                    Issue.record("could not create \(claude): \(error)")
+                    return nil
+                }
+            }
+
+            // The login shell must hand the agents the same two folders: it runs the user's shell
+            // files, which could change or unset them, and then `mcp add/remove` would hit the
+            // real config. The markers keep shell start-up messages out of the comparison.
+            let seen = await AgentLoginShell().run(#"printf '<<%s|%s>>' "$CLAUDE_CONFIG_DIR" "$CODEX_HOME""#)
+            let expected = "\(claude)|\(codex)"
+            // Every "<<…>>" in the output; exactly one is wanted, and it must be the expected one.
+            let reported = seen.output.components(separatedBy: "<<").dropFirst()
+                .map { $0.components(separatedBy: ">>").first ?? "" }
+            guard seen.exitCode == 0, !seen.timedOut, reported == [expected] else {
+                Issue.record("the login shell reports \(reported) (exit \(seen.exitCode)), not \(expected): refusing to run")
+                return nil
+            }
+
+            // Only what the agents write for these tests.
+            try? files.removeItem(at: AgentConnect.configFile(.claudeCode, home: home))
+            try? files.removeItem(at: home.appending(path: ".codex"))
             do {
-                try FileManager.default.createDirectory(at: url.appending(path: ".codex"), withIntermediateDirectories: true)
+                try files.createDirectory(at: home.appending(path: ".codex"), withIntermediateDirectories: false)
             } catch {
-                Issue.record("could not create \(home): \(error)")
+                Issue.record("could not create \(codex): \(error)")
                 return nil
             }
-            return url
+            return home
         }
 
         /// A launcher path inside the throwaway home (not a real file).
@@ -77,7 +118,7 @@ extension AppTests {
 
         @Test func bothAgentsAreFoundAndNotConnected() async throws {
             _ = MainRunLoopGuard.start
-            guard let home = throwawayHome() else { return }
+            guard let home = await throwawayHome() else { return }
             let connector = AgentConnector(launcher: launcher(in: home), home: home, shell: AgentLoginShell())
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.notConnected))
@@ -87,7 +128,7 @@ extension AppTests {
         @Test(arguments: [AgentKind.claudeCode, .codex])
         func connectWritesTheEntryTheCheckReads(agent: AgentKind) async throws {
             _ = MainRunLoopGuard.start
-            guard let home = throwawayHome() else { return }
+            guard let home = await throwawayHome() else { return }
             let path = launcher(in: home)
             let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell())
             await connector.refresh()
@@ -112,7 +153,7 @@ extension AppTests {
         @Test(arguments: [AgentKind.claudeCode, .codex])
         func updateReplacesAnEntryForAnotherCopy(agent: AgentKind) async throws {
             _ = MainRunLoopGuard.start
-            guard let home = throwawayHome() else { return }
+            guard let home = await throwawayHome() else { return }
             let other = launcher(in: home, app: "Other.app")
             switch agent {
             case .claudeCode:
@@ -136,7 +177,7 @@ extension AppTests {
         @Test(arguments: [AgentKind.claudeCode, .codex])
         func aPathWithASpaceAndAQuoteRoundTrips(agent: AgentKind) async throws {
             _ = MainRunLoopGuard.start
-            guard let home = throwawayHome() else { return }
+            guard let home = await throwawayHome() else { return }
             let path = launcher(in: home, app: "Test's Copy.app")
             #expect(path.contains(" ") && path.contains("'"))
             let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell())
