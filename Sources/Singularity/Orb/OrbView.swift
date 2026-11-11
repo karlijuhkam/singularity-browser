@@ -8,19 +8,27 @@ import SwiftUI
 ///
 /// Without Metal (or if the shader does not compile) it shows the still `Orb-dark/-light.png`
 /// from the app bundle instead, and nothing if those are missing too (e.g. a bare debug binary).
+///
+/// It animates only while its window is the key window and can be seen (`OrbAnimation`). With
+/// `stopsWhenIdle` (the empty-Space placeholder, which may stay open all day) it also holds still
+/// after 30 seconds without the pointer moving over it, until the pointer comes back or the window
+/// becomes key again. The welcome flow leaves it off, so the orb keeps moving there.
 struct OrbView: View {
     let size: CGFloat
+    let stopsWhenIdle: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(size: CGFloat) {
+    init(size: CGFloat, stopsWhenIdle: Bool = false) {
         self.size = size
+        self.stopsWhenIdle = stopsWhenIdle
     }
 
     var body: some View {
         Group {
             if OrbRenderer.pipeline != nil {
-                OrbMetalRepresentable(whiteOrb: colorScheme == .dark, reduceMotion: reduceMotion)
+                OrbMetalRepresentable(whiteOrb: colorScheme == .dark, reduceMotion: reduceMotion,
+                                      stopsWhenIdle: stopsWhenIdle)
             } else if let url = Bundle.main.url(forResource: colorScheme == .dark ? "Orb-dark" : "Orb-light",
                                                 withExtension: "png"),
                       let image = NSImage(contentsOf: url) {
@@ -33,10 +41,27 @@ struct OrbView: View {
     }
 }
 
+/// When the orb animates. The facts come in as plain values, so the rule can be tested
+/// (`OrbAnimationTests`); `OrbMetalView.updatePaused` gathers them from AppKit.
+enum OrbAnimation {
+    /// Seconds without pointer movement after which an orb that `stopsWhenIdle` holds still.
+    static let idleLimit: TimeInterval = 30
+
+    /// Animate only in the key window, when it is on screen and not covered, the app is not hidden
+    /// (⌘H) and Reduce Motion is off; with `stopsWhenIdle`, also only within `idleLimit` seconds
+    /// of the pointer last moving over the orb (or of the window becoming key).
+    static func shouldAnimate(windowIsKey: Bool, windowIsVisible: Bool, appIsHidden: Bool, reduceMotion: Bool,
+                              stopsWhenIdle: Bool, secondsSincePointerMoved: TimeInterval) -> Bool {
+        guard windowIsKey, windowIsVisible, !appIsHidden, !reduceMotion else { return false }
+        return !stopsWhenIdle || secondsSincePointerMoved < idleLimit
+    }
+}
+
 /// Puts the AppKit/Metal view into SwiftUI and hands it the current colour and motion setting.
 private struct OrbMetalRepresentable: NSViewRepresentable {
     let whiteOrb: Bool
     let reduceMotion: Bool
+    let stopsWhenIdle: Bool
 
     func makeNSView(context: Context) -> OrbMetalView {
         OrbMetalView()
@@ -45,10 +70,11 @@ private struct OrbMetalRepresentable: NSViewRepresentable {
     func updateNSView(_ view: OrbMetalView, context: Context) {
         view.whiteOrb = whiteOrb
         view.reduceMotion = reduceMotion
+        view.stopsWhenIdle = stopsWhenIdle
     }
 }
 
-/// An `MTKView` that draws the orb about 30 times a second while it can be seen.
+/// An `MTKView` that draws the orb about 30 times a second while it can be seen (see `OrbAnimation`).
 ///
 /// MTKView runs its own display timer and calls `draw(_:)` on every tick unless `isPaused` is set.
 /// Paused, with `enableSetNeedsDisplay` on, it draws once whenever `needsDisplay` is set, which is
@@ -60,7 +86,15 @@ final class OrbMetalView: MTKView {
     }
     /// Reduce motion: one still frame (at `stillTime`), no animation.
     var reduceMotion = false {
-        didSet { if reduceMotion != oldValue { updatePaused() } }
+        didSet {
+            guard reduceMotion != oldValue else { return }
+            updatePaused()
+            needsDisplay = true // the still frame (or the first moving one)
+        }
+    }
+    /// Hold still after `OrbAnimation.idleLimit` seconds without the pointer moving over the orb.
+    var stopsWhenIdle = false {
+        didSet { if stopsWhenIdle != oldValue { updatePaused() } }
     }
 
     /// Seconds into the site's animation for the still frame; the animation also starts there.
@@ -70,6 +104,8 @@ final class OrbMetalView: MTKView {
     private var cursor = OrbRenderer.defaultCursor
     private var targetCursor = OrbRenderer.defaultCursor
     private var trackingArea: NSTrackingArea?
+    /// When the pointer last moved over the orb, or the window last became key (the idle count's start).
+    private var lastPointerMove = CACurrentMediaTime()
 
     init() {
         super.init(frame: .zero, device: OrbRenderer.pipeline?.device)
@@ -98,6 +134,12 @@ final class OrbMetalView: MTKView {
     // MARK: Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        // The idle limit has no notification of its own, so the running animation checks it on
+        // each frame. Only while running: paused, `updatePaused` would not change anything (and a
+        // paused draw must not ask for another one).
+        if !isPaused, stopsWhenIdle, CACurrentMediaTime() - lastPointerMove >= OrbAnimation.idleLimit {
+            updatePaused()
+        }
         guard let pipeline = OrbRenderer.pipeline,
               let pass = currentRenderPassDescriptor,
               let drawable = currentDrawable,
@@ -116,35 +158,57 @@ final class OrbMetalView: MTKView {
         commands.commit()
     }
 
-    // MARK: Pausing (no drawing while nobody can see it)
+    // MARK: Pausing (no drawing while nobody is looking)
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
+        // The window tells us when it is covered or uncovered, and when it becomes or stops being
+        // the key window (the one taking keyboard input; not key = another window or app in front).
         if let window {
-            NotificationCenter.default.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification,
-                                                      object: window)
+            for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didResignKeyNotification,
+                         NSWindow.didBecomeKeyNotification] {
+                NotificationCenter.default.removeObserver(self, name: name, object: window)
+            }
         }
         if let newWindow {
             NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged),
-                                                   name: NSWindow.didChangeOcclusionStateNotification,
-                                                   object: newWindow)
+                                                   name: NSWindow.didChangeOcclusionStateNotification, object: newWindow)
+            NotificationCenter.default.addObserver(self, selector: #selector(visibilityChanged),
+                                                   name: NSWindow.didResignKeyNotification, object: newWindow)
+            NotificationCenter.default.addObserver(self, selector: #selector(windowBecameKey),
+                                                   name: NSWindow.didBecomeKeyNotification, object: newWindow)
         }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        lastPointerMove = CACurrentMediaTime()
         updatePaused()
+        needsDisplay = true // the first frame, also when it starts paused
     }
 
     @objc private func visibilityChanged() {
         updatePaused()
     }
 
-    /// Animates only while the view is in a window that is on screen and not covered, the app is
-    /// not hidden, and reduce motion is off. Paused, it still draws the current frame once.
+    /// Back in front: the idle count starts again.
+    @objc private func windowBecameKey() {
+        lastPointerMove = CACurrentMediaTime()
+        updatePaused()
+    }
+
+    /// Starts or stops MTKView's frame timer when `OrbAnimation` says so. On stopping it draws one
+    /// more frame and then holds it.
     private func updatePaused() {
-        let visible = window?.occlusionState.contains(.visible) == true && !NSApp.isHidden
-        let paused = reduceMotion || !visible
+        let animate = OrbAnimation.shouldAnimate(
+            windowIsKey: window?.isKeyWindow == true,
+            windowIsVisible: window?.occlusionState.contains(.visible) == true,
+            appIsHidden: NSApp.isHidden,
+            reduceMotion: reduceMotion,
+            stopsWhenIdle: stopsWhenIdle,
+            secondsSincePointerMoved: CACurrentMediaTime() - lastPointerMove)
+        let paused = !animate
+        guard paused != isPaused else { return } // already as it should be
         // The two go together: `enableSetNeedsDisplay` also stops MTKView's own timer.
         isPaused = paused
         enableSetNeedsDisplay = paused
@@ -157,15 +221,27 @@ final class OrbMetalView: MTKView {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
         // `.inVisibleRect` keeps the area matching the view's bounds as it resizes.
-        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInActiveApp, .inVisibleRect],
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp,
+                                                         .inVisibleRect],
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
         trackingArea = area
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        pointerMoved(event)
+    }
+
     override func mouseMoved(with event: NSEvent) {
+        pointerMoved(event)
+    }
+
+    private func pointerMoved(_ event: NSEvent) {
         // With reduce motion the orb stays one still frame, pointer or not.
         guard !reduceMotion else { return }
+        // The idle count starts again; an orb that had stopped for it moves again.
+        lastPointerMove = CACurrentMediaTime()
+        if isPaused { updatePaused() }
         // MTKView is not flipped: y grows upwards, as in the shader's view space.
         let point = convert(event.locationInWindow, from: nil)
         if let direction = OrbRenderer.sphereDirection(at: point, side: bounds.width) {

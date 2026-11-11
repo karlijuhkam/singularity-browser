@@ -51,6 +51,46 @@ extension AppTests {
     }
 }
 
+extension AppTests {
+    /// When the live orb animates (`OrbAnimation.shouldAnimate`). Pure logic: no Metal needed.
+    @MainActor @Suite struct OrbAnimationTests {
+        /// Everything in favour of animating; each test changes one fact.
+        private func animates(key: Bool = true, visible: Bool = true, hidden: Bool = false,
+                              reduceMotion: Bool = false, stopsWhenIdle: Bool = true,
+                              idle: TimeInterval = 0) -> Bool {
+            OrbAnimation.shouldAnimate(windowIsKey: key, windowIsVisible: visible, appIsHidden: hidden,
+                                       reduceMotion: reduceMotion, stopsWhenIdle: stopsWhenIdle,
+                                       secondsSincePointerMoved: idle)
+        }
+
+        @Test func animatesInTheKeyWindowWhileThePointerWasRecent() {
+            #expect(animates())
+            #expect(animates(idle: 29.9))
+        }
+
+        @Test func notInTheKeyWindowItStops() {
+            #expect(!animates(key: false))
+            // Also where it does not stop when idle (the welcome flow).
+            #expect(!animates(key: false, stopsWhenIdle: false))
+        }
+
+        @Test func coveredHiddenOrReduceMotionStops() {
+            #expect(!animates(visible: false))
+            #expect(!animates(hidden: true))
+            #expect(!animates(reduceMotion: true))
+            #expect(!animates(reduceMotion: true, stopsWhenIdle: false))
+        }
+
+        @Test func thirtySecondsWithoutThePointerStopsOnlyWhenAskedTo() {
+            #expect(OrbAnimation.idleLimit == 30)
+            #expect(!animates(idle: 30))
+            #expect(!animates(idle: 3600))
+            #expect(animates(stopsWhenIdle: false, idle: 30))
+            #expect(animates(stopsWhenIdle: false, idle: 3600))
+        }
+    }
+}
+
 // MARK: - Helpers
 
 private struct FixtureMissing: Error { let name: String }

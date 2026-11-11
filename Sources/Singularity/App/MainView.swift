@@ -76,7 +76,8 @@ private struct ContentArea: View {
                 Color(nsColor: .textBackgroundColor)
                 VStack(spacing: 8) {
                     // Like singularity.rroosa.ee: a white orb in dark mode, a black one in light mode.
-                    OrbView(size: 96)
+                    // It may stay on screen all day, so it holds still when nobody moves the pointer.
+                    OrbView(size: 96, stopsWhenIdle: true)
                         .padding(.bottom, 8)
                     Text(state.selectedSpace?.name ?? "")
                         .font(.title2.weight(.semibold))
