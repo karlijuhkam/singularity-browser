@@ -308,7 +308,8 @@ hand, and the small known issues left for the owner.
   hidden (⌘H).
 - Reduce Motion: one still frame (time 4, the default ripple origin); the pointer is ignored.
 - The "Check" became a test, `OrbTests.matchesTheSiteShader`, against `render_orb.py --time 4.0`
-  frames in both colours. Its limit is a mean difference of 8 (of 255) instead of the planned 6.
+  frames in both colours. Its limit is a mean difference of 8 (of 255) for the white orb and 2
+  for the black one, instead of the planned 6.
   Why: in 7 of the noise function's 49 corners the exact maths gives 0, and the GPU's float32
   and numpy's float64 round it to opposite signs. With the reference rounded as float32 the port
   differs by only 0.19 (white) and 0.14 (black). So the port matches the site, which also runs
@@ -325,7 +326,9 @@ hand, and the small known issues left for the owner.
   Checked on the owner's Mac by the controller: it finds `claude` (a shell function) and `codex`
   (under nvm) in about 0.8 s. The real `claude mcp add -s user …` and `codex mcp add …`, run
   against throwaway `CLAUDE_CONFIG_DIR` / `CODEX_HOME` folders, wrote exactly the shapes the
-  check reads, a path with a space included.
+  check reads, a path with a space included. This is now a test, `RealAgentConnectTests`
+  (opt-in, see "Checked by test" below): the whole Connect/Update path of `AgentConnector`, with
+  the real login shell and both real programs, behaved exactly as the code expects.
 - An existing entry is reported even when the program is not found (it may only be missing from
   the login shell's PATH).
 - The "Points at another copy" row also shows the path the entry points at.
@@ -371,7 +374,9 @@ hand, and the small known issues left for the owner.
   (`openInNewTab`) opens its tab behind the flow, like an agent's tab.
 - While the flow is open, the menu commands that would act on the hidden tab, page or sidebar
   are disabled (Find, Print, Reload, Back, Forward, Zoom, Next/Previous Tab, the split commands,
-  New Folder), and ⌘W (Close Tab) closes the flow instead of the hidden tab. New Tab, New
+  New Folder), and ⌘W (Close Tab) closes the flow instead of the hidden tab; while the Arc import
+  or a plugin's approval sheet is open over the flow, ⌘W does nothing (`closeTabCommand`; step
+  4's sheet keeps its plugin in `AppState.welcomePluginReview` so the menu can see it). New Tab, New
   Terminal, the palette, Open Location, the Spaces menu and New Space close the flow and go on.
 - The placeholder status, and with it the slug exception, ends as soon as the Space gets its first
   tab by any route (an agent, a new artifact file, …) and when the flow closes.
@@ -391,7 +396,7 @@ with `rsync`, leaving out `node_modules`, `.git` and `.DS_Store`, before signing
 `codesign --verify --deep --strict` passes on the built bundle. `release.sh` was checked by
 reading, not run.
 
-### Not checked by hand
+### What was checked, and how
 
 The build environment had no macOS Accessibility permission, so nobody could click, type or move
 the pointer in the running app. A test copy (`SINGULARITY_HOME=/private/tmp/sg-test`, full bundle
@@ -402,22 +407,41 @@ at `build/`; Codex "Connect"; the Space switch off), step 4 with 1Password and A
 sheet after Add, "Review…" after a relaunch, no flow on the second launch, and the orb in an empty
 Space.
 
-| Not tried by hand | What covers it |
+A closing verification pass (2026-11-11, still without Accessibility permission, so still no
+clicks) turned most of what follows into tests. What is left needs the owner's hands.
+
+#### Checked by test
+
+| Behaviour | Test |
 |---|---|
-| Pointer following on the orb (tracking area, easing) | `OrbTests.pointerBecomesAPointOnTheSphere` covers the maths from pointer to point on the sphere. Tracking and easing: nothing. |
-| The black orb in light mode on screen | `OrbTests.matchesTheSiteShader(whiteOrb: false)` renders it; one screenshot with the app's appearance forced to light (a temporary hook) showed it. Following a live change of the system appearance: nothing. |
-| Reduce Motion (still frame) | Nothing. |
-| Pausing on ⌘H, when the window stops being key, after 30 s without the pointer; moving again on pointer or key | `OrbAnimationTests` (the rule as a pure function). In the running app: nothing (pausing when covered was seen in logs: 0 % CPU, before the idle rule). |
-| The PNG fallback | Nothing (this Mac has Metal). |
-| Connect and Update against the real Claude Code and Codex | `AgentConnectorTests` with a fake shell (`connectRunsTheAddCommandAndRereadsTheConfig`, `updatingAnotherCopyRemovesThenAdds`, `failingAddShowsTheProgramsOutput`, `addThatLeavesTheFileUnchangedFails`), and the controller's run of the real commands against throwaway config folders. Whether `claude mcp add` through the owner's `claude` shell function writes to the default `~/.claude.json`: nothing. |
-| Picking a colour in step 2 | `OnboardingStateTests.renamingThePlaceholderMovesItsFolder` saves a colour through `applyWelcomeSpace`. The swatch click: nothing. |
-| Typing a name and Continue | `OnboardingViewTests.returnTypingAndEscapeDriveTheFlow` types "Work" into the real view in an off-screen window and checks that only `spaces/work` exists. Not in the running app. |
-| Cancelling the approval sheet by hand | Nothing. The "Review…" row it leads to was seen after a relaunch. |
-| Copy → pasteboard (the prompt and the commands) | Nothing. |
-| Choosing the menu item "Welcome to Singularity…" (and the palette entry) | Their action, `showWelcome()`, in `OnboardingViewTests.returnTypingAndEscapeDriveTheFlow`. The menu item itself: nothing. |
-| ⌘T on step 1 | `OnboardingStateTests.stepsAndLeaving`: `showPalette(.newTab)` closes the flow and opens the palette. The keystroke: nothing. |
-| Arc import through the real sheet | `OnboardingStateTests.anArcImportReplacesThePlaceholder` (calls `importArcSpaces`) and `stepsAndLeaving` (opening the sheet keeps the flow). The sheet with Arc's real file: nothing. |
-| "Start browsing" into the Space, as one sequence in the real app | `returnTypingAndEscapeDriveTheFlow` (Return on step 4 closes the flow); the empty-Space orb was seen on a second launch. |
+| Pointer over the orb moves the ripple origin; off the sphere it stays; each frame eases 10 % | `OrbTests.thePointerMovesTheRippleOriginAndTheCursorEasesTowardsIt` (the orb's own `OrbMetalView` in an off-screen window; `pointerMoved(to:)` is what the tracking area's mouse events call), with `pointerBecomesAPointOnTheSphere` for the maths |
+| Reduce Motion: paused, one still frame, pointer ignored | `OrbTests.reduceMotionDrawsOneStillFrameAndIgnoresThePointer` (counts frames drawn); that Reduce Motion alone stops a key window's orb is `OrbAnimationTests` |
+| Pausing when the window is not key (the rule) | `OrbAnimationTests`; live: the test bundle started with `open -g` on a fresh folder (welcome flow, window not key) used 0.0 % CPU in all 15 samples (`ps`, every 2 s for 30 s after 10 s). The screen was locked during that run, so the window was also not visible: the samples confirm "stopped while nobody looks", not the key-window rule on its own |
+| Connect and Update with the real Claude Code and Codex | `RealAgentConnectTests` (opt-in; real login shell, real `claude` and `codex`, config sent to `/private/tmp/sg-agents` by `CLAUDE_CONFIG_DIR` / `CODEX_HOME`): check → both "not connected"; Connect → "connected" with `mcpServers.singularity.command` / `[mcp_servers.singularity] command` equal to the launcher; Update over another copy's entry (remove, then add) → "connected"; a launcher path with a space and a `'` round-trips exactly. All 7 cases passed; the real `~/.claude.json` and `~/.codex/config.toml` were byte-identical before and after (`shasum`). Nothing differed from what `AgentConnector` expects |
+| Step 4: Add → not approved → "Review…" | `OnboardingStateTests.addingABundledPluginLeavesItWaitingForReview` (the repo's `Plugins/1password` through `plugins.addPlugin(from:)` into a temporary plugins folder: listed, `needsReview`, `.notApproved`, not running) and `pluginRowAction` (Add / spinner / Review… / Added, `PluginRowAction`) |
+| Copy → pasteboard (the prompt and the commands) | `AgentConnectorTests.copyPutsTheTextOnThePasteboard`: both buttons call `CopyText.copy(_:to:)`, tested on a private named pasteboard |
+| The palette's "Welcome to Singularity…" | `OnboardingStateTests.thePaletteEntryOpensTheFlow`: from a window with a tab, the palette item (`PaletteResults.perform`, what Return or a click runs) opens the flow at step 1 and closes the palette. The menu item calls the same `showWelcome()` |
+| Arc import during the flow, from a real file | `OnboardingStateTests.anArcImportFromAFileDuringTheFlow`: `ArcImport.read` on `Tests/SingularityCoreTests/Fixtures/arc/StorableSidebar.json` (the Core tests' sidebar, pinned by `ArcImportTests.theFixtureFileIsThisSidebar`); agents off and `.ask`, the untouched placeholder gone (its folder removed inside the test folder), step 3, three dots (`OnboardingFlow.visibleSteps`), Back → step 1 |
+| ⌘W while the Arc import or a plugin's approval sheet is open over the flow | `OnboardingStateTests.closeTabLeavesTheFlowAloneWhileASheetIsOpen` (`closeTabCommand`, the menu item's action) |
+| Typing a name and Continue; Return, Esc; Skip on step 2 | `OnboardingViewTests` (the real view in an off-screen window) |
+| ⌘T on step 1 | `OnboardingStateTests.stepsAndLeaving` (`showPalette(.newTab)` closes the flow) |
+
+#### Not checked by hand
+
+Only real input in the running app can check these; each takes the owner a few seconds.
+
+| By hand | Why a test can't |
+|---|---|
+| Move the pointer over the orb (step 1, and an empty Space): the ripples follow | The tracking area only gets real mouse events |
+| Switch the system appearance while the flow is open: the orb turns black/white | A live appearance change; `matchesTheSiteShader(whiteOrb: false)` renders the black orb |
+| Turn Reduce Motion on in System Settings: the orb stops on one frame | The setting reaching SwiftUI's environment |
+| ⌘H, another app in front, 30 s without the pointer on an empty Space, then pointer or click back: the orb stops and starts again | Needs a key window and the real pointer |
+| Click Connect / Update in step 3 against your real config | Deliberately never run here: it writes `~/.claude.json` / `~/.codex/config.toml` |
+| Pick a colour in step 2; cancel the plugin approval sheet; click Copy and paste | Clicks |
+| Singularity → "Welcome to Singularity…", ⌘T on step 1, ⌘W with the Arc import sheet open | Menu and keystrokes (their actions are tested above) |
+| File → Import from Arc… with Arc's real file, through the sheet | The sheet; the import itself is tested with a file |
+| "Start browsing" into the Space, as one sequence | `returnTypingAndEscapeDriveTheFlow` covers it off screen |
+| The PNG fallback | This Mac has Metal; it needs a Mac without it (or a broken shader) |
 
 ### Known small issues, left for the owner
 
@@ -439,7 +463,20 @@ From the task reviews; none blocks use.
   In `OnboardingViewTests` a check counts exactly two shell lines, which is brittle, and
   `skipOnTheSpaceStepSavesNothing` finds the Skip button in the drawing (SwiftUI builds no
   accessibility tree without an assistive app), so a footer redesign means updating that helper.
-  The untouched placeholder's folder going to the Trash after an Arc import was planned that way.
+  The untouched placeholder's folder going to the Trash after an Arc import was planned that way
+  (in the app; tests remove it inside their own folder, see below).
+
+Fixed in the closing verification pass:
+
+- Tests could reach the user's real Trash: `SpaceDeleteTests` (older) deleted Spaces whose folders
+  were on disk, and the Arc import test relied on timing to keep the placeholder's folder off
+  disk. `SpaceStore` now takes how a folder is discarded (default: the Trash), `AppState.init`
+  passes it on, and every app test builds its `AppState` with `TestAppState`, which removes the
+  folder inside the test's own folder and refuses anything outside it. `SpaceDeleteTests` now also
+  stops its `AppState`.
+- ⌘W with the Arc import or a plugin's approval sheet open over the flow closed the flow behind the
+  sheet. It now does nothing then (`AppState.closeTabCommand`).
+- This section gave the orb test's limit as 8 for both orbs; it is 8 for white and 2 for black.
 
 Where things are: `Sources/SingularityCore/Onboarding/`, `Agent/AgentConnect.swift`,
 `Plugins/BundledPlugins.swift` (Core, with `OnboardingTests`, `AgentConnectTests`,
