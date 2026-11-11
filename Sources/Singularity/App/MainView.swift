@@ -55,7 +55,6 @@ struct MainView: View {
 /// a split comes back whenever one of its tabs is selected).
 private struct ContentArea: View {
     @Environment(AppState.self) private var state
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         if let space = state.selectedSpace, let tab = space.selectedTab {
@@ -69,13 +68,8 @@ private struct ContentArea: View {
                 Color(nsColor: .textBackgroundColor)
                 VStack(spacing: 8) {
                     // Like singularity.rroosa.ee: a white orb in dark mode, a black one in light mode.
-                    if let url = Bundle.main.url(forResource: colorScheme == .dark ? "Orb-dark" : "Orb-light", withExtension: "png"),
-                       let orb = NSImage(contentsOf: url) {
-                        Image(nsImage: orb)
-                            .resizable()
-                            .frame(width: 96, height: 96)
-                            .padding(.bottom, 8)
-                    }
+                    OrbView(size: 96)
+                        .padding(.bottom, 8)
                     Text(state.selectedSpace?.name ?? "")
                         .font(.title2.weight(.semibold))
                     Text("Press ⌘T to open a tab, or ⌥⌘T for a terminal")

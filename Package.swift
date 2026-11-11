@@ -50,6 +50,11 @@ let package = Package(
 
         // Drives the real web-tab code (WKWebView in an off-screen window): error page, login
         // dialog, find, zoom. Slower than the Core tests and needs a logged-in Mac session.
-        .testTarget(name: "SingularityAppTests", dependencies: ["Singularity", "SingularityCore"]),
+        .testTarget(
+            name: "SingularityAppTests",
+            dependencies: ["Singularity", "SingularityCore"],
+            // Reference images (the orb) are read from disk via #filePath, not bundled.
+            exclude: ["Fixtures"]
+        ),
     ]
 )
