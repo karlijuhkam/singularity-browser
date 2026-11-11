@@ -97,7 +97,7 @@ struct OnboardingView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            StepDots(steps: visibleSteps, current: flow.step)
+            StepDots(steps: flow.visibleSteps, current: flow.step)
             // Leaves the whole flow from any step. Esc does the same (the cancel shortcut).
             Button("Skip setup") { state.closeWelcome() }
                 .buttonStyle(.plain)
@@ -118,11 +118,6 @@ struct OnboardingView: View {
                 .keyboardShortcut(.defaultAction)
         }
         .controlSize(.large)
-    }
-
-    /// After an Arc import the Space step is left out, so there are three dots.
-    private var visibleSteps: [OnboardingStep] {
-        flow.importedFromArc ? OnboardingStep.allCases.filter { $0 != .space } : OnboardingStep.allCases
     }
 
     @ViewBuilder

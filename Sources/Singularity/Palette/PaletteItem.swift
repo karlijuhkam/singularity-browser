@@ -87,6 +87,30 @@ enum PaletteResults {
         }
     }
 
+    /// The user chose `item` (Return or a click): closes the palette, then does it.
+    static func perform(_ item: PaletteItem, mode: PaletteMode, state: AppState) {
+        state.palette = nil
+        // The user chose something: the welcome flow must not stay over it. (`showPalette` closed
+        // the flow already; this keeps it true for the URL actions, which `openInNewTab` no longer does.)
+        state.closeWelcome()
+        switch item.action {
+        case .openURL(let url):
+            switch mode {
+            case .newTab: state.openInNewTab(url)
+            case .navigateCurrent: state.navigateSelectedTab(to: url)
+            case .splitWith(let edge, let beside): state.openInSplit(url, edge: edge, beside: beside)
+            }
+        case .selectTab(let id):
+            if case .splitWith(let edge, let beside) = mode {
+                state.splitTab(id, beside: beside, edge: edge)
+            } else {
+                state.selectTab(id)
+            }
+        case .run(let action):
+            action()
+        }
+    }
+
     private static func tabItems(_ space: Space) -> [PaletteItem] {
         space.tabsInSidebarOrder.map { tab in
             let icon: PaletteItem.Icon = if tab.isTerminal {

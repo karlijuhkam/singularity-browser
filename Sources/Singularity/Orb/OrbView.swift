@@ -101,8 +101,11 @@ final class OrbMetalView: MTKView {
     private static let stillTime: Float = 4
     private let startTime = CACurrentMediaTime()
     /// Ripple origin as drawn, easing towards `targetCursor` a little each frame.
-    private var cursor = OrbRenderer.defaultCursor
-    private var targetCursor = OrbRenderer.defaultCursor
+    private(set) var cursor = OrbRenderer.defaultCursor
+    /// Where the pointer last touched the sphere (a unit vector, view space, y up).
+    private(set) var targetCursor = OrbRenderer.defaultCursor
+    /// Frames drawn so far (read by `OrbViewTests`: one still frame under Reduce Motion).
+    private(set) var framesDrawn = 0
     private var trackingArea: NSTrackingArea?
     /// When the pointer last moved over the orb, or the window last became key (the idle count's start).
     private var lastPointerMove = CACurrentMediaTime()
@@ -149,13 +152,19 @@ final class OrbMetalView: MTKView {
         if reduceMotion {
             OrbRenderer.draw(into: encoder, time: Self.stillTime, whiteOrb: whiteOrb, cursor: OrbRenderer.defaultCursor)
         } else {
-            cursor += (targetCursor - cursor) * 0.1
+            easeCursor()
             let time = Self.stillTime + Float(CACurrentMediaTime() - startTime)
             OrbRenderer.draw(into: encoder, time: time, whiteOrb: whiteOrb, cursor: cursor)
         }
         encoder.endEncoding()
         commands.present(drawable)
         commands.commit()
+        framesDrawn += 1
+    }
+
+    /// One frame's step of the ripple origin: 10 % of the way to where the pointer is.
+    func easeCursor() {
+        cursor += (targetCursor - cursor) * 0.1
     }
 
     // MARK: Pausing (no drawing while nobody is looking)
@@ -237,13 +246,18 @@ final class OrbMetalView: MTKView {
     }
 
     private func pointerMoved(_ event: NSEvent) {
+        pointerMoved(to: convert(event.locationInWindow, from: nil))
+    }
+
+    /// The pointer is at `point` (in this view's coordinates). Over the sphere it becomes the new
+    /// ripple origin; anywhere else the origin stays.
+    func pointerMoved(to point: CGPoint) {
         // With reduce motion the orb stays one still frame, pointer or not.
         guard !reduceMotion else { return }
         // The idle count starts again; an orb that had stopped for it moves again.
         lastPointerMove = CACurrentMediaTime()
         if isPaused { updatePaused() }
         // MTKView is not flipped: y grows upwards, as in the shader's view space.
-        let point = convert(event.locationInWindow, from: nil)
         if let direction = OrbRenderer.sphereDirection(at: point, side: bounds.width) {
             targetCursor = direction
         }

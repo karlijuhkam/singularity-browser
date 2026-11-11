@@ -99,6 +99,15 @@ struct AgentConnectRows: View {
     }
 }
 
+/// The Copy buttons (the agent rows' commands, step 4's prompt): `text` replaces what is on the
+/// pasteboard. Tests pass a private named pasteboard, never the user's.
+enum CopyText {
+    static func copy(_ text: String, to pasteboard: NSPasteboard = .general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+}
+
 /// A command in monospace with a Copy button, for running it in a terminal by hand.
 private struct CopyableCommand: View {
     let text: String
@@ -112,8 +121,7 @@ private struct CopyableCommand: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button(copied ? "Copied" : "Copy") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
+                CopyText.copy(text)
                 copied = true
             }
             .controlSize(.small)

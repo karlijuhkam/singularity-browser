@@ -29,7 +29,9 @@ import Testing
 
     @Test func anArcImportLeavesOutTheSpaceStep() {
         var flow = OnboardingFlow()
+        #expect(flow.visibleSteps == OnboardingStep.allCases) // four dots
         flow.arcImportFinished()
+        #expect(flow.visibleSteps == [.welcome, .agents, .plugins]) // three
         #expect(flow.importedFromArc)
         #expect(flow.step == .agents)
         flow.back()

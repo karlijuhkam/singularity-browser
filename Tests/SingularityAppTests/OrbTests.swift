@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -48,6 +49,67 @@ extension AppTests {
             #expect(upperRight.x > 0 && upperRight.y > 0 && upperRight.z > 0)
             #expect(abs(simd_length(upperRight) - 1) < 1e-5)
             #expect(OrbRenderer.sphereDirection(at: CGPoint(x: 2, y: 2), side: 96) == nil)
+        }
+
+        /// The orb's own view, 96 × 96 in a borderless window far off screen. It can't become the
+        /// key window, so it is paused and draws only when asked (`needsDisplay`). No events are
+        /// posted anywhere: `pointerMoved(to:)` is what the tracking area's mouseEntered/mouseMoved
+        /// call with the pointer's position in the view.
+        private func hostOrb() -> (NSWindow, OrbMetalView) {
+            let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 96, height: 96),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let view = OrbMetalView()
+            window.contentView = view
+            window.orderFront(nil)
+            return (window, view)
+        }
+
+        @Test func thePointerMovesTheRippleOriginAndTheCursorEasesTowardsIt() throws {
+            _ = MainRunLoopGuard.start
+            let (window, view) = hostOrb()
+            defer { window.close() }
+            #expect(view.bounds.size == CGSize(width: 96, height: 96))
+            #expect(view.targetCursor == OrbRenderer.defaultCursor)
+
+            // Over the sphere (upper right, the view is not flipped): the new target.
+            view.pointerMoved(to: CGPoint(x: 72, y: 72))
+            let target = try #require(OrbRenderer.sphereDirection(at: CGPoint(x: 72, y: 72), side: 96))
+            #expect(view.targetCursor == target)
+            #expect(abs(simd_length(view.targetCursor) - 1) < 1e-5)
+            // In the corner, outside the sphere: the target stays.
+            view.pointerMoved(to: CGPoint(x: 2, y: 2))
+            #expect(view.targetCursor == target)
+
+            // Each frame moves the drawn origin 10 % of the remaining way.
+            let from = view.cursor
+            for frame in 1...3 {
+                view.easeCursor()
+                let expected = target + (from - target) * Float(pow(0.9, Double(frame)))
+                #expect(simd_distance(view.cursor, expected) < 1e-5, "frame \(frame)")
+            }
+        }
+
+        /// Reduce Motion: paused, one still frame, the pointer ignored. (That Reduce Motion alone
+        /// stops a key window's orb is the rule in `OrbAnimationTests`; this window is never key.)
+        @Test func reduceMotionDrawsOneStillFrameAndIgnoresThePointer() async throws {
+            _ = MainRunLoopGuard.start
+            let (window, view) = hostOrb()
+            defer { window.close() }
+            try await Task.sleep(for: .milliseconds(300)) // the first frame, drawn on being shown
+            #expect(view.framesDrawn >= 1)
+            let before = view.framesDrawn
+
+            view.reduceMotion = true
+            #expect(view.isPaused && view.enableSetNeedsDisplay)
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(view.framesDrawn == before + 1, "drawn \(view.framesDrawn - before) frames")
+
+            view.pointerMoved(to: CGPoint(x: 72, y: 72))
+            #expect(view.targetCursor == OrbRenderer.defaultCursor)
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(view.framesDrawn == before + 1)
+            #expect(view.isPaused)
         }
     }
 }

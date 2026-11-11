@@ -46,6 +46,14 @@ import Testing
         return try! JSONSerialization.data(withJSONObject: root)
     }
 
+    /// `Fixtures/arc/StorableSidebar.json` is this same sidebar as a file on disk (the welcome
+    /// flow's app test imports it through `read`); it must not drift from the one above.
+    @Test func theFixtureFileIsThisSidebar() throws {
+        let file = URL(filePath: #filePath).deletingLastPathComponent()
+            .appending(path: "Fixtures/arc/StorableSidebar.json")
+        #expect(try ArcImport.read(file).get() == ArcImport.parse(sidebar()).get())
+    }
+
     @Test func readsSpacesFoldersAndTabsInOrder() throws {
         let spaces = try ArcImport.parse(sidebar()).get()
         #expect(spaces.map(\.name) == ["Work", "Arc"])

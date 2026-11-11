@@ -92,27 +92,7 @@ struct CommandPaletteView: View {
 
     private func run(_ items: [PaletteItem]) {
         guard !items.isEmpty else { return }
-        let item = items[min(selectedIndex, items.count - 1)]
-        close()
-        // The user chose something: the welcome flow must not stay over it. (`showPalette` closed
-        // the flow already; this keeps it true for the URL actions, which `openInNewTab` no longer does.)
-        state.closeWelcome()
-        switch item.action {
-        case .openURL(let url):
-            switch mode {
-            case .newTab: state.openInNewTab(url)
-            case .navigateCurrent: state.navigateSelectedTab(to: url)
-            case .splitWith(let edge, let beside): state.openInSplit(url, edge: edge, beside: beside)
-            }
-        case .selectTab(let id):
-            if case .splitWith(let edge, let beside) = mode {
-                state.splitTab(id, beside: beside, edge: edge)
-            } else {
-                state.selectTab(id)
-            }
-        case .run(let action):
-            action()
-        }
+        PaletteResults.perform(items[min(selectedIndex, items.count - 1)], mode: mode, state: state)
     }
 
     private func close() {

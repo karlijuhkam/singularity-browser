@@ -268,6 +268,99 @@ extension AppTests {
         #expect(state.space(id)?.tabs.isEmpty == true)
     }
 
+    /// Step 4's row: Add while the plugin isn't in the plugins folder, a spinner while it is copied,
+    /// Review… until it is approved, then "Added".
+    @Test func pluginRowAction() {
+        #expect(PluginRowAction.of(adding: false, installedNeedsReview: nil) == .add)
+        #expect(PluginRowAction.of(adding: true, installedNeedsReview: nil) == .adding)
+        #expect(PluginRowAction.of(adding: true, installedNeedsReview: true) == .adding)
+        #expect(PluginRowAction.of(adding: false, installedNeedsReview: true) == .review)
+        #expect(PluginRowAction.of(adding: false, installedNeedsReview: false) == .added)
+    }
+
+    /// Step 4's Add with the repo's 1Password plugin: copied into the (temporary) plugins folder,
+    /// listed, not approved and not running, so the row shows Review…. Nothing is approved in
+    /// code: that only happens in `PluginApprovalSheet`.
+    @Test func addingABundledPluginLeavesItWaitingForReview() async throws {
+        MainRunLoopGuard.start
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let state = TestAppState.make(root: root)
+        defer { shutDown(state) }
+        let source = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appending(path: "Plugins/1password", directoryHint: .isDirectory)
+        #expect(state.plugins.plugin("1password") == nil)
+        #expect(PluginRowAction.of(adding: false, installedNeedsReview: state.plugins.plugin("1password")?.needsReview) == .add)
+
+        let id = try await state.plugins.addPlugin(from: source)
+        #expect(id == "1password")
+        #expect(FileManager.default.fileExists(atPath: state.paths.pluginsDirectory.appending(path: "1password/plugin.json").path))
+        let plugin = try #require(state.plugins.plugin(id))
+        #expect(plugin.needsReview)
+        #expect(plugin.decision == .notApproved)
+        #expect(plugin.runState == .stopped)
+        #expect(PluginRowAction.of(adding: false, installedNeedsReview: plugin.needsReview) == .review)
+    }
+
+    /// The palette's "Welcome to Singularity…" (`cmd-welcome`) from an ordinary window with a tab:
+    /// the flow opens at step 1 and the palette is gone. The menu item Singularity → "Welcome to
+    /// Singularity…" calls the same `showWelcome()` (`Commands.swift`).
+    @Test func thePaletteEntryOpensTheFlow() throws {
+        MainRunLoopGuard.start
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let state = TestAppState.make(root: root)
+        defer { shutDown(state) }
+        state.closeWelcome()
+        state.openInNewTab(URL(string: "about:blank")!)
+        #expect(state.selectedTab != nil)
+
+        state.showPalette(.newTab)
+        #expect(state.palette == .newTab)
+        let item = try #require(PaletteResults.items(for: "welcome", mode: .newTab, state: state)
+            .first { $0.id == "cmd-welcome" })
+        PaletteResults.perform(item, mode: .newTab, state: state)
+        #expect(state.onboarding?.step == .welcome)
+        #expect(state.palette == nil)
+        #expect(state.selectedTab != nil) // the tab is only hidden
+    }
+
+    /// Step 1's Arc import with a real file (`ArcImport.read` on the Core tests' fixture): the
+    /// imported Spaces have agents off and policy ask, the untouched placeholder is gone (its folder
+    /// removed inside the test folder, not put in the Trash), and the flow skips the Space step.
+    @Test func anArcImportFromAFileDuringTheFlow() throws {
+        MainRunLoopGuard.start
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let state = TestAppState.make(root: root)
+        defer { shutDown(state) }
+        let placeholder = try #require(state.firstRunPlaceholderID)
+        state.flushSaves()
+        #expect(spaceFolders(root) == ["personal"])
+
+        let file = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "SingularityCoreTests/Fixtures/arc/StorableSidebar.json")
+        let arcSpaces = try ArcImport.read(file).get()
+        #expect(arcSpaces.map(\.name) == ["Work", "Arc"])
+        state.importArcSpaces(arcSpaces, options: ArcImport.Options())
+        state.flushSaves()
+
+        #expect(state.space(placeholder) == nil)
+        #expect(state.spaces.map(\.name) == ["Work", "Arc"])
+        #expect(state.spaces.allSatisfy { !$0.agentsEnabled && $0.agentPolicy == .ask })
+        #expect(state.spaces[0].tabs.count == 8) // 6 pinned + 2 open
+        #expect(spaceFolders(root) == Set(state.spaces.map(\.slug)))
+        #expect(!spaceFolders(root).contains("personal"))
+        #expect(state.onboarding?.step == .agents)
+        #expect(state.onboarding?.importedFromArc == true)
+        #expect(state.onboarding?.visibleSteps == [.welcome, .agents, .plugins]) // three dots
+        state.welcomeBack()
+        #expect(state.onboarding?.step == .welcome)
+    }
+
     @Test func switchingAgentsOnKeepsThePolicy() throws {
         MainRunLoopGuard.start
         let root = makeRoot()

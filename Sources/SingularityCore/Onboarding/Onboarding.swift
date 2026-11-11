@@ -15,6 +15,12 @@ public struct OnboardingFlow: Equatable, Sendable {
 
     public var canGoBack: Bool { step != .welcome }
 
+    /// The steps the footer's dots stand for: after an Arc import the Space step is left out, so
+    /// there are three.
+    public var visibleSteps: [OnboardingStep] {
+        importedFromArc ? OnboardingStep.allCases.filter { $0 != .space } : OnboardingStep.allCases
+    }
+
     /// The next step, or nil when the flow is finished (after .plugins).
     public mutating func advance() -> OnboardingStep? {
         guard let next = following(step) else { return nil }

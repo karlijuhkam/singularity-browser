@@ -1,0 +1,366 @@
+{
+  "sidebar": {
+    "containers": [
+      {
+        "global": {}
+      },
+      {
+        "items": [
+          "P",
+          {
+            "childrenIds": [
+              "t1",
+              "f1",
+              "sv",
+              "doc",
+              "t5"
+            ],
+            "createdAt": 1.0,
+            "data": {
+              "itemContainer": {
+                "containerType": {
+                  "spaceItems": {
+                    "_0": "S1"
+                  }
+                }
+              }
+            },
+            "id": "P",
+            "isUnread": false,
+            "parentID": null,
+            "title": null
+          },
+          "t1",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Inbox (3)",
+                "savedURL": "https://mail.example.com/inbox",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t1",
+            "isUnread": false,
+            "parentID": "P",
+            "title": "My mail"
+          },
+          "f1",
+          {
+            "childrenIds": [
+              "t2",
+              "f2",
+              "t3"
+            ],
+            "createdAt": 1.0,
+            "data": {
+              "list": {}
+            },
+            "id": "f1",
+            "isUnread": false,
+            "parentID": "P",
+            "title": "Docs"
+          },
+          "t2",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Doc A",
+                "savedURL": "https://docs.example.com/a",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t2",
+            "isUnread": false,
+            "parentID": "f1",
+            "title": null
+          },
+          "f2",
+          {
+            "childrenIds": [
+              "t4"
+            ],
+            "createdAt": 1.0,
+            "data": {
+              "list": {}
+            },
+            "id": "f2",
+            "isUnread": false,
+            "parentID": "f1",
+            "title": "Deep"
+          },
+          "t4",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Deep doc",
+                "savedURL": "https://docs.example.com/deep",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t4",
+            "isUnread": false,
+            "parentID": "f2",
+            "title": null
+          },
+          "t3",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Local",
+                "savedURL": "http://localhost:3000/",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t3",
+            "isUnread": false,
+            "parentID": "f1",
+            "title": null
+          },
+          "sv",
+          {
+            "childrenIds": [
+              "t6",
+              "t7"
+            ],
+            "createdAt": 1.0,
+            "data": {
+              "splitView": {
+                "layoutOrientation": "horizontal"
+              }
+            },
+            "id": "sv",
+            "isUnread": false,
+            "parentID": "P",
+            "title": null
+          },
+          "t6",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Left",
+                "savedURL": "https://left.example.com/",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t6",
+            "isUnread": false,
+            "parentID": "sv",
+            "title": null
+          },
+          "t7",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Right",
+                "savedURL": "https://right.example.com/",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t7",
+            "isUnread": false,
+            "parentID": "sv",
+            "title": null
+          },
+          "doc",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "arcDocument": {
+                "arcDocumentID": "x"
+              }
+            },
+            "id": "doc",
+            "isUnread": false,
+            "parentID": "P",
+            "title": null
+          },
+          "t5",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Settings",
+                "savedURL": "arc://settings",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t5",
+            "isUnread": false,
+            "parentID": "P",
+            "title": null
+          },
+          "U",
+          {
+            "childrenIds": [
+              "g",
+              "t9",
+              "t10"
+            ],
+            "createdAt": 1.0,
+            "data": {
+              "itemContainer": {
+                "containerType": {
+                  "spaceItems": {
+                    "_0": "S1"
+                  }
+                }
+              }
+            },
+            "id": "U",
+            "isUnread": false,
+            "parentID": null,
+            "title": null
+          },
+          "g",
+          {
+            "childrenIds": [
+              "t8"
+            ],
+            "createdAt": 1.0,
+            "data": {
+              "tabGroup": {
+                "title": "Group"
+              }
+            },
+            "id": "g",
+            "isUnread": false,
+            "parentID": "U",
+            "title": null
+          },
+          "t8",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Grouped",
+                "savedURL": "https://grouped.example.com/",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t8",
+            "isUnread": false,
+            "parentID": "g",
+            "title": null
+          },
+          "t9",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "Today",
+                "savedURL": "https://today.example.com/",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t9",
+            "isUnread": false,
+            "parentID": "U",
+            "title": null
+          },
+          "t10",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "tab": {
+                "savedTitle": "No address",
+                "timeLastActiveAt": 1.0
+              }
+            },
+            "id": "t10",
+            "isUnread": false,
+            "parentID": "U",
+            "title": null
+          },
+          "P2",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "itemContainer": {}
+            },
+            "id": "P2",
+            "isUnread": false,
+            "parentID": null,
+            "title": null
+          },
+          "U2",
+          {
+            "childrenIds": [],
+            "createdAt": 1.0,
+            "data": {
+              "itemContainer": {}
+            },
+            "id": "U2",
+            "isUnread": false,
+            "parentID": null,
+            "title": null
+          }
+        ],
+        "spaces": [
+          "S1",
+          {
+            "containerIDs": [
+              "unpinned",
+              "U",
+              "pinned",
+              "P"
+            ],
+            "customInfo": {
+              "windowTheme": {
+                "primaryColorPalette": {
+                  "midTone": {
+                    "alpha": 1,
+                    "blue": 0.0,
+                    "green": 0.5,
+                    "red": 1.0
+                  }
+                }
+              }
+            },
+            "id": "S1",
+            "profile": {
+              "custom": {
+                "_0": {
+                  "directoryBasename": "Profile 2",
+                  "machineID": "m"
+                }
+              }
+            },
+            "title": "Work"
+          },
+          "S2",
+          {
+            "containerIDs": [
+              "pinned",
+              "P2",
+              "unpinned",
+              "U2"
+            ],
+            "id": "S2",
+            "profile": {
+              "default": true
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "version": 1
+}

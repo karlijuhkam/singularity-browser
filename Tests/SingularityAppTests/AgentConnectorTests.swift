@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SingularityCore
 import Testing
@@ -179,6 +180,27 @@ extension AppTests {
             await connector.connect(.codex)
             #expect(await shell.lines.isEmpty)
             #expect(connector.rows[.claudeCode] == .status(.translocated))
+        }
+
+        /// Both Copy buttons (an agent row's command, step 4's prompt) go through `CopyText.copy`,
+        /// which replaces what is on the pasteboard. A private named pasteboard, never the user's.
+        @Test func copyPutsTheTextOnThePasteboard() throws {
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name("dev.roosa.singularity.tests.\(UUID().uuidString)"))
+            defer { pasteboard.releaseGlobally() }
+            pasteboard.clearContents()
+            pasteboard.setString("<b>old</b>", forType: .html)
+
+            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: FakeShell())
+            let command = connector.command(for: .claudeCode)
+            CopyText.copy(command, to: pasteboard)
+            #expect(pasteboard.string(forType: .string) == command)
+            #expect(pasteboard.string(forType: .html) == nil) // the old contents are gone
+
+            let prompt = BundledPlugins.authoringPrompt(guide: URL(filePath: "/Applications/Singularity.app/Contents/Resources/plugin-guide"),
+                                                        pluginsDirectory: URL(filePath: "/tmp/plugins"))
+            CopyText.copy(prompt, to: pasteboard)
+            #expect(pasteboard.string(forType: .string) == prompt)
+            #expect(pasteboard.pasteboardItems?.count == 1)
         }
     }
 }

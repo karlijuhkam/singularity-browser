@@ -100,6 +100,21 @@ struct AgentsStep: View {
 
 // MARK: - 4. Plugins
 
+/// What a bundled plugin's row in step 4 shows on its right.
+enum PluginRowAction: Equatable {
+    case adding  // a spinner while it is being copied
+    case add     // not in ~/Singularity/plugins yet
+    case review  // copied but not approved, or changed since ("Review…")
+    case added   // approved
+
+    /// `installedNeedsReview`: nil when the plugin is not installed, else its `needsReview`.
+    static func of(adding: Bool, installedNeedsReview: Bool?) -> PluginRowAction {
+        if adding { return .adding }
+        guard let needsReview = installedNeedsReview else { return .add }
+        return needsReview ? .review : .added
+    }
+}
+
 struct PluginsStep: View {
     @Environment(AppState.self) private var state
 
@@ -142,8 +157,7 @@ struct PluginsStep: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Button(copied ? "Copied" : "Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(prompt, forType: .string)
+                            CopyText.copy(prompt)
                             copied = true
                         }
                     }
@@ -195,20 +209,18 @@ struct PluginsStep: View {
         }
     }
 
-    /// Add (not in ~/Singularity/plugins yet), Review… (copied but not approved, or changed), or
-    /// "Added" (approved).
     @ViewBuilder
     private func action(_ plugin: BundledPlugin) -> some View {
-        if adding.contains(plugin.id) {
+        switch PluginRowAction.of(adding: adding.contains(plugin.id),
+                                  installedNeedsReview: state.plugins.plugin(plugin.id)?.needsReview) {
+        case .adding:
             ProgressView().controlSize(.small)
-        } else if let installed = state.plugins.plugin(plugin.id) {
-            if installed.needsReview {
-                Button("Review…") { state.welcomePluginReview = plugin.id }
-            } else {
-                Text("Added").foregroundStyle(.secondary)
-            }
-        } else {
+        case .add:
             Button("Add") { add(plugin) }
+        case .review:
+            Button("Review…") { state.welcomePluginReview = plugin.id }
+        case .added:
+            Text("Added").foregroundStyle(.secondary)
         }
     }
 
