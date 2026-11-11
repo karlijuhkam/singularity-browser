@@ -118,5 +118,12 @@ private struct CopyableCommand: View {
             }
             .controlSize(.small)
         }
+        // "Copied" turns back into "Copy" after two seconds, as in the welcome flow's step 4.
+        // (`.task(id:)` starts again, and cancels the previous wait, each time `copied` changes.)
+        .task(id: copied) {
+            guard copied else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copied = false
+        }
     }
 }

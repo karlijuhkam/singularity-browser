@@ -44,12 +44,15 @@ extension AppTests {
         return Hosted(state: state, window: window, shell: shell, root: root)
     }
 
-    /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers).
+    /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers) and
+    /// writes pending saves, so nothing recreates the data folder after it is removed (see
+    /// `OnboardingStateTests.shutDown`).
     private func tearDown(_ hosted: Hosted) {
         hosted.window.close()
+        hosted.state.flushSaves()
         hosted.state.mcp?.stop()
         hosted.state.plugins.terminateAll()
-        for space in hosted.state.spaces { hosted.state.artifacts.stop(space.id) }
+        hosted.state.artifacts.stopAll()
         try? FileManager.default.removeItem(at: hosted.root)
     }
 
@@ -77,6 +80,52 @@ extension AppTests {
         return all(window.contentView!).compactMap { $0 as? NSTextField }.first { $0.isEditable }
     }
 
+    /// The step column's x range in a window of `size`, from the same layout the view uses (the
+    /// row is centred).
+    private func columnXs(_ size: CGSize) -> ClosedRange<CGFloat> {
+        let inner = CGSize(width: size.width,
+                           height: size.height - OnboardingLayout.topPadding - OnboardingLayout.bottomPadding)
+        let layout = OnboardingLayout(size: inner)
+        let left = (size.width - layout.orbSideWidth - layout.gap - layout.columnWidth) / 2 + layout.orbSideWidth + layout.gap
+        return left...(left + layout.columnWidth)
+    }
+
+    /// Clicks a footer button: `fromRight` 0 is the primary button, 1 the one left of it, … The
+    /// mouse-down and -up go to this off-screen window only, as `press` does for keys. SwiftUI's
+    /// buttons are not `NSButton`s (and its accessibility tree is only built for an assistive app),
+    /// so the buttons are found in the drawing: in the footer's lowest 20 points, each bordered
+    /// button is a run of drawn columns, and the runs are 10 points apart.
+    private func clickFooterButton(fromRight index: Int, in window: NSWindow) throws {
+        let view = try #require(window.contentView)
+        let xs = columnXs(view.bounds.size)
+        let drawing = try draw(view, xs: xs)
+        let rows = (0..<drawing.height).filter { y in (0..<drawing.width).contains { drawing.alpha(x: $0, y: y) > 8 } }
+        let bottom = try #require(rows.max(), "nothing drawn")
+        let band = (bottom - Int(20 * drawing.scale))...bottom
+        let drawnColumns = (0..<drawing.width).filter { x in band.contains { drawing.alpha(x: x, y: $0) > 8 } }
+        // Runs of columns with gaps under 4 points between them: one button each.
+        var runs: [ClosedRange<Int>] = []
+        for x in drawnColumns {
+            if let last = runs.last, x - last.upperBound < Int(4 * drawing.scale) {
+                runs[runs.count - 1] = last.lowerBound...x
+            } else {
+                runs.append(x...x)
+            }
+        }
+        let run = try #require(runs.dropLast(index).last, "no footer button \(index) from the right")
+        let fromTop = CGFloat(bottom) / drawing.scale - 12
+        let point = NSPoint(x: xs.lowerBound + CGFloat(run.lowerBound + run.upperBound) / 2 / drawing.scale,
+                            y: view.isFlipped ? fromTop : view.bounds.height - fromTop)
+        let location = view.convert(point, to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                                                       timestamp: ProcessInfo.processInfo.systemUptime,
+                                                       windowNumber: window.windowNumber, context: nil,
+                                                       eventNumber: 0, clickCount: 1, pressure: 1))
+            window.sendEvent(event)
+        }
+    }
+
     /// Replaces the name field's text by typing, as a user would.
     private func type(_ text: String, into field: NSTextField, in window: NSWindow) {
         window.makeFirstResponder(field)
@@ -95,18 +144,27 @@ extension AppTests {
         let bottomRight: CGFloat
     }
 
+    /// The view's drawing between the x positions `xs`, as RGBA bytes (8 bits each, top row first).
+    private struct Drawing {
+        let bytes: [UInt8]
+        let width: Int
+        let height: Int
+        /// Pixels per point.
+        let scale: CGFloat
+
+        func alpha(x: Int, y: Int) -> UInt8 { bytes[(y * width + x) * 4 + 3] }
+    }
+
     /// Reads the drawing from the view itself (`cacheDisplay`), so it measures what SwiftUI laid
     /// out without asking SwiftUI for frames. Only the strip `xs` is drawn into the copy, which
     /// leaves out the orb: copying the live Metal view while it draws on its own timer is asking
     /// for trouble.
-    private func ink(of view: NSView, xs: ClosedRange<CGFloat>) throws -> Ink? {
+    private func draw(_ view: NSView, xs: ClosedRange<CGFloat>) throws -> Drawing {
         let strip = NSRect(x: xs.lowerBound, y: 0, width: xs.upperBound - xs.lowerBound, height: view.bounds.height)
         let rep = try #require(view.bitmapImageRepForCachingDisplay(in: strip))
         view.cacheDisplay(in: strip, to: rep)
         let image = try #require(rep.cgImage)
         let (width, height) = (image.width, image.height)
-        let scale = CGFloat(width) / strip.width
-        // Known byte layout: RGBA, 8 bits each, top row first.
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         bytes.withUnsafeMutableBytes { buffer in
             let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
@@ -114,9 +172,15 @@ extension AppTests {
                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         }
+        return Drawing(bytes: bytes, width: width, height: height, scale: CGFloat(width) / strip.width)
+    }
+
+    private func ink(of view: NSView, xs: ClosedRange<CGFloat>) throws -> Ink? {
+        let drawing = try draw(view, xs: xs)
+        let scale = drawing.scale
         var rows: [Int: Int] = [:] // drawn row → right-most drawn column in it
-        for y in 0..<height {
-            for x in 0..<width where bytes[(y * width + x) * 4 + 3] > 8 {
+        for y in 0..<drawing.height {
+            for x in 0..<drawing.width where drawing.alpha(x: x, y: y) > 8 {
                 rows[y] = max(rows[y] ?? 0, x)
             }
         }
@@ -137,13 +201,10 @@ extension AppTests {
         let (state, window) = (hosted.state, hosted.window)
         let view = try #require(window.contentView)
 
-        // The step column's x range, from the same layout the view uses (the row is centred).
-        let inner = CGSize(width: size.width,
-                           height: size.height - OnboardingLayout.topPadding - OnboardingLayout.bottomPadding)
-        let layout = OnboardingLayout(size: inner)
+        let layout = OnboardingLayout(size: CGSize(width: size.width, height: size.height
+                                                   - OnboardingLayout.topPadding - OnboardingLayout.bottomPadding))
         #expect(layout.showsOrb == (size.width >= 1000))
-        let left = (size.width - layout.orbSideWidth - layout.gap - layout.columnWidth) / 2 + layout.orbSideWidth + layout.gap
-        let columnXs = left...(left + layout.columnWidth)
+        let columnXs = columnXs(size)
 
         var tops: [CGFloat] = []
         var bottoms: [CGFloat] = []
@@ -168,6 +229,63 @@ extension AppTests {
         #expect(Set(bottoms).count == 1, "footer moved between steps: \(bottoms)")
         try await settle(window)
         #expect(state.onboarding == nil)
+    }
+
+    /// Step 2's Continue is off while the name is empty or only spaces: Return neither moves on nor saves.
+    @Test func continueNeedsAName() async throws {
+        MainRunLoopGuard.start
+        let hosted = host(size: CGSize(width: 1100, height: 720))
+        defer { tearDown(hosted) }
+        let (state, window) = (hosted.state, hosted.window)
+        let id = try #require(state.firstRunPlaceholderID)
+        try await settle(window)
+        pressReturn(window)
+        try await settle(window)
+        #expect(state.onboarding?.step == .space)
+
+        let field = try #require(nameField(window))
+        for blank in ["", "   "] {
+            type(blank, into: field, in: window)
+            try await settle(window)
+            #expect(field.stringValue == blank)
+            pressReturn(window)
+            try await settle(window)
+            #expect(state.onboarding?.step == .space, "Return moved on with the name \"\(blank)\"")
+            #expect(state.space(id)?.name == "Personal")
+            #expect(state.space(id)?.slug == "personal")
+        }
+        // The same field with a name: Return works, so the blank names above really were in it.
+        type("Work", into: field, in: window)
+        try await settle(window)
+        pressReturn(window)
+        try await settle(window)
+        #expect(state.onboarding?.step == .agents)
+        #expect(state.space(id)?.name == "Work")
+    }
+
+    /// Step 2's Skip goes to step 3 and throws away what was typed and picked.
+    @Test func skipOnTheSpaceStepSavesNothing() async throws {
+        MainRunLoopGuard.start
+        let hosted = host(size: CGSize(width: 1100, height: 720))
+        defer { tearDown(hosted) }
+        let (state, window) = (hosted.state, hosted.window)
+        let id = try #require(state.firstRunPlaceholderID)
+        let colour = state.space(id)?.colorHex
+        try await settle(window)
+        pressReturn(window)
+        try await settle(window)
+        #expect(state.onboarding?.step == .space)
+
+        type("Something else", into: try #require(nameField(window)), in: window)
+        try await settle(window)
+        // Footer on step 2: Back, Skip, Continue at the right.
+        try clickFooterButton(fromRight: 1, in: window)
+        try await settle(window)
+        #expect(state.onboarding?.step == .agents)
+        #expect(state.space(id)?.name == "Personal")
+        #expect(state.space(id)?.slug == "personal")
+        #expect(state.space(id)?.colorHex == colour)
+        #expect(state.firstRunPlaceholderID == id) // still untouched: an Arc import would replace it
     }
 
     @Test func returnTypingAndEscapeDriveTheFlow() async throws {

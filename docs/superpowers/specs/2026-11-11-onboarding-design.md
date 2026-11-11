@@ -280,7 +280,8 @@ the template should ship next to the guide so the prompt can point at it) and
 
 ## As built (2026-11-11)
 
-Built on branch `onboarding` (commits `e888224` to `2196d94`, plus this documentation). The
+Built on branch `onboarding` (commits `e888224` to `2196d94`, plus this documentation, and the
+fixes from the whole-branch review after it). The
 designer's calls 1–14 were all built as written. None was confirmed by the owner one by one, so
 all fourteen are still open to the final review, call 3 (the slug) most of all. Below: where the
 build differs from the design or fills in what was left to the builder, what nobody could try by
@@ -295,11 +296,15 @@ hand, and the small known issues left for the owner.
   `OrbShader.swift`). So there is no `xcrun metal` build step, and the bare debug binary gets the
   live orb too. The PNG fallback shows only without a Metal device or when the shader fails to
   compile.
-- 30 frames a second. It does **not** stop after a while without pointer movement. Measured on an
-  empty Space: about 2–3 % CPU in steady state (`top` 1.6–3.4 %, `ps` 2–5 % over 10–35 s), 0 %
-  when the window is covered. The design says to lower the rate or stop if the cost is not
-  negligible; the builder judged this acceptable, and the owner may not.
-- Paused when the view is not in a window, when the window is covered, and when the app is
+- 30 frames a second while it moves. Measured before the idle rule below, on an empty Space:
+  about 2–3 % CPU in steady state (`top` 1.6–3.4 %, `ps` 2–5 % over 10–35 s), 0 % when the
+  window is covered. The final review judged that too much for a page that may stay open all day,
+  so (owner's decision) the orb now stops: it animates only while its window is the key window,
+  and the empty-Space orb also holds its last frame after 30 seconds without the pointer moving
+  over it, until the pointer enters or moves over it or the window becomes key again (the
+  30 seconds then start again). The welcome flow's orb keeps moving while its window is key. The
+  rule is one pure function, `OrbAnimation.shouldAnimate`, with tests (`OrbAnimationTests`).
+- Paused also when the view is not in a window, when the window is covered, and when the app is
   hidden (⌘H).
 - Reduce Motion: one still frame (time 4, the default ripple origin); the pointer is ignored.
 - The "Check" became a test, `OrbTests.matchesTheSiteShader`, against `render_orb.py --time 4.0`
@@ -324,9 +329,11 @@ hand, and the small known issues left for the owner.
 - An existing entry is reported even when the program is not found (it may only be missing from
   the login shell's PATH).
 - The "Points at another copy" row also shows the path the entry points at.
-- If Update's re-read still shows another path, the row says "Points at another copy" again, not
-  an error. If an add succeeds but the file has no entry, the row says "The agent did not keep the
-  entry."
+- If Update's re-read still shows another path, the row shows the error "The entry still points
+  at another copy." If an add succeeds but the file has no entry, the row says "The agent did not
+  keep the entry. If your shell sets CLAUDE_CONFIG_DIR or CODEX_HOME, use the command instead."
+  `connect` runs only from a row that shows Connect or Update ("not connected" or "another
+  copy"); while checking or working, or on a connected row, it does nothing.
 - Update is remove, then add. If the remove works and the add fails, the old entry is gone; the
   row shows the add's error and the command to copy.
 - An error shows the program's own output, at most its last 300 characters. A failed row has no
@@ -355,17 +362,24 @@ hand, and the small known issues left for the owner.
 - Step 3: each Space's switch has the Space's colour dot next to it.
 - Step 4: while a plugin is being copied, its row shows a spinner and Start browsing and Back are
   disabled, so the approval sheet that follows can't be lost. Skip setup and Esc stay enabled.
-  "Copied" turns back into "Copy" after two seconds. With no bundled plugins (the bare debug
-  binary) the list is left out and only the prompt shows.
+  "Copied" turns back into "Copy" after two seconds (so do the Copy buttons under the agent
+  rows). With no bundled plugins (the bare debug binary) the list is left out and only the prompt
+  shows.
 - Leaving: besides Skip setup, Esc, Start browsing, the menu commands and the palette, the flow
-  also closes for the approval sheet's "Show Tab" (`showTab`), `openInNewTab` and
-  `openArtifact`. So an artifact page that calls `singularity.open` closes a flow reopened from
-  the menu. (On a brand-new install there is no artifact page behind the flow.)
+  also closes for the approval sheet's "Show Tab" (`showTab`) and `openArtifact`. It does not
+  close for what happens without the user: an artifact page's `singularity.open`
+  (`openInNewTab`) opens its tab behind the flow, like an agent's tab.
+- While the flow is open, the menu commands that would act on the hidden tab, page or sidebar
+  are disabled (Find, Print, Reload, Back, Forward, Zoom, Next/Previous Tab, the split commands,
+  New Folder), and ⌘W (Close Tab) closes the flow instead of the hidden tab. New Tab, New
+  Terminal, the palette, Open Location, the Spaces menu and New Space close the flow and go on.
 - The placeholder status, and with it the slug exception, ends as soon as the Space gets its first
   tab by any route (an agent, a new artifact file, …) and when the flow closes.
-- Arc import from step 1 removes the placeholder with `deleteSpace`, which moves its folder (by
-  then holding an empty `artifacts/`) to the user's Trash. If nothing was imported, the flow stays
-  on step 1.
+- An Arc import during the flow removes the placeholder with `deleteSpace`, which moves its
+  folder (by then holding an empty `artifacts/`) to the user's Trash, but only while the user has
+  not named it: once step 2's Continue was applied, the Space stays (an import from the File menu
+  on a later step, or from step 1 after Back). If nothing was imported, the flow stays where it
+  was.
 - `ArtifactHosts.stop` now also cancels a server start that is still pending, and
   `ensureArtifactHost` re-reads the Space by id. Without this, the start queued at launch
   recreated `spaces/personal/artifacts` after the rename. It also fixes an older edge case:
@@ -393,7 +407,7 @@ Space.
 | Pointer following on the orb (tracking area, easing) | `OrbTests.pointerBecomesAPointOnTheSphere` covers the maths from pointer to point on the sphere. Tracking and easing: nothing. |
 | The black orb in light mode on screen | `OrbTests.matchesTheSiteShader(whiteOrb: false)` renders it; one screenshot with the app's appearance forced to light (a temporary hook) showed it. Following a live change of the system appearance: nothing. |
 | Reduce Motion (still frame) | Nothing. |
-| Pausing on ⌘H | Nothing. (Pausing when covered was seen in logs: 0 % CPU.) |
+| Pausing on ⌘H, when the window stops being key, after 30 s without the pointer; moving again on pointer or key | `OrbAnimationTests` (the rule as a pure function). In the running app: nothing (pausing when covered was seen in logs: 0 % CPU, before the idle rule). |
 | The PNG fallback | Nothing (this Mac has Metal). |
 | Connect and Update against the real Claude Code and Codex | `AgentConnectorTests` with a fake shell (`connectRunsTheAddCommandAndRereadsTheConfig`, `updatingAnotherCopyRemovesThenAdds`, `failingAddShowsTheProgramsOutput`, `addThatLeavesTheFileUnchangedFails`), and the controller's run of the real commands against throwaway config folders. Whether `claude mcp add` through the owner's `claude` shell function writes to the default `~/.claude.json`: nothing. |
 | Picking a colour in step 2 | `OnboardingStateTests.renamingThePlaceholderMovesItsFolder` saves a colour through `applyWelcomeSpace`. The swatch click: nothing. |
@@ -409,29 +423,23 @@ Space.
 
 From the task reviews; none blocks use.
 
-- **Orb:** one test limit (8) for both colours, though black measures 0.74 (`OrbTests.swift`;
-  could be `whiteOrb ? 8 : 2`). The scene constants (radius, camera z, 0.96) are written twice,
+- **Orb:** the scene constants (radius, camera z, 0.96) are written twice,
   in Swift and in the shader string (`OrbShader.swift`). The shader compiles on the main thread
   the first time an orb is shown (`OrbView.swift`).
 - **Connect:** in the Codex scanner a multi-line array under the `singularity` table ends the
   section early (wrongly "not connected"), and a relative or empty registered path is compared
-  against the app's working directory (`AgentConnect.swift`). `connect` only refuses while a row
-  is working; it should only run from "not connected" or "another copy" (`AgentConnector.swift`).
-  An Update whose re-read still shows another path gives no hint that it did not work. A
+  against the app's working directory (`AgentConnect.swift`). A
   translocated app shows both the row's message and the "/Applications" note in Settings →
   Agents. Missing tests for the 300-character cut and for a check leaving a working row alone;
   those tests' temp folders are not removed (`AgentConnectorTests.swift`).
-- **Bundled plugins:** the sort test cannot tell name order from folder order
-  (`BundledPluginsTests.swift`). The copy block is duplicated in `build-app.sh` and `release.sh`,
-  as their other steps are.
-- **Flow and state:** `OnboardingStateTests` waits 300 ms for the artifact server instead of
-  polling with a deadline. Stopping an artifact server on purpose logs "artifact server stopped:
+- **Bundled plugins:** the copy block is duplicated in `build-app.sh` and `release.sh`, as their
+  other steps are.
+- **Flow and state:** stopping an artifact server on purpose logs "artifact server stopped:
   failed(kqueue …)", which reads like an error and shows up in test output (`ArtifactServer.swift`).
-  `toolsChanged()` is sent twice when a rename changes the slug (`AppState.swift`). In
-  `OnboardingViewTests` a check counts exactly two shell lines, which is brittle, and there are no
-  tests for "Skip on step 2 does not save" or for Continue being disabled with a blank name. The
-  two design consequences above (the placeholder's folder goes to the Trash after an Arc import;
-  an artifact page's `open` closes a reopened flow) were planned that way.
+  In `OnboardingViewTests` a check counts exactly two shell lines, which is brittle, and
+  `skipOnTheSpaceStepSavesNothing` finds the Skip button in the drawing (SwiftUI builds no
+  accessibility tree without an assistive app), so a footer redesign means updating that helper.
+  The untouched placeholder's folder going to the Trash after an Arc import was planned that way.
 
 Where things are: `Sources/SingularityCore/Onboarding/`, `Agent/AgentConnect.swift`,
 `Plugins/BundledPlugins.swift` (Core, with `OnboardingTests`, `AgentConnectTests`,

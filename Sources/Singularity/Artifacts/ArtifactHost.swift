@@ -93,6 +93,8 @@ final class ArtifactHosts {
     @ObservationIgnored var scripts: ArtifactScriptService?
     private var hosts: [UUID: ArtifactHost] = [:]
     @ObservationIgnored private var starting: [UUID: Task<ArtifactHost?, Never>] = [:]
+    /// Set by `stopAll`: no server starts after that.
+    @ObservationIgnored private var closed = false
 
     func host(_ spaceID: UUID) -> ArtifactHost? {
         hosts[spaceID]
@@ -101,6 +103,7 @@ final class ArtifactHosts {
     /// Returns the Space's running host, starting it first if needed. Concurrent callers share
     /// one start-up.
     func ensureStarted(_ space: Space, root: URL) async -> ArtifactHost? {
+        guard !closed else { return nil }
         if let host = hosts[space.id] { return host }
         if let pending = starting[space.id] { return await pending.value }
 
@@ -136,5 +139,13 @@ final class ArtifactHosts {
     func stop(_ spaceID: UUID) {
         hosts.removeValue(forKey: spaceID)?.stop()
         starting.removeValue(forKey: spaceID)?.cancel()
+    }
+
+    /// Stops every server and refuses to start any from now on: the app is quitting (or a test is
+    /// done with its data folder). A start that is queued but has not reached `ensureStarted` yet
+    /// (`AppState.loadSelectedTab` hands it to a Task) would otherwise still create the folder.
+    func stopAll() {
+        closed = true
+        for id in Set(hosts.keys).union(starting.keys) { stop(id) }
     }
 }

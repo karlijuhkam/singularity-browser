@@ -153,6 +153,7 @@ final class AppState {
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.flushSaves()
+                self?.artifacts.stopAll()
                 self?.terminals.tearDownAll()
                 self?.mcp?.stop()
                 self?.plugins.terminateAll()
@@ -309,18 +310,19 @@ final class AppState {
             $0.colorHex = colorHex
             $0.workingDirectory = workingDirectory
         }
-        // Tool descriptions mention the Space's name (as in `updateSpace`).
-        if target.agentsEnabled { mcp?.toolsChanged() }
         if FirstRun.mayReslug(isFirstRunPlaceholder: target.id == firstRunPlaceholderID, tabCount: target.tabs.count) {
             reslugPlaceholder(target.id)
         }
+        // Once, after both changes: tool descriptions mention the Space's name (as in
+        // `updateSpace`), and tool names are <slug>.<tool>.
+        if target.agentsEnabled { mcp?.toolsChanged() }
     }
 
     /// The one exception to "a slug is fixed at creation" (spec, step 2). Everything on disk for a
     /// Space lives under `spaces/<slug>/` (space.json, history, agent log, favicons, artifacts), so
     /// the folder moves with it. In-memory caches are keyed by the Space's id, except the favicon
     /// cache (slug|host), which the placeholder can't have entries in: it has no tabs. WebKit's
-    /// data store is keyed by the id too, so logins are unaffected.
+    /// data store is keyed by the id too, so logins are unaffected. The caller tells agents.
     private func reslugPlaceholder(_ id: UUID) {
         guard let space = space(id) else { return }
         let taken = Set(spaces.filter { $0.id != id }.map(\.slug)).union(slugsOnDisk()).subtracting([space.slug])
@@ -343,7 +345,6 @@ final class AppState {
         }
         mutateSpace(id) { $0.slug = newSlug }
         flushSaves()
-        if space.agentsEnabled { mcp?.toolsChanged() } // tool names are <slug>.<tool>
         if selectedSpaceID == id { loadSelectedTab() }
     }
 
@@ -467,9 +468,10 @@ final class AppState {
     }
 
     /// Opens a URL in a new tab and selects it (in the current Space unless one is given).
+    /// Leaves the welcome flow alone: an artifact page's `singularity.open` calls this without the
+    /// user doing anything, so the user-driven callers (the palette) close the flow themselves.
     func openInNewTab(_ url: URL, spaceID: UUID? = nil) {
         guard let spaceID = spaceID ?? selectedSpaceID else { return }
-        closeWelcome()
         let tab = BrowserTab.web(url)
         mutateSpace(spaceID) {
             $0.append(tab)

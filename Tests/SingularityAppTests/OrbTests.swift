@@ -21,13 +21,14 @@ extension AppTests {
             // Mean absolute difference per channel, 0…255, over pixels well inside the sphere
             // (the edge is antialiased differently). The port is the same maths, so it is small.
             //
-            // Why 8 and not 6: the black orb differs by about 0.7, the white one by about 6.0. Nearly
-            // all of that is one quirk of the reference, not of the port. In `snoise`, seven of the 49
+            // Why 8 for white (not 6) and 2 for black: the black orb differs by about 0.7, the white
+            // one by about 6.0. Nearly all of that is one quirk of the reference, not of the port.
+            // In `snoise`, seven of the 49
             // gradient corners have h = 1 - |x| - |y| exactly 0 in exact maths; numpy (float64) and
             // the GPU (float32, like the site's GLSL) round that 0 to opposite signs, so `step(h, 0)`
             // picks opposite gradient signs there and one smooth patch of ripples shifts. With the
             // reference's h rounded as float32 the difference drops to about 0.2 for both orbs.
-            #expect(meanDifference(image, reference, insideRadiusFraction: 0.9) < 8)
+            #expect(meanDifference(image, reference, insideRadiusFraction: 0.9) < (whiteOrb ? 8 : 2))
         }
 
         @Test func isTransparentOutsideTheSphere() throws {

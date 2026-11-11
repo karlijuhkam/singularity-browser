@@ -94,6 +94,9 @@ struct CommandPaletteView: View {
         guard !items.isEmpty else { return }
         let item = items[min(selectedIndex, items.count - 1)]
         close()
+        // The user chose something: the welcome flow must not stay over it. (`showPalette` closed
+        // the flow already; this keeps it true for the URL actions, which `openInNewTab` no longer does.)
+        state.closeWelcome()
         switch item.action {
         case .openURL(let url):
             switch mode {

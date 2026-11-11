@@ -12,11 +12,28 @@ extension AppTests {
         URL(filePath: "/private/tmp/sg-t-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
     }
 
-    /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers).
+    /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers). Pending
+    /// saves are written now and no server starts afterwards (`stopAll`), so nothing recreates the
+    /// data folder after the test has removed it (the debounced save and a queued server start both
+    /// run later on the main actor).
     private func shutDown(_ state: AppState) {
+        state.flushSaves()
         state.mcp?.stop()
         state.plugins.terminateAll()
-        for space in state.spaces { state.artifacts.stop(space.id) }
+        state.artifacts.stopAll()
+    }
+
+    private struct TimedOut: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    /// Polls `condition` every 20 ms until it holds; fails the test after `limit`.
+    private func waitUntil(_ what: String, limit: Duration = .seconds(5), _ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + limit
+        while !condition() {
+            guard ContinuousClock.now < deadline else { throw TimedOut(description: "waited \(limit) for \(what)") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
     }
 
     private func spaceFolders(_ root: URL) -> Set<String> {
@@ -79,13 +96,15 @@ extension AppTests {
         defer { shutDown(state) }
         let id = try #require(state.firstRunPlaceholderID)
         state.flushSaves()
-        try await Task.sleep(for: .milliseconds(300)) // lets the artifact server start
+        try await waitUntil("the artifact server to start") { state.artifacts.host(id) != nil }
         #expect(spaceFolders(root) == ["personal"])
         #expect(state.artifacts.host(id)?.root.path.contains("/spaces/personal/") == true)
 
         state.applyWelcomeSpace(name: "Work", colorHex: SpaceColors.presets[0], workingDirectory: "~")
         state.flushSaves()
-        try await Task.sleep(for: .milliseconds(300)) // the server starts again, on the new folder
+        try await waitUntil("the artifact server to start again, on the new folder") {
+            state.artifacts.host(id)?.root.path.contains("/spaces/work/") == true
+        }
 
         #expect(state.space(id)?.slug == "work")
         #expect(spaceFolders(root) == ["work"])
@@ -159,6 +178,11 @@ extension AppTests {
         #expect(state.palette == nil)
     }
 
+    /// The import removes the placeholder with the real `deleteSpace`, which moves the Space's
+    /// folder to the user's own Trash if it exists. It must not exist here: the test does not wait
+    /// for anything between launch and import (no `await`), so neither the debounced save nor the
+    /// artifact server's start, both queued on the main actor, can have written it. Checked below
+    /// with `#require`, which stops the test before the import if it ever does.
     @Test func anArcImportReplacesThePlaceholder() throws {
         MainRunLoopGuard.start
         let root = makeRoot()
@@ -167,6 +191,8 @@ extension AppTests {
         let state = AppState(paths: Paths(root: root))
         defer { shutDown(state) }
         let placeholder = try #require(state.firstRunPlaceholderID)
+        try #require(!FileManager.default.fileExists(atPath: Paths(root: root).spaceDirectory("personal").path),
+                     "the placeholder's folder exists: the import would move it to the real Trash")
         let arc = ArcImport.ArcSpace(id: "a", name: "Work", colorHex: nil, profile: "Default",
                                      pinned: [], unpinned: [], skipped: 0)
         state.importArcSpaces([arc], options: ArcImport.Options())
@@ -201,6 +227,21 @@ extension AppTests {
         #expect(FileManager.default.fileExists(atPath: Paths(root: root).spaceFile("work").path))
         #expect(state.firstRunPlaceholderID == nil)
         #expect(state.onboarding?.step == .agents)
+    }
+
+    /// An artifact page's `singularity.open` (→ `openInNewTab`) needs no click, so it must not close
+    /// the flow; the tab opens behind it.
+    @Test func openingATabWithoutTheUserKeepsTheFlow() throws {
+        MainRunLoopGuard.start
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let state = AppState(paths: Paths(root: root))
+        defer { shutDown(state) }
+        let id = try #require(state.firstRunPlaceholderID)
+        state.openInNewTab(URL(string: "about:blank")!, spaceID: id)
+        #expect(state.onboarding?.step == .welcome)
+        #expect(state.space(id)?.tabs.count == 1)
     }
 
     @Test func switchingAgentsOnKeepsThePolicy() throws {

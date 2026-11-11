@@ -32,13 +32,14 @@ private let onePasswordFolder = URL(filePath: #filePath)
     @Test func listsValidPluginsSortedByName() throws {
         let root = try tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
-        // "Zebra" sorts after "1Password", so the order is by name, not by folder.
-        try writePlugin("aaa-zebra", in: root, json: manifest(id: "aaa-zebra", name: "Zebra", description: "Stripes."))
+        // The folder "0-zebra" sorts before "1password", the name "Zebra" after "1Password": the
+        // order shows which of the two the list goes by.
+        try writePlugin("0-zebra", in: root, json: manifest(id: "0-zebra", name: "Zebra", description: "Stripes."))
         try FileManager.default.copyItem(at: onePasswordFolder, to: root.appending(path: "1password"))
 
         let plugins = BundledPlugins.list(in: root)
 
-        #expect(plugins.map(\.id) == ["1password", "aaa-zebra"])
+        #expect(plugins.map(\.id) == ["1password", "0-zebra"])
         let first = try #require(plugins.first)
         #expect(first.name == "1Password")
         #expect(first.summary == "Fill logins from 1Password, unlocked with Touch ID.")

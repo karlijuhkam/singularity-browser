@@ -117,7 +117,44 @@ extension AppTests {
             let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: FakeShell())
             await connector.refresh()
             await connector.connect(.codex)
-            #expect(connector.rows[.codex] == .failed("The agent did not keep the entry."))
+            #expect(connector.rows[.codex] == .failed(
+                "The agent did not keep the entry. If your shell sets CLAUDE_CONFIG_DIR or CODEX_HOME, use the command instead."))
+        }
+
+        /// Update said yes, but the file still names the other copy: that is an error, not a
+        /// silent return to the Update button.
+        @Test func updateThatLeavesTheOtherCopyFails() async throws {
+            _ = MainRunLoopGuard.start
+            let home = try makeHome()
+            let other = "/Users/someone/Singularity-Browser/build/Singularity.app/Contents/MacOS/singularity-mcp"
+            try writeClaudeConfig(home: home, command: other)
+            let connector = AgentConnector(launcher: launcher, home: home, shell: FakeShell())
+            await connector.refresh()
+            #expect(connector.rows[.claudeCode] == .status(.otherCopy(other)))
+
+            await connector.connect(.claudeCode)
+            #expect(connector.rows[.claudeCode] == .failed("The entry still points at another copy."))
+        }
+
+        /// Connect runs only from a row that offers it ("not connected" or "another copy"): not
+        /// while the check runs, and not on a row that is already connected.
+        @Test func connectRunsNothingWhileCheckingOrWhenConnected() async throws {
+            _ = MainRunLoopGuard.start
+            let home = try makeHome()
+            let shell = FakeShell()
+            let connector = AgentConnector(launcher: launcher, home: home, shell: shell)
+            #expect(connector.rows[.claudeCode] == .checking) // no check has run yet
+            await connector.connect(.claudeCode)
+            #expect(await shell.lines.isEmpty)
+            #expect(connector.rows[.claudeCode] == .checking)
+
+            try writeClaudeConfig(home: home, command: launcher)
+            await connector.refresh()
+            #expect(connector.rows[.claudeCode] == .status(.connected))
+            let checked = await shell.lines
+            await connector.connect(.claudeCode)
+            #expect(await shell.lines == checked)
+            #expect(connector.rows[.claudeCode] == .status(.connected))
         }
 
         @Test func timedOutLookupMeansNotInstalled() async throws {

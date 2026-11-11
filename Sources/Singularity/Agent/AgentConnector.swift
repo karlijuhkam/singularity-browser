@@ -82,12 +82,18 @@ struct AgentLoginShell: AgentShell {
     }
 
     /// Connect (add), or Update for an entry pointing at another copy (remove, then add). Then reads
-    /// the config again and shows what it says. Does nothing for a translocated app.
+    /// the config again and shows what it says. Runs only from a row that shows one of those two
+    /// buttons: never while checking or working, on a connected row, or for a translocated app.
     func connect(_ agent: AgentKind) async {
-        guard !AgentConnect.isTranslocated(launcher), rows[agent] != .working else { return }
+        guard !AgentConnect.isTranslocated(launcher) else { return }
         var lines = [AgentConnect.addCommand(agent, launcher: launcher)]
-        if case .status(.otherCopy) = rows[agent] {
+        switch rows[agent] {
+        case .status(.notConnected):
+            break
+        case .status(.otherCopy):
             lines.insert(AgentConnect.removeCommand(agent), at: 0)
+        default:
+            return
         }
         rows[agent] = .working
 
@@ -101,8 +107,16 @@ struct AgentLoginShell: AgentShell {
 
         // The agent said yes; believe its config file, not its exit code.
         let registered = await Self.registeredLauncher(agent, home: home)
-        let status = AgentConnect.status(installed: true, registered: registered, launcher: launcher)
-        rows[agent] = status == .notConnected ? .failed("The agent did not keep the entry.") : .status(status)
+        switch AgentConnect.status(installed: true, registered: registered, launcher: launcher) {
+        case .notConnected:
+            // Most likely the agent wrote to another config folder than the one we read.
+            rows[agent] = .failed("The agent did not keep the entry. If your shell sets CLAUDE_CONFIG_DIR "
+                                  + "or CODEX_HOME, use the command instead.")
+        case .otherCopy:
+            rows[agent] = .failed("The entry still points at another copy.")
+        case let status:
+            rows[agent] = .status(status)
+        }
     }
 
     // MARK: - Private
