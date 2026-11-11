@@ -19,6 +19,7 @@ Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is sy
 
 ### 2. Make it yours (2 min)
 
+- **On first launch** a short welcome walks you through naming your first Space, connecting your agent and adding a plugin. Every step can be skipped. **Singularity → Welcome to Singularity…** (or the palette) opens it again.
 - **Spaces** are the circles on the left. Each Space has its own tabs, logins and cookies. Click **+** to add one; right-click → **Edit Space…** to rename it, change its colour or set its terminal folder.
 - **⌘T** opens the command palette. Type a URL, a search, a tab name or a command such as "New Folder" or "Split Right with…".
 - **Pin** a tab or move it into a **folder** by dragging it there in the sidebar, or by right-clicking it.
@@ -26,22 +27,25 @@ Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is sy
 - **⌥⌘T** opens a **terminal** in the Space's folder. It runs your normal login shell with your `.zshrc`.
 - **Split view:** drag a tab from the sidebar onto the edge of the page, or right-click → **Open in Split View**. Drag a pane's title bar to move it, and drag the gaps to resize.
 
-All preferences are in **Singularity → Settings…** (⌘,): search engine, terminal font, agent permissions for every Space, the exact `claude mcp add` command for your copy of the app, and per-Space "clear history / cookies / agent log".
+All preferences are in **Singularity → Settings…** (⌘,): search engine, terminal font, agent permissions for every Space, Connect buttons for Claude Code and Codex, and per-Space "clear history / cookies / agent log".
 
-### 3. Connect Claude Code (2 min)
+### 3. Connect Claude Code or Codex (2 min)
 
 1. In Singularity, right-click a Space → **Edit Space…** → switch on **Allow agents**, then choose what agents may do:
    - **Read only:** look at tabs and pages, and take screenshots.
    - **Ask before acting** (recommended): you confirm each click, typing, page opened or tab closed. Form submissions and going to another site always ask.
    - **Allow everything:** no questions asked, but every action is still logged.
-2. Register the MCP server once, for all your projects. **Settings → Agents** has this command with the right path and a Copy button:
+2. Register the MCP server once, for all your projects. The easiest way is the **Connect** button for Claude Code or Codex, in the welcome flow or in **Settings → Agents**. It runs the agent's own `mcp add` command for this copy of the app and then shows whether it worked. If the agent already points at another copy of Singularity, the button says **Update**. Connecting doesn't open any Space to agents; step 1 does that.
+
+   To do it by hand (Settings → Agents shows these with the right path and a Copy button):
 
    ```sh
    claude mcp add -s user singularity -- /Applications/Singularity.app/Contents/MacOS/singularity-mcp
+   codex mcp add singularity -- /Applications/Singularity.app/Contents/MacOS/singularity-mcp
    ```
 
    For a source build, use `…/Singularity-Browser/build/Singularity.app/Contents/MacOS/singularity-mcp`. If Singularity isn't running, the command starts it.
-3. Open a terminal tab in that Space (⌥⌘T), run `claude`, and try:
+3. Open a terminal tab in that Space (⌥⌘T), run `claude` (or `codex`), and try:
 
    > Using the singularity browser tools, find the "Install" button on swift.org and click it.
 
@@ -91,11 +95,11 @@ Tools, for each Space where agents are allowed (Claude Code shows `work.read_pag
 
 A plugin is a folder that adds something to web pages, such as a button in a field, with a background program that runs in a macOS sandbox with no network. You approve what each plugin may do before it runs, and any change to its files pauses it until you approve again.
 
-To add one: Settings → Plugins → Add Plugin…, choose the plugin's folder, read the approval sheet, approve, then switch it on for the Spaces you want.
+To add one: Settings → Plugins → Add Plugin…, choose the plugin's folder, read the approval sheet, approve, then switch it on for the Spaces you want. The ready-made plugins also come inside the app: the welcome flow's last step lists them with an **Add** button that leads to the same approval sheet.
 
 The **1Password** plugin (`Plugins/1password`) fills logins after you click its button and pick a login from a menu. It needs the 1Password app with Settings → Developer → "Integrate with 1Password CLI" switched on, and the `op` command line tool (`brew install 1password-cli`).
 
-To write your own (an agent can do it from the guide), see [docs/plugins/AUTHORING.md](docs/plugins/AUTHORING.md). `Plugins/template` is a minimal starting point.
+To write your own (an agent can do it from the guide), see [docs/plugins/AUTHORING.md](docs/plugins/AUTHORING.md). `Plugins/template` is a minimal starting point. Both ship inside the app too (`Contents/Resources/plugin-guide/`), and the welcome flow has a prompt to copy that points your agent at them.
 
 ### Keyboard shortcuts
 
