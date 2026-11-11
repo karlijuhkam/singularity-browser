@@ -2,7 +2,8 @@ import SingularityCore
 import SwiftUI
 
 /// The whole window: sidebar on the left, the selected tab's content on the right,
-/// and the command palette floating on top when open.
+/// and the command palette floating on top when open. While the welcome flow is open it
+/// replaces the sidebar and content.
 struct MainView: View {
     @Environment(AppState.self) private var state
     @Environment(\.openSettings) private var openSettings
@@ -11,18 +12,25 @@ struct MainView: View {
         @Bindable var state = state
 
         ZStack {
-            HStack(spacing: 0) {
-                SidebarView()
-                    .frame(width: 270)
-                ContentArea()
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                    .padding([.top, .bottom, .trailing], 8)
-            }
-            .background {
-                ZStack {
-                    VisualEffectBackground()
-                    Color(hex: state.selectedSpace?.colorHex ?? "#8A8F98").opacity(0.14)
+            if state.onboarding != nil {
+                // The welcome flow takes the whole window. The sheets below (Arc import) and the
+                // palette still work on top of it.
+                OnboardingView()
+                    .background(VisualEffectBackground())
+            } else {
+                HStack(spacing: 0) {
+                    SidebarView()
+                        .frame(width: 270)
+                    ContentArea()
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                        .padding([.top, .bottom, .trailing], 8)
+                }
+                .background {
+                    ZStack {
+                        VisualEffectBackground()
+                        Color(hex: state.selectedSpace?.colorHex ?? "#8A8F98").opacity(0.14)
+                    }
                 }
             }
 

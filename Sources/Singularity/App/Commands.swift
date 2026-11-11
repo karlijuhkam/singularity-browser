@@ -6,6 +6,11 @@ struct SingularityCommands: Commands {
     let state: AppState
 
     var body: some Commands {
+        // Singularity → Welcome to Singularity… (under "About Singularity"): the welcome flow again.
+        CommandGroup(after: .appInfo) {
+            Button("Welcome to Singularity…") { state.showWelcome() }
+        }
+
         // Replaces File → New Window.
         CommandGroup(replacing: .newItem) {
             Button("New Tab") { state.showPalette(.newTab) }

@@ -173,6 +173,7 @@ enum PaletteResults {
         items.append(command("edit-space", "Edit Space “\(space.name)”…", "slider.horizontal.3") {
             state.showSpaceEditor(spaceID: space.id)
         })
+        items.append(command("welcome", "Welcome to Singularity…", "sparkle") { state.showWelcome() })
         #if DEBUG
         items.append(command("plugins-test-op", "Plugins: Test 1Password CLI", "key") { PluginDebugCommands.testOnePasswordCLI() })
         #endif

@@ -23,29 +23,7 @@ struct SpaceEditorSheet: View {
                 .font(.headline)
 
             Form {
-                TextField("Name", text: $name)
-
-                LabeledContent("Colour") {
-                    HStack(spacing: 6) {
-                        ForEach(SpaceColors.presets, id: \.self) { hex in
-                            Circle()
-                                .fill(Color(hex: hex))
-                                .frame(width: 20, height: 20)
-                                .overlay(Circle().strokeBorder(.primary.opacity(hex == colorHex ? 0.8 : 0), lineWidth: 2))
-                                .onTapGesture { colorHex = hex }
-                        }
-                    }
-                }
-
-                LabeledContent("Terminal folder") {
-                    HStack {
-                        Text(workingDirectory)
-                            .lineLimit(1)
-                            .truncationMode(.head)
-                            .foregroundStyle(.secondary)
-                        Button("Choose…", action: chooseFolder)
-                    }
-                }
+                SpaceFields(name: $name, colorHex: $colorHex, workingDirectory: $workingDirectory)
 
                 Toggle(isOn: $agentsEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -142,18 +120,6 @@ struct SpaceEditorSheet: View {
         case .ask: return "You confirm each click, typing, page opened or tab closed. Form submissions and going to another site always ask."
         case .allowAll: return "Agents act without asking. Everything they do is still recorded in the agent log."
         }
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: (workingDirectory as NSString).expandingTildeInPath)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        // Store paths under the home folder as "~/…" so space.json stays portable.
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        workingDirectory = url.path.hasPrefix(home) ? "~" + url.path.dropFirst(home.count) : url.path
     }
 }
 
