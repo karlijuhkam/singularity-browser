@@ -230,6 +230,44 @@ extension AppTests {
         #expect(state.space(id)?.tabs.count == 1)
     }
 
+    /// ⌘W (`closeTabCommand`, the menu item's action) closes the flow, never the tab behind it, and
+    /// does nothing while a sheet is open over the flow (the Arc import, a plugin's approval).
+    @Test func closeTabLeavesTheFlowAloneWhileASheetIsOpen() throws {
+        MainRunLoopGuard.start
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let state = TestAppState.make(root: root)
+        defer { shutDown(state) }
+        let id = state.spaces[0].id
+        state.openInNewTab(URL(string: "about:blank")!, spaceID: id) // a tab hidden behind the flow
+        #expect(state.onboarding != nil)
+
+        state.isImportingFromArc = true
+        #expect(state.welcomeSheetIsOpen)
+        state.closeTabCommand()
+        #expect(state.onboarding != nil)
+        state.isImportingFromArc = false
+
+        state.welcomePluginReview = "1password"
+        #expect(state.welcomeSheetIsOpen)
+        state.closeTabCommand()
+        #expect(state.onboarding != nil)
+        state.welcomePluginReview = nil
+
+        #expect(!state.welcomeSheetIsOpen)
+        state.closeTabCommand()
+        #expect(state.onboarding == nil)
+        #expect(state.space(id)?.tabs.count == 1)
+
+        // Without the flow, ⌘W closes the selected tab; an open sheet no longer counts as the flow's.
+        state.isImportingFromArc = true
+        #expect(!state.welcomeSheetIsOpen)
+        state.isImportingFromArc = false
+        state.closeTabCommand()
+        #expect(state.space(id)?.tabs.isEmpty == true)
+    }
+
     @Test func switchingAgentsOnKeepsThePolicy() throws {
         MainRunLoopGuard.start
         let root = makeRoot()

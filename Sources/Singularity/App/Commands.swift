@@ -4,7 +4,8 @@ import SwiftUI
 /// macOS way: they work wherever focus is, and they are discoverable in the menus.
 ///
 /// While the welcome flow covers the window (`state.welcomeCoversWindow`), every command that
-/// acts on the hidden tab, page or sidebar is off, and Close Tab (⌘W) closes the flow instead.
+/// acts on the hidden tab, page or sidebar is off, and Close Tab (⌘W) closes the flow instead
+/// (unless a sheet is open over it: `AppState.closeTabCommand`).
 /// Commands that leave the flow on purpose and go somewhere (New Tab, New Terminal, the palette,
 /// Open Location, picking a Space, New Space) keep working: they close the flow themselves.
 struct SingularityCommands: Commands {
@@ -39,11 +40,12 @@ struct SingularityCommands: Commands {
         // Replaces File → Close (which would close the whole window) with Close Tab.
         CommandGroup(replacing: .saveItem) {
             Button("Close Tab") {
-                // ⌘W on the welcome flow closes the flow, never the tab hidden behind it.
-                if covered { state.closeWelcome() } else { state.closeSelectedTab() }
+                // ⌘W on the welcome flow closes the flow, never the tab hidden behind it, and
+                // nothing while a sheet is open over the flow.
+                state.closeTabCommand()
             }
             .keyboardShortcut("w")
-            .disabled(!covered && state.selectedTab == nil)
+            .disabled(covered ? state.welcomeSheetIsOpen : state.selectedTab == nil)
         }
 
         // Edit → Find. Web pages only; WKWebView has no find bar, so the tab draws its own (FindBar).

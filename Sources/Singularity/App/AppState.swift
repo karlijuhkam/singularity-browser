@@ -35,8 +35,13 @@ final class AppState {
     /// Non-nil while the welcome flow covers the window.
     private(set) var onboarding: OnboardingFlow?
     /// The welcome flow covers the window (sidebar and tab hidden). Menu commands that act on the
-    /// hidden tab or page are off meanwhile, and ⌘W closes the flow (`SingularityCommands`).
+    /// hidden tab or page are off meanwhile, and ⌘W closes the flow (`closeTabCommand`).
     var welcomeCoversWindow: Bool { onboarding != nil }
+    /// The plugin whose approval sheet step 4 of the welcome flow shows (its id), nil when none.
+    /// Kept here rather than in the step's view so that ⌘W can see the sheet (`welcomeSheetIsOpen`).
+    var welcomePluginReview: String?
+    /// A sheet is open over the welcome flow: the Arc import, or a plugin's approval from step 4.
+    var welcomeSheetIsOpen: Bool { welcomeCoversWindow && (isImportingFromArc || welcomePluginReview != nil) }
     /// The Space made at a brand-new install's first launch, until the flow ends or it gets a tab.
     /// Only this Space may still take a new slug (`applyWelcomeSpace`).
     private(set) var firstRunPlaceholderID: UUID?
@@ -281,6 +286,19 @@ final class AppState {
     func closeWelcome() {
         onboarding = nil
         firstRunPlaceholderID = nil
+        welcomePluginReview = nil
+    }
+
+    /// File → Close Tab (⌘W). On the welcome flow it closes the flow, never the tab hidden behind
+    /// it, and does nothing while a sheet is open over the flow: the menu's shortcut still reaches
+    /// us then, and closing the flow would leave the Arc import over the sidebar, or take a
+    /// plugin's approval sheet away together with step 4.
+    func closeTabCommand() {
+        if welcomeCoversWindow {
+            if !welcomeSheetIsOpen { closeWelcome() }
+        } else {
+            closeSelectedTab()
+        }
     }
 
     func advanceWelcome() {

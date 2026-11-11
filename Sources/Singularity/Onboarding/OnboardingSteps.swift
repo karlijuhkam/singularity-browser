@@ -112,7 +112,6 @@ struct PluginsStep: View {
     /// leave this step off meanwhile (so the approval sheet that follows can't be lost).
     @Binding var adding: Set<String>
 
-    @State private var reviewing: PluginSettings.PluginRef?
     /// Plugin id → why adding it failed.
     @State private var errors: [String: String] = [:]
     @State private var copied = false
@@ -159,8 +158,10 @@ struct PluginsStep: View {
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
             copied = false
         }
-        // The normal approval sheet, exactly as Settings → Plugins → Add Plugin… shows it.
-        .sheet(item: $reviewing) { ref in
+        // The normal approval sheet, exactly as Settings → Plugins → Add Plugin… shows it. Which
+        // plugin it is for lives in `AppState`, so ⌘W knows the sheet is open (`closeTabCommand`).
+        .sheet(item: Binding(get: { state.welcomePluginReview.map(PluginSettings.PluginRef.init) },
+                             set: { state.welcomePluginReview = $0?.id })) { ref in
             PluginApprovalSheet(pluginID: ref.id, currentSpaceID: state.selectedSpaceID)
                 .environment(state)
         }
@@ -202,7 +203,7 @@ struct PluginsStep: View {
             ProgressView().controlSize(.small)
         } else if let installed = state.plugins.plugin(plugin.id) {
             if installed.needsReview {
-                Button("Review…") { reviewing = PluginSettings.PluginRef(id: plugin.id) }
+                Button("Review…") { state.welcomePluginReview = plugin.id }
             } else {
                 Text("Added").foregroundStyle(.secondary)
             }
@@ -220,7 +221,7 @@ struct PluginsStep: View {
             defer { adding.remove(plugin.id) }
             do {
                 let id = try await state.plugins.addPlugin(from: plugin.folder)
-                reviewing = PluginSettings.PluginRef(id: id)
+                state.welcomePluginReview = id
             } catch {
                 // `PluginManagerError.addFailed` describes itself with the installer's `userMessage`.
                 errors[plugin.id] = error.localizedDescription
