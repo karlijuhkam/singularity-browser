@@ -153,21 +153,8 @@ private struct TerminalSettings: View {
 
 private struct AgentSettings: View {
     @Environment(AppState.self) private var state
-    @State private var copied = false
-
-    /// The launcher inside *this* copy of the app.
-    private var launcherPath: String {
-        Bundle.main.bundleURL.appending(path: "Contents/MacOS/singularity-mcp").path
-    }
-
-    private var registerCommand: String {
-        // Opened straight from Downloads, macOS runs the app from a random temporary folder
-        // ("translocation"); that path is gone after the next launch, so don't hand it out.
-        if launcherPath.contains("/AppTranslocation/") {
-            return "# Move Singularity to the Applications folder and reopen it; the command will then appear here."
-        }
-        return "claude mcp add -s user singularity -- '\(launcherPath)'"
-    }
+    /// Checks and connects Claude Code and Codex; points them at *this* copy of the app.
+    @State private var connector = AgentConnector(launcher: AgentConnector.thisAppLauncher)
 
     var body: some View {
         Form {
@@ -212,21 +199,11 @@ private struct AgentSettings: View {
                 Button("Show Agent Log of Current Space") { state.revealAgentLog() }
             }
 
-            Section("Connect Claude Code") {
-                Text("Run this once in a terminal to give Claude Code the Singularity tools in every project:")
+            Section("Connect agents") {
+                Text("Gives these agents the Singularity tools in every project.")
                     .font(.callout)
-                HStack(alignment: .top) {
-                    Text(registerCommand)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(copied ? "Copied" : "Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(registerCommand, forType: .string)
-                        copied = true
-                    }
-                }
-                if !launcherPath.hasPrefix("/Applications/") {
+                AgentConnectRows(connector: connector)
+                if !connector.launcher.hasPrefix("/Applications/") {
                     Text("This copy of Singularity isn't in /Applications. If you move it, register again with the new path.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -235,6 +212,8 @@ private struct AgentSettings: View {
         }
         .formStyle(.grouped)
         .padding()
+        // Runs each time the Agents pane appears, so a change made in a terminal shows up here.
+        .task { await connector.refresh() }
     }
 
     private func enabledBinding(_ space: Space) -> Binding<Bool> {
