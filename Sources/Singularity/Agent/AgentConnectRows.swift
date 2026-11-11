@@ -7,22 +7,38 @@ import SwiftUI
 /// copy underneath. Used by Settings → Agents and by the welcome flow. The caller starts the check
 /// (`connector.refresh()`), so the shell commands only run when the rows are actually shown.
 struct AgentConnectRows: View {
-    let connector: AgentConnector
+    /// `.compact` for Settings; `.roomy` for the welcome flow: larger text (captions 12 pt) and a
+    /// divider between the two rows.
+    enum Style {
+        case compact, roomy
+    }
 
-    init(connector: AgentConnector) {
+    let connector: AgentConnector
+    let style: Style
+
+    init(connector: AgentConnector, style: Style = .compact) {
         self.connector = connector
+        self.style = style
     }
 
     var body: some View {
-        ForEach(AgentKind.allCases, id: \.self) { agent in
+        ForEach(Array(AgentKind.allCases.enumerated()), id: \.element) { index, agent in
+            if style == .roomy && index > 0 {
+                Divider()
+            }
             row(agent, state: connector.rows[agent] ?? .checking)
         }
     }
+
+    /// The agent's name; the captions and commands under it.
+    private var nameFont: Font { style == .roomy ? .system(size: 14) : .body }
+    private var captionFont: Font { style == .roomy ? .system(size: 12) : .caption }
 
     private func row(_ agent: AgentKind, state: AgentConnector.RowState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(agent.title)
+                    .font(nameFont)
                 Spacer()
                 trailing(agent, state: state)
             }
@@ -54,23 +70,23 @@ struct AgentConnectRows: View {
     private func details(_ agent: AgentKind, state: AgentConnector.RowState) -> some View {
         switch state {
         case .status(.notInstalled):
-            CopyableCommand(text: connector.command(for: agent))
+            CopyableCommand(text: connector.command(for: agent), font: captionFont.monospaced())
         case .status(.notConnected):
             caption("Adds Singularity to \(agent.title)’s MCP servers")
         case .status(.otherCopy(let path)):
             caption("Points at another copy of Singularity")
             Text(path)
-                .font(.caption.monospaced())
+                .font(captionFont.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
         case .failed(let message):
             Text(message)
-                .font(.caption)
+                .font(captionFont)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
-            CopyableCommand(text: connector.command(for: agent))
+            CopyableCommand(text: connector.command(for: agent), font: captionFont.monospaced())
         case .status(.translocated):
             caption("Move Singularity to the Applications folder and reopen it")
         case .checking, .working, .status(.connected):
@@ -79,19 +95,20 @@ struct AgentConnectRows: View {
     }
 
     private func caption(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary)
+        Text(text).font(captionFont).foregroundStyle(.secondary)
     }
 }
 
 /// A command in monospace with a Copy button, for running it in a terminal by hand.
 private struct CopyableCommand: View {
     let text: String
+    let font: Font
     @State private var copied = false
 
     var body: some View {
         HStack(alignment: .top) {
             Text(text)
-                .font(.caption.monospaced())
+                .font(font)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button(copied ? "Copied" : "Copy") {

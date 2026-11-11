@@ -85,19 +85,88 @@ extension AppTests {
         editor?.insertText(text, replacementRange: editor?.selectedRange() ?? NSRange(location: 0, length: 0))
     }
 
+    /// Where the view has drawn something (alpha above 8 of 255: an off-screen button's bezel is
+    /// drawn at about 20) between the x positions `xs`, in points from the view's top left.
+    /// `bottomRight` is the right-most drawn point in the lowest 20 points of drawing: the footer's
+    /// primary button, which sits at the right.
+    private struct Ink {
+        let top: CGFloat
+        let bottom: CGFloat
+        let bottomRight: CGFloat
+    }
+
+    /// Reads the drawing from the view itself (`cacheDisplay`), so it measures what SwiftUI laid
+    /// out without asking SwiftUI for frames. Only the strip `xs` is drawn into the copy, which
+    /// leaves out the orb: copying the live Metal view while it draws on its own timer is asking
+    /// for trouble.
+    private func ink(of view: NSView, xs: ClosedRange<CGFloat>) throws -> Ink? {
+        let strip = NSRect(x: xs.lowerBound, y: 0, width: xs.upperBound - xs.lowerBound, height: view.bounds.height)
+        let rep = try #require(view.bitmapImageRepForCachingDisplay(in: strip))
+        view.cacheDisplay(in: strip, to: rep)
+        let image = try #require(rep.cgImage)
+        let (width, height) = (image.width, image.height)
+        let scale = CGFloat(width) / strip.width
+        // Known byte layout: RGBA, 8 bits each, top row first.
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        bytes.withUnsafeMutableBytes { buffer in
+            let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                    bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        var rows: [Int: Int] = [:] // drawn row → right-most drawn column in it
+        for y in 0..<height {
+            for x in 0..<width where bytes[(y * width + x) * 4 + 3] > 8 {
+                rows[y] = max(rows[y] ?? 0, x)
+            }
+        }
+        guard let top = rows.keys.min(), let bottom = rows.keys.max() else { return nil }
+        let band = Int(20 * scale)
+        let right = rows.filter { $0.key > bottom - band }.values.max() ?? 0
+        return Ink(top: CGFloat(top) / scale, bottom: CGFloat(bottom + 1) / scale,
+                   bottomRight: xs.lowerBound + CGFloat(right + 1) / scale)
+    }
+
+    /// Requirement: nothing jumps between steps (the title and the footer stay where they are),
+    /// and the footer with its primary button is inside the window, also at a small size.
     @Test(arguments: [CGSize(width: 1100, height: 720), CGSize(width: 700, height: 500)])
-    func laysOutEveryStepAndFinishes(size: CGSize) async throws {
+    func titleAndFooterStayPutAndFitTheWindow(size: CGSize) async throws {
         MainRunLoopGuard.start
         let hosted = host(size: size)
         defer { tearDown(hosted) }
-        let state = hosted.state
+        let (state, window) = (hosted.state, hosted.window)
+        let view = try #require(window.contentView)
 
+        // The step column's x range, from the same layout the view uses (the row is centred).
+        let inner = CGSize(width: size.width,
+                           height: size.height - OnboardingLayout.topPadding - OnboardingLayout.bottomPadding)
+        let layout = OnboardingLayout(size: inner)
+        #expect(layout.showsOrb == (size.width >= 1000))
+        let left = (size.width - layout.orbSideWidth - layout.gap - layout.columnWidth) / 2 + layout.orbSideWidth + layout.gap
+        let columnXs = left...(left + layout.columnWidth)
+
+        var tops: [CGFloat] = []
+        var bottoms: [CGFloat] = []
         for step in OnboardingStep.allCases {
-            try await settle(hosted.window)
+            try await settle(window)
+            try await Task.sleep(for: .milliseconds(400)) // the crossfade between steps
             #expect(state.onboarding?.step == step)
+            let drawn = try #require(try ink(of: view, xs: columnXs), "nothing drawn on \(step)")
+            tops.append(drawn.top)
+            bottoms.append(drawn.bottom)
+            // The footer ends well inside the window, and its right end (the primary button's
+            // bezel, drawn a few points inside its frame) reaches the column's right edge
+            // without going past the window's.
+            #expect(drawn.bottom <= size.height - 16, "footer cut off on \(step): \(drawn.bottom)")
+            #expect(drawn.top >= OnboardingLayout.topPadding, "title under the title bar on \(step): \(drawn.top)")
+            #expect(drawn.bottomRight >= columnXs.upperBound - 12 && drawn.bottomRight <= size.width - 16,
+                    "primary button not at the column's right edge on \(step): \(drawn.bottomRight)")
             state.advanceWelcome()
         }
-        try await settle(hosted.window)
+        // The title's top may differ by its first letter's overshoot ("C" rises a little above "W").
+        #expect(tops.max()! - tops.min()! <= 1, "title moved between steps: \(tops)")
+        #expect(Set(bottoms).count == 1, "footer moved between steps: \(bottoms)")
+        try await settle(window)
         #expect(state.onboarding == nil)
     }
 

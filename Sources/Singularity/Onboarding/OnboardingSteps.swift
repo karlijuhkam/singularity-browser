@@ -2,37 +2,14 @@ import AppKit
 import SingularityCore
 import SwiftUI
 
-// The four steps of the welcome flow. Each one draws its title, text and controls; the frame
-// around them (orb, step dots, Back, Skip setup and the step's buttons) is `OnboardingView`.
+// The controls of the welcome flow's steps 2–4 (step 1 has none). The frame around them (orb,
+// title and text, step dots, Back, Skip setup and the step's buttons) is `OnboardingView`.
 // Wording comes from the spec (docs/superpowers/specs/2026-11-11-onboarding-design.md).
 
-/// A step's title and its one or two sentences.
-struct StepHeader: View {
-    let title: String
-    let text: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // A `String` variable (not a literal) is shown as-is, never read as Markdown.
-            Text(title)
-                .font(.system(size: 28, weight: .semibold))
-                .accessibilityAddTraits(.isHeader)
-            Text(text)
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-// MARK: - 1. Welcome
-
-struct WelcomeStep: View {
-    var body: some View {
-        StepHeader(title: "Welcome to Singularity",
-                   text: "A browser built around Spaces. Web pages, terminals and the pages your agents make sit side by side in one sidebar.")
-    }
+/// Text sizes inside the steps: a row's name, and the line(s) under it (never below 12 pt).
+private enum StepFont {
+    static let name = Font.system(size: 14)
+    static let caption = Font.system(size: 12)
 }
 
 // MARK: - 2. Your first Space
@@ -58,16 +35,9 @@ struct SpaceStep: View {
     @Binding var draft: SpaceDraft
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            StepHeader(title: "Your first Space",
-                       text: "A Space keeps its own tabs, logins and working folder.")
-            // The same three rows as Edit Space; `.columns` lines their labels up on the left.
-            Form {
-                SpaceFields(name: $draft.name, colorHex: $draft.colorHex, workingDirectory: $draft.workingDirectory)
-            }
-            .formStyle(.columns)
-            .textFieldStyle(.roundedBorder)
-        }
+        // The same three fields as Edit Space, laid out with more room.
+        SpaceFields(name: $draft.name, colorHex: $draft.colorHex, workingDirectory: $draft.workingDirectory,
+                    style: .roomy)
     }
 }
 
@@ -79,29 +49,24 @@ struct AgentsStep: View {
     let connector: AgentConnector
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            StepHeader(title: "Connect your agent",
-                       text: "Agents you already use can drive this browser. They ask before acting.")
-
-            VStack(alignment: .leading, spacing: 12) {
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        AgentConnectRows(connector: connector)
-                    }
-                    .padding(8)
+        VStack(alignment: .leading, spacing: 14) {
+            GroupBox {
+                VStack(alignment: .leading, spacing: 14) {
+                    AgentConnectRows(connector: connector, style: .roomy)
                 }
+                .padding(10)
+            }
 
-                // Connecting an agent and opening a Space to agents are separate acts: these
-                // switches show each Space's real setting (off on a new install) and change
-                // only `agentsEnabled`; the policy stays as it is ("ask").
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(state.spaces) { space in
-                            spaceSwitch(space)
-                        }
+            // Connecting an agent and opening a Space to agents are separate acts: these
+            // switches show each Space's real setting (off on a new install) and change
+            // only `agentsEnabled`; the policy stays as it is ("ask").
+            GroupBox {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(state.spaces) { space in
+                        spaceSwitch(space)
                     }
-                    .padding(8)
                 }
+                .padding(10)
             }
         }
         // The check (reads the agents' config files, looks for the programs) runs each time the
@@ -117,8 +82,9 @@ struct AgentsStep: View {
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: title)
+                    .font(StepFont.name)
                 Text("They ask before clicking or typing")
-                    .font(.caption)
+                    .font(StepFont.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
@@ -142,47 +108,56 @@ struct PluginsStep: View {
     private static let bundled: [BundledPlugin] = BundledPlugins.list(in: BundledPlugins.pluginsFolder(resources: resources))
     private static var resources: URL { Bundle.main.resourceURL ?? Bundle.main.bundleURL }
 
+    /// Plugins being copied right now; owned by `OnboardingView`, which keeps the buttons that
+    /// leave this step off meanwhile (so the approval sheet that follows can't be lost).
+    @Binding var adding: Set<String>
+
     @State private var reviewing: PluginSettings.PluginRef?
-    @State private var adding: Set<String> = []
     /// Plugin id → why adding it failed.
     @State private var errors: [String: String] = [:]
     @State private var copied = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            StepHeader(title: "Plugins", text: "Small add-ons you can read and approve.")
-
-            VStack(alignment: .leading, spacing: 18) {
-                if !Self.bundled.isEmpty {
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(Self.bundled) { plugin in
-                                row(plugin)
-                            }
+        VStack(alignment: .leading, spacing: 22) {
+            if !Self.bundled.isEmpty {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(Self.bundled) { plugin in
+                            if plugin.id != Self.bundled.first?.id { Divider() }
+                            row(plugin)
                         }
-                        .padding(8)
                     }
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Or have your agent write one:")
-                    GroupBox {
-                        HStack(alignment: .top, spacing: 12) {
-                            Text(verbatim: prompt)
-                                .font(.callout.monospaced())
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Button(copied ? "Copied" : "Copy") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(prompt, forType: .string)
-                                copied = true
-                            }
-                        }
-                        .padding(8)
-                    }
+                    .padding(10)
                 }
             }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Or have your agent write one:")
+                    .font(StepFont.name)
+                GroupBox {
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(verbatim: prompt)
+                            .font(.system(size: 12, design: .monospaced))
+                            .lineSpacing(2)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button(copied ? "Copied" : "Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(prompt, forType: .string)
+                            copied = true
+                        }
+                    }
+                    .padding(10)
+                }
+            }
+        }
+        // "Copied" turns back into "Copy" after two seconds. (`.task(id:)` starts again, and
+        // cancels the previous wait, each time `copied` changes.)
+        .task(id: copied) {
+            guard copied else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copied = false
         }
         // The normal approval sheet, exactly as Settings → Plugins → Add Plugin… shows it.
         .sheet(item: $reviewing) { ref in
@@ -201,8 +176,9 @@ struct PluginsStep: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(verbatim: PluginText.line(plugin.name, max: 60))
+                        .font(StepFont.name)
                     Text(verbatim: PluginText.line(plugin.summary, max: 200))
-                        .font(.caption)
+                        .font(StepFont.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
@@ -211,7 +187,7 @@ struct PluginsStep: View {
             }
             if let error = errors[plugin.id] {
                 Text(verbatim: PluginText.line(error, max: 300))
-                    .font(.caption)
+                    .font(StepFont.caption)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
