@@ -178,6 +178,31 @@ extension AppTests {
         #expect(state.onboarding?.importedFromArc == true)
     }
 
+    /// Once step 2's Continue named the placeholder, it is the user's Space: a later import (File →
+    /// Import from Arc… on a later step, or step 1's button after Back) keeps it.
+    @Test func anArcImportKeepsASpaceTheUserNamed() throws {
+        MainRunLoopGuard.start
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let state = AppState(paths: Paths(root: root))
+        defer { shutDown(state) }
+        let id = try #require(state.firstRunPlaceholderID)
+        state.applyWelcomeSpace(name: "Work", colorHex: SpaceColors.presets[2], workingDirectory: "~")
+        #expect(state.space(id)?.slug == "work")
+
+        let arc = ArcImport.ArcSpace(id: "a", name: "Home", colorHex: nil, profile: "Default",
+                                     pinned: [], unpinned: [], skipped: 0)
+        state.importArcSpaces([arc], options: ArcImport.Options())
+
+        #expect(state.space(id)?.name == "Work")
+        #expect(state.space(id)?.slug == "work")
+        #expect(state.spaces.map(\.name) == ["Work", "Home"])
+        #expect(FileManager.default.fileExists(atPath: Paths(root: root).spaceFile("work").path))
+        #expect(state.firstRunPlaceholderID == nil)
+        #expect(state.onboarding?.step == .agents)
+    }
+
     @Test func switchingAgentsOnKeepsThePolicy() throws {
         MainRunLoopGuard.start
         let root = makeRoot()

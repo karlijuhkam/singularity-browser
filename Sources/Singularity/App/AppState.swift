@@ -40,6 +40,9 @@ final class AppState {
     /// The Space made at a brand-new install's first launch, until the flow ends or it gets a tab.
     /// Only this Space may still take a new slug (`applyWelcomeSpace`).
     private(set) var firstRunPlaceholderID: UUID?
+    /// Step 2's Continue was applied to the placeholder: the user named it, so it is theirs now and
+    /// an Arc import keeps it. (The id stays set, so Back and Continue again can still re-slug it.)
+    @ObservationIgnored private var placeholderCustomised = false
     /// The Settings window's selected tab (so a palette command can open it on Plugins).
     var settingsTab: SettingsTab = .general
     /// Opens the Settings window. SwiftUI only hands this out as a view environment value
@@ -215,9 +218,10 @@ final class AppState {
         if let first { selectSpace(first) } else { scheduleSave() }
 
         // In the welcome flow the imported Spaces replace the untouched one made at launch, and
-        // the flow goes on without its Space step.
+        // the flow goes on without its Space step. A placeholder the user already named in step 2
+        // (then went Back, or used the File menu) is theirs: it stays.
         guard onboarding != nil, !arcSpaces.isEmpty else { return }
-        if let placeholder = firstRunPlaceholderID.flatMap(space), placeholder.tabs.isEmpty {
+        if let placeholder = firstRunPlaceholderID.flatMap(space), placeholder.tabs.isEmpty, !placeholderCustomised {
             deleteSpace(placeholder.id)
         }
         firstRunPlaceholderID = nil
@@ -298,6 +302,7 @@ final class AppState {
     /// (while it has no tabs) also takes a slug made from the new name, folder and all.
     func applyWelcomeSpace(name: String, colorHex: String, workingDirectory: String) {
         guard let target = welcomeSpace else { return }
+        if target.id == firstRunPlaceholderID { placeholderCustomised = true }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         mutateSpace(target.id) {
             if !trimmed.isEmpty { $0.name = trimmed }
