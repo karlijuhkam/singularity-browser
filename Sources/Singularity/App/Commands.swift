@@ -18,7 +18,7 @@ struct SingularityCommands: Commands {
                 .keyboardShortcut("l")
             Divider()
             Button("New Folder…") { state.promptNewFolder() }
-            Button("New Space…") { state.spaceEditor = SpaceEditorRequest(spaceID: nil) }
+            Button("New Space…") { state.showSpaceEditor(spaceID: nil) }
             Divider()
             Button("Import from Arc…") { state.isImportingFromArc = true }
         }
@@ -54,10 +54,10 @@ struct SingularityCommands: Commands {
         CommandMenu("Spaces") {
             ForEach(Array(state.spaces.enumerated()), id: \.element.id) { index, space in
                 if let key = Self.spaceShortcut(index: index, count: state.spaces.count) {
-                    Button(space.name) { state.selectSpace(space.id) }
+                    Button(space.name) { state.userSelectSpace(space.id) }
                         .keyboardShortcut(key)
                 } else {
-                    Button(space.name) { state.selectSpace(space.id) }
+                    Button(space.name) { state.userSelectSpace(space.id) }
                 }
             }
             Divider()

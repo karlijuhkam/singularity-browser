@@ -107,6 +107,9 @@ final class ArtifactHosts {
         let spaceID = space.id
         let scripts = scripts
         let task = Task { [weak self] () -> ArtifactHost? in
+            // `stop` cancels a start that is still pending (the Space was deleted, or its folder
+            // renamed): don't create the old folder, and don't keep a server for it.
+            guard !Task.isCancelled else { return nil }
             let host = ArtifactHost(spaceID: spaceID, root: root, scripts: scripts) { [weak self] changes in
                 self?.state?.artifactsDidChange(spaceID: spaceID, changes: changes)
             }
@@ -116,16 +119,22 @@ final class ArtifactHosts {
                 NSLog("Singularity: could not start artifact server for \(space.slug): \(error)")
                 return nil
             }
+            guard !Task.isCancelled else {
+                host.stop()
+                return nil
+            }
             self?.hosts[spaceID] = host
             return host
         }
         starting[space.id] = task
         let host = await task.value
-        starting[space.id] = nil
+        // Only our own entry: after a `stop`, a newer start may be pending under the same id.
+        if starting[space.id] == task { starting[space.id] = nil }
         return host
     }
 
     func stop(_ spaceID: UUID) {
         hosts.removeValue(forKey: spaceID)?.stop()
+        starting.removeValue(forKey: spaceID)?.cancel()
     }
 }

@@ -32,6 +32,11 @@ final class AppState {
     var isImportingFromArc = false
     /// Problems found while loading files from disk, shown once in the sidebar.
     var loadErrors: [String] = []
+    /// Non-nil while the welcome flow covers the window.
+    private(set) var onboarding: OnboardingFlow?
+    /// The Space made at a brand-new install's first launch, until the flow ends or it gets a tab.
+    /// Only this Space may still take a new slug (`applyWelcomeSpace`).
+    private(set) var firstRunPlaceholderID: UUID?
     /// The Settings window's selected tab (so a palette command can open it on Plugins).
     var settingsTab: SettingsTab = .general
     /// Opens the Settings window. SwiftUI only hands this out as a view environment value
@@ -105,7 +110,12 @@ final class AppState {
             ?? spaces.first?.id
 
         if spaces.isEmpty {
-            createSpace(name: "Personal", colorHex: SpaceColors.presets[0], workingDirectory: "~")
+            let first = createSpace(name: "Personal", colorHex: SpaceColors.presets[0], workingDirectory: "~")
+            // No flag is stored: after this launch a Space exists on disk, so the next one isn't brand-new.
+            if FirstRun.isBrandNew(loadedSpaceCount: loaded.spaces.count, loadErrorCount: loaded.errors.count) {
+                firstRunPlaceholderID = first.id
+                onboarding = OnboardingFlow()
+            }
         }
 
         web.state = self
@@ -200,6 +210,15 @@ final class AppState {
         }
         stateFileDirty = true
         if let first { selectSpace(first) } else { scheduleSave() }
+
+        // In the welcome flow the imported Spaces replace the untouched one made at launch, and
+        // the flow goes on without its Space step.
+        guard onboarding != nil, !arcSpaces.isEmpty else { return }
+        if let placeholder = firstRunPlaceholderID.flatMap(space), placeholder.tabs.isEmpty {
+            deleteSpace(placeholder.id)
+        }
+        firstRunPlaceholderID = nil
+        onboarding?.arcImportFinished()
     }
 
     func updateSpace(_ id: UUID, name: String, colorHex: String, workingDirectory: String, agentsEnabled: Bool,
@@ -215,6 +234,109 @@ final class AppState {
         // Tool descriptions mention the Space's name, so a rename also counts as a change.
         if wasEnabled != agentsEnabled || agentsEnabled { mcp?.toolsChanged() }
         if wasEnabled != agentsEnabled { siteSettingsDidChange(id) } // agents off also ends console/network capture
+    }
+
+    /// Sets only `agentsEnabled` (the policy is left as it is), with the same effects as `updateSpace`.
+    func setAgentsEnabled(_ on: Bool, spaceID: UUID) {
+        guard let space = space(spaceID), space.agentsEnabled != on else { return }
+        mutateSpace(spaceID) { $0.agentsEnabled = on }
+        mcp?.toolsChanged()
+        siteSettingsDidChange(spaceID)
+    }
+
+    /// The user picked a Space (Space rail, Spaces menu, ⌘1…⌘9, palette). Unlike `selectSpace`,
+    /// which `createSpace` and the Arc import also call while the welcome flow must stay open,
+    /// this leaves the flow first.
+    func userSelectSpace(_ id: UUID) {
+        closeWelcome()
+        selectSpace(id)
+    }
+
+    /// Shows the New Space (nil) or Edit Space sheet, leaving the welcome flow first.
+    func showSpaceEditor(spaceID: UUID?) {
+        closeWelcome()
+        spaceEditor = SpaceEditorRequest(spaceID: spaceID)
+    }
+
+    // MARK: - Welcome flow
+
+    /// Opens the welcome flow at step 1 (menu and palette: "Welcome to Singularity…").
+    func showWelcome() {
+        onboarding = OnboardingFlow()
+        palette = nil
+    }
+
+    /// Skip setup, Esc, or finishing the last step. Also called by every command that takes the
+    /// user somewhere else (New Tab, New Terminal, picking a Space, …).
+    func closeWelcome() {
+        onboarding = nil
+        firstRunPlaceholderID = nil
+    }
+
+    func advanceWelcome() {
+        guard var flow = onboarding else { return }
+        if flow.advance() == nil {
+            closeWelcome()
+        } else {
+            onboarding = flow
+        }
+    }
+
+    func welcomeBack() {
+        onboarding?.back()
+    }
+
+    /// The Space step 2 edits: the placeholder on a brand-new install, else the selected Space.
+    var welcomeSpace: Space? {
+        firstRunPlaceholderID.flatMap(space) ?? selectedSpace
+    }
+
+    /// Step 2's Continue. Saves the three fields; the placeholder Space of a brand-new install
+    /// (while it has no tabs) also takes a slug made from the new name, folder and all.
+    func applyWelcomeSpace(name: String, colorHex: String, workingDirectory: String) {
+        guard let target = welcomeSpace else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        mutateSpace(target.id) {
+            if !trimmed.isEmpty { $0.name = trimmed }
+            $0.colorHex = colorHex
+            $0.workingDirectory = workingDirectory
+        }
+        // Tool descriptions mention the Space's name (as in `updateSpace`).
+        if target.agentsEnabled { mcp?.toolsChanged() }
+        if FirstRun.mayReslug(isFirstRunPlaceholder: target.id == firstRunPlaceholderID, tabCount: target.tabs.count) {
+            reslugPlaceholder(target.id)
+        }
+    }
+
+    /// The one exception to "a slug is fixed at creation" (spec, step 2). Everything on disk for a
+    /// Space lives under `spaces/<slug>/` (space.json, history, agent log, favicons, artifacts), so
+    /// the folder moves with it. In-memory caches are keyed by the Space's id, except the favicon
+    /// cache (slug|host), which the placeholder can't have entries in: it has no tabs. WebKit's
+    /// data store is keyed by the id too, so logins are unaffected.
+    private func reslugPlaceholder(_ id: UUID) {
+        guard let space = space(id) else { return }
+        let taken = Set(spaces.filter { $0.id != id }.map(\.slug)).union(slugsOnDisk()).subtracting([space.slug])
+        let newSlug = Slug.unique(from: space.name, existing: taken)
+        guard newSlug != space.slug else { return }
+
+        // Write what is pending (the new name and colour included) into the old folder, so the
+        // move carries everything and no later save recreates the old folder.
+        flushSaves()
+        // The artifact server serves (and its watcher watches) the old folder: stop it before the
+        // move; `loadSelectedTab` below starts it again on the new path.
+        artifacts.stop(id)
+        knownArtifactPages[id] = nil
+        do {
+            try store.moveSpaceFolder(fromSlug: space.slug, toSlug: newSlug)
+        } catch {
+            NSLog("Singularity: could not rename the folder of \(space.slug) to \(newSlug): \(error)")
+            if selectedSpaceID == id { loadSelectedTab() }
+            return // keeps the old slug; the other fields were saved above
+        }
+        mutateSpace(id) { $0.slug = newSlug }
+        flushSaves()
+        if space.agentsEnabled { mcp?.toolsChanged() } // tool names are <slug>.<tool>
+        if selectedSpaceID == id { loadSelectedTab() }
     }
 
     // MARK: - Site settings
@@ -331,6 +453,7 @@ final class AppState {
     /// Switches to the tab's Space (if needed) and selects the tab.
     func showTab(_ tabID: UUID, in spaceID: UUID) {
         guard space(spaceID)?.tab(tabID) != nil else { return }
+        closeWelcome() // the user asked to see the tab (approval sheet's "Show Tab")
         if selectedSpaceID != spaceID { selectSpace(spaceID) }
         selectTab(tabID)
     }
@@ -338,6 +461,7 @@ final class AppState {
     /// Opens a URL in a new tab and selects it (in the current Space unless one is given).
     func openInNewTab(_ url: URL, spaceID: UUID? = nil) {
         guard let spaceID = spaceID ?? selectedSpaceID else { return }
+        closeWelcome()
         let tab = BrowserTab.web(url)
         mutateSpace(spaceID) {
             $0.append(tab)
@@ -363,6 +487,7 @@ final class AppState {
     /// Opens a terminal tab in the current Space, starting in the Space's working directory.
     func openTerminal() {
         guard let space = selectedSpace else { return }
+        closeWelcome()
         let tab = BrowserTab.terminal(workingDirectory: space.workingDirectory)
         mutateSpace(space.id) {
             $0.append(tab)
@@ -474,6 +599,7 @@ final class AppState {
     // MARK: - Palette
 
     func showPalette(_ mode: PaletteMode) {
+        closeWelcome()
         palette = mode
     }
 
@@ -775,6 +901,9 @@ final class AppState {
     }
 
     private func ensureArtifactHost(_ space: Space) async -> ArtifactHost? {
+        // Callers may hold an older copy of the Space; the welcome flow can change its slug (and
+        // folder) in between, so take the folder from the current one.
+        guard let space = self.space(space.id) else { return nil }
         let host = await artifacts.ensureStarted(space, root: paths.artifactsDirectory(space.slug))
         if let host, knownArtifactPages[space.id] == nil {
             knownArtifactPages[space.id] = Set(host.pages)
@@ -837,6 +966,7 @@ final class AppState {
     /// Opens an artifact page (or selects its tab if one is already open).
     func openArtifact(_ path: String) {
         guard let space = selectedSpace else { return }
+        closeWelcome()
         if let existing = space.tabs.first(where: { $0.artifactPath == path }) {
             selectTab(existing.id)
             return
@@ -925,6 +1055,8 @@ final class AppState {
         guard let index = spaces.firstIndex(where: { $0.id == id }) else { return }
         change(&spaces[index])
         markDirty(id)
+        // Once the launch Space has a tab it is no longer an untouched placeholder.
+        if id == firstRunPlaceholderID, !spaces[index].tabs.isEmpty { firstRunPlaceholderID = nil }
     }
 
     private func markDirty(_ id: UUID) {

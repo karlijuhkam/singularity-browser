@@ -10,16 +10,16 @@ struct SpaceRail: View {
         VStack(spacing: 10) {
             ForEach(state.spaces) { space in
                 SpaceDot(space: space, isSelected: space.id == state.selectedSpaceID)
-                    .onTapGesture { state.selectSpace(space.id) }
+                    .onTapGesture { state.userSelectSpace(space.id) }
                     .contextMenu {
-                        Button("Edit Space…") { state.spaceEditor = SpaceEditorRequest(spaceID: space.id) }
+                        Button("Edit Space…") { state.showSpaceEditor(spaceID: space.id) }
                         Button("Delete Space…", role: .destructive) { spacePendingDeletion = space }
                             .disabled(state.spaces.count == 1)
                     }
             }
 
             Button {
-                state.spaceEditor = SpaceEditorRequest(spaceID: nil)
+                state.showSpaceEditor(spaceID: nil)
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 12, weight: .semibold))

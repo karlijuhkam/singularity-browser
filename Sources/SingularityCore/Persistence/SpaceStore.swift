@@ -103,4 +103,18 @@ public struct SpaceStore: Sendable {
         guard FileManager.default.fileExists(atPath: folder.path) else { return }
         try FileManager.default.trashItem(at: folder, resultingItemURL: nil)
     }
+
+    /// Renames a Space's folder. Does nothing (and succeeds) when the old folder doesn't exist
+    /// yet; throws when the new one already exists. Only for the welcome flow's one-time rename
+    /// of a brand-new install's first Space (see `FirstRun.mayReslug`).
+    public func moveSpaceFolder(fromSlug: String, toSlug: String) throws {
+        let source = paths.spaceDirectory(fromSlug)
+        let destination = paths.spaceDirectory(toSlug)
+        // Checked first, so a Space never ends up pointing at a folder that holds something else.
+        if FileManager.default.fileExists(atPath: destination.path) {
+            throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
+        }
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        try FileManager.default.moveItem(at: source, to: destination)
+    }
 }

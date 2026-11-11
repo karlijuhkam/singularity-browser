@@ -132,7 +132,7 @@ enum PaletteResults {
         }
         for other in state.spaces where other.id != space.id {
             items.append(command("space-\(other.id)", "Switch to Space: \(other.name)", "square.stack") {
-                state.selectSpace(other.id)
+                state.userSelectSpace(other.id)
             })
         }
         items.append(command("new-terminal", "New Terminal", "terminal") { state.openTerminal() })
@@ -168,10 +168,10 @@ enum PaletteResults {
         items.append(command("artifacts-folder", "Show Artifacts Folder in Finder", "folder") { state.revealArtifactsFolder() })
         items.append(command("agent-log", "Show Agent Log File", "sparkles") { state.revealAgentLog() })
         items.append(command("new-space", "New Space…", "plus.square.on.square") {
-            state.spaceEditor = SpaceEditorRequest(spaceID: nil)
+            state.showSpaceEditor(spaceID: nil)
         })
         items.append(command("edit-space", "Edit Space “\(space.name)”…", "slider.horizontal.3") {
-            state.spaceEditor = SpaceEditorRequest(spaceID: space.id)
+            state.showSpaceEditor(spaceID: space.id)
         })
         #if DEBUG
         items.append(command("plugins-test-op", "Plugins: Test 1Password CLI", "key") { PluginDebugCommands.testOnePasswordCLI() })

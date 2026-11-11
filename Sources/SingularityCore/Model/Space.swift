@@ -6,7 +6,9 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
     /// URL-safe name used for the folder on disk and the MCP tool names ("work.list_tabs").
-    /// Fixed at creation: renaming a Space only changes `name`.
+    /// Fixed at creation: renaming a Space only changes `name`. The one exception: the Space a
+    /// brand-new install makes at its first launch takes the name chosen in the welcome flow's
+    /// Space step, slug included, while it has no tabs (`FirstRun.mayReslug`, `AppState.applyWelcomeSpace`).
     public var slug: String
     /// Colour as "#RRGGBB".
     public var colorHex: String
