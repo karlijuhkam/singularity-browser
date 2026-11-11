@@ -141,8 +141,10 @@ extension AppTests {
         #expect(state.onboarding?.step == .welcome)
         for _ in 0..<3 { state.advanceWelcome() }
         #expect(state.onboarding?.step == .plugins)
+        #expect(state.welcomeCoversWindow) // page and tab menu commands are off
         state.advanceWelcome()
         #expect(state.onboarding == nil)
+        #expect(!state.welcomeCoversWindow)
         #expect(state.firstRunPlaceholderID == nil)
 
         // Opening the palette (New Tab, ⌘K) leaves the flow; the Arc import sheet doesn't.

@@ -34,6 +34,9 @@ final class AppState {
     var loadErrors: [String] = []
     /// Non-nil while the welcome flow covers the window.
     private(set) var onboarding: OnboardingFlow?
+    /// The welcome flow covers the window (sidebar and tab hidden). Menu commands that act on the
+    /// hidden tab or page are off meanwhile, and ⌘W closes the flow (`SingularityCommands`).
+    var welcomeCoversWindow: Bool { onboarding != nil }
     /// The Space made at a brand-new install's first launch, until the flow ends or it gets a tab.
     /// Only this Space may still take a new slug (`applyWelcomeSpace`).
     private(set) var firstRunPlaceholderID: UUID?

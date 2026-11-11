@@ -12,7 +12,7 @@ struct MainView: View {
         @Bindable var state = state
 
         ZStack {
-            if state.onboarding != nil {
+            if state.welcomeCoversWindow {
                 // The welcome flow takes the whole window. The sheets below (Arc import) and the
                 // palette still work on top of it.
                 OnboardingView()

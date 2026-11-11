@@ -2,6 +2,11 @@ import SwiftUI
 
 /// The menu bar. Keyboard shortcuts are attached to menu items, which is the standard
 /// macOS way: they work wherever focus is, and they are discoverable in the menus.
+///
+/// While the welcome flow covers the window (`state.welcomeCoversWindow`), every command that
+/// acts on the hidden tab, page or sidebar is off, and Close Tab (⌘W) closes the flow instead.
+/// Commands that leave the flow on purpose and go somewhere (New Tab, New Terminal, the palette,
+/// Open Location, picking a Space, New Space) keep working: they close the flow themselves.
 struct SingularityCommands: Commands {
     let state: AppState
 
@@ -22,17 +27,23 @@ struct SingularityCommands: Commands {
             Button("Open Location…") { state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent) }
                 .keyboardShortcut("l")
             Divider()
+            // Adds a folder to the hidden sidebar, so it waits until the flow is closed.
             Button("New Folder…") { state.promptNewFolder() }
+                .disabled(covered)
             Button("New Space…") { state.showSpaceEditor(spaceID: nil) }
             Divider()
+            // The flow's step 1 offers the same import; it stays open for it.
             Button("Import from Arc…") { state.isImportingFromArc = true }
         }
 
         // Replaces File → Close (which would close the whole window) with Close Tab.
         CommandGroup(replacing: .saveItem) {
-            Button("Close Tab") { state.closeSelectedTab() }
-                .keyboardShortcut("w")
-                .disabled(state.selectedTab == nil)
+            Button("Close Tab") {
+                // ⌘W on the welcome flow closes the flow, never the tab hidden behind it.
+                if covered { state.closeWelcome() } else { state.closeSelectedTab() }
+            }
+            .keyboardShortcut("w")
+            .disabled(!covered && state.selectedTab == nil)
         }
 
         // Edit → Find. Web pages only; WKWebView has no find bar, so the tab draws its own (FindBar).
@@ -68,14 +79,16 @@ struct SingularityCommands: Commands {
             Divider()
             Button("Next Tab") { state.selectAdjacentTab(1) }
                 .keyboardShortcut(.tab, modifiers: [.control])
+                .disabled(covered)
             Button("Previous Tab") { state.selectAdjacentTab(-1) }
                 .keyboardShortcut(.tab, modifiers: [.control, .shift])
+                .disabled(covered)
         }
 
         CommandGroup(before: .toolbar) {
             Button("Split with Previous Tab") { state.splitWithPrevious() }
                 .keyboardShortcut("\\")
-                .disabled(state.selectedTab == nil)
+                .disabled(covered || state.selectedTab == nil)
             Button("Remove from Split") { if let id = state.selectedTab?.id { state.removeFromSplit(id) } }
                 .keyboardShortcut("\\", modifiers: [.command, .shift])
                 .disabled(!isInSplit)
@@ -121,12 +134,18 @@ struct SingularityCommands: Commands {
         return KeyEquivalent(Character(String(index + 1)))
     }
 
+    /// The welcome flow hides the sidebar and the tab (see the type's comment).
+    private var covered: Bool { state.welcomeCoversWindow }
+
     private var isInSplit: Bool {
-        guard let space = state.selectedSpace, let id = space.selectedTabID else { return false }
+        guard !covered, let space = state.selectedSpace, let id = space.selectedTabID else { return false }
         return space.splitGroup(containing: id) != nil
     }
 
+    /// The selected tab's web page, or nil while the welcome flow hides it. Every page command
+    /// (Find, Print, Reload, Back, Forward, Zoom) goes through this, so they are all off then.
     private var selectedController: WebTabController? {
-        state.selectedTab.flatMap { state.web.existingController($0.id) }
+        guard !covered else { return nil }
+        return state.selectedTab.flatMap { state.web.existingController($0.id) }
     }
 }
