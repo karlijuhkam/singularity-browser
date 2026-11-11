@@ -12,8 +12,7 @@ extension AppTests {
 @Suite(.serialized) struct SpaceDeleteTests {
     @Test func deletingSpacesBeforeAnyPageWasShown() async throws {
         MainRunLoopGuard.start
-        // A short path: the agent socket lives under it, and Unix sockets allow ~100 characters.
-        let root = URL(filePath: "/private/tmp/sg-t-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
+        let root = TestAppState.makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = SpaceStore(paths: Paths(root: root))
         for name in ["one", "two", "three"] {
@@ -28,7 +27,9 @@ extension AppTests {
             try store.save(space)
         }
 
-        let state = AppState(paths: Paths(root: root))
+        // Deleted Spaces' folders are removed inside `root`, not put in the Trash (`TestAppState`).
+        let state = TestAppState.make(root: root)
+        defer { TestAppState.shutDown(state) }
         let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 1000, height: 700),
                               styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -49,6 +50,9 @@ extension AppTests {
         // The last Space stays.
         state.deleteSpace(state.spaces[0].id)
         #expect(state.spaces.count == 1)
+        // The two deleted Spaces' folders are gone from the test's folder.
+        let folders = try FileManager.default.contentsOfDirectory(atPath: Paths(root: root).spacesDirectory.path)
+        #expect(folders == [state.spaces[0].slug])
     }
 }
 }

@@ -88,12 +88,12 @@ Tests/SingularityAppTests/    real AppKit/WebKit in off-screen windows: the web 
                               print), the agent approval sheet, the console/network collector against a fixture site,
                               the Connect rows (fake shell), the welcome flow, the orb (against `Fixtures/` frames from
                               `render_orb.py`). Every suite is nested in `AppTests` (serialized) and starts
-                              `MainRunLoopGuard` first; see AppTests.swift. A real `AppState` works in tests:
-                              `AppState(paths: Paths(root:))` on a short `/private/tmp/sg-t-<8 hex>` root (the agent
-                              socket lives under it), stopped afterwards as in `OnboardingStateTests.shutDown`: it
-                              flushes saves and calls `artifacts.stopAll()` before the folder is removed, or a debounced
-                              save or queued server start recreates it. A test that deletes a Space must first make
-                              sure its folder is not on disk: `deleteSpace` moves it to the user's real Trash
+                              `MainRunLoopGuard` first; see AppTests.swift. A real `AppState` works in tests: build it
+                              with `TestAppState.make(root: TestAppState.makeRoot())` (a short `/private/tmp/sg-t-<8 hex>`
+                              root, the agent socket lives under it) and stop it with `TestAppState.shutDown` before the
+                              folder is removed (it flushes saves and calls `artifacts.stopAll()`, or a debounced save or
+                              queued server start recreates it). Its `deleteSpace` removes folders inside that root
+                              (`SpaceStore`'s `discardFolder`), so tests can never reach the real Trash
 Tests/plugins/       Bun tests for plugin logic (1password)
 ```
 

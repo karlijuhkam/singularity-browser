@@ -7,21 +7,8 @@ extension AppTests {
 /// The welcome flow's state in a real `AppState` on a temporary data folder (no window).
 @MainActor
 @Suite(.serialized) struct OnboardingStateTests {
-    /// A short path: the agent socket lives under it, and Unix sockets allow ~100 characters.
-    private func makeRoot() -> URL {
-        URL(filePath: "/private/tmp/sg-t-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
-    }
-
-    /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers). Pending
-    /// saves are written now and no server starts afterwards (`stopAll`), so nothing recreates the
-    /// data folder after the test has removed it (the debounced save and a queued server start both
-    /// run later on the main actor).
-    private func shutDown(_ state: AppState) {
-        state.flushSaves()
-        state.mcp?.stop()
-        state.plugins.terminateAll()
-        state.artifacts.stopAll()
-    }
+    private func makeRoot() -> URL { TestAppState.makeRoot() }
+    private func shutDown(_ state: AppState) { TestAppState.shutDown(state) }
 
     private struct TimedOut: Error, CustomStringConvertible {
         let description: String
@@ -45,7 +32,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         #expect(state.onboarding?.step == .welcome)
         #expect(state.spaces.count == 1)
         let placeholder = try #require(state.firstRunPlaceholderID)
@@ -54,7 +41,7 @@ extension AppTests {
         state.flushSaves()
         shutDown(state)
 
-        let again = AppState(paths: Paths(root: root))
+        let again = TestAppState.make(root: root)
         defer { shutDown(again) }
         #expect(again.onboarding == nil)
         #expect(again.firstRunPlaceholderID == nil)
@@ -65,7 +52,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         let id = try #require(state.firstRunPlaceholderID)
         #expect(state.space(id)?.slug == "personal")
 
@@ -80,7 +67,7 @@ extension AppTests {
         #expect(space.workingDirectory == "~/Code")
         #expect(spaceFolders(root) == ["work"])
 
-        let again = AppState(paths: Paths(root: root))
+        let again = TestAppState.make(root: root)
         defer { shutDown(again) }
         #expect(again.spaces.map(\.slug) == ["work"])
         #expect(again.loadErrors.isEmpty)
@@ -92,7 +79,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         let id = try #require(state.firstRunPlaceholderID)
         state.flushSaves()
@@ -117,7 +104,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         let id = try #require(state.firstRunPlaceholderID)
 
@@ -136,7 +123,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         let id = try #require(state.firstRunPlaceholderID)
         // An agent's page or a new artifact can add a tab without leaving the flow.
@@ -152,7 +139,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         state.advanceWelcome()
         #expect(state.onboarding?.step == .space)
@@ -178,25 +165,24 @@ extension AppTests {
         #expect(state.palette == nil)
     }
 
-    /// The import removes the placeholder with the real `deleteSpace`, which moves the Space's
-    /// folder to the user's own Trash if it exists. It must not exist here: the test does not wait
-    /// for anything between launch and import (no `await`), so neither the debounced save nor the
-    /// artifact server's start, both queued on the main actor, can have written it. Checked below
-    /// with `#require`, which stops the test before the import if it ever does.
+    /// The import removes the placeholder with the real `deleteSpace`. Its folder is on disk first
+    /// (saved); `TestAppState` removes it inside the test's folder instead of the Trash.
     @Test func anArcImportReplacesThePlaceholder() throws {
         MainRunLoopGuard.start
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         let placeholder = try #require(state.firstRunPlaceholderID)
-        try #require(!FileManager.default.fileExists(atPath: Paths(root: root).spaceDirectory("personal").path),
-                     "the placeholder's folder exists: the import would move it to the real Trash")
+        state.flushSaves()
+        #expect(spaceFolders(root) == ["personal"])
         let arc = ArcImport.ArcSpace(id: "a", name: "Work", colorHex: nil, profile: "Default",
                                      pinned: [], unpinned: [], skipped: 0)
         state.importArcSpaces([arc], options: ArcImport.Options())
+        state.flushSaves()
 
+        #expect(spaceFolders(root) == ["work"])
         #expect(state.space(placeholder) == nil)
         #expect(state.spaces.map(\.name) == ["Work"])
         #expect(state.firstRunPlaceholderID == nil)
@@ -211,7 +197,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         let id = try #require(state.firstRunPlaceholderID)
         state.applyWelcomeSpace(name: "Work", colorHex: SpaceColors.presets[2], workingDirectory: "~")
@@ -236,7 +222,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         let id = try #require(state.firstRunPlaceholderID)
         state.openInNewTab(URL(string: "about:blank")!, spaceID: id)
@@ -249,7 +235,7 @@ extension AppTests {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let state = AppState(paths: Paths(root: root))
+        let state = TestAppState.make(root: root)
         defer { shutDown(state) }
         let id = state.spaces[0].id
         state.setAgentsEnabled(true, spaceID: id)

@@ -226,6 +226,34 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: paths.spaceFile("work").path))
     }
 
+    /// A deleted Space's folder goes wherever `discardFolder` says (the app: the Trash; tests: a
+    /// plain removal inside their temporary folder). Nothing is called for a folder that isn't there.
+    @Test func aDeletedSpaceFolderGoesThroughTheGivenDiscard() throws {
+        let paths = temporaryPaths()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        final class Discarded: @unchecked Sendable {
+            private let lock = NSLock()
+            private var urls: [URL] = []
+            func add(_ url: URL) { lock.withLock { urls.append(url) } }
+            var all: [URL] { lock.withLock { urls } }
+        }
+        let discarded = Discarded()
+        let store = SpaceStore(paths: paths) { folder in
+            discarded.add(folder)
+            try FileManager.default.removeItem(at: folder)
+        }
+        try store.save(Space(name: "Work", slug: "work", colorHex: "#5E81F4"))
+        #expect(FileManager.default.fileExists(atPath: paths.spaceDirectory("work").path))
+
+        try store.trashSpaceFolder(slug: "work")
+        #expect(discarded.all.map(\.standardizedFileURL) == [paths.spaceDirectory("work").standardizedFileURL])
+        #expect(!FileManager.default.fileExists(atPath: paths.spaceDirectory("work").path))
+
+        try store.trashSpaceFolder(slug: "work") // gone already
+        try store.trashSpaceFolder(slug: "never-saved")
+        #expect(discarded.all.count == 1)
+    }
+
     @Test func historyKeepsLatestVisitPerURL() throws {
         let paths = temporaryPaths()
         defer { try? FileManager.default.removeItem(at: paths.root) }

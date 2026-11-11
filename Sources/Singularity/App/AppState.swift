@@ -89,9 +89,11 @@ final class AppState {
     @ObservationIgnored private var stateFileDirty = false
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
-    init(paths: Paths) {
+    /// `discardFolder`: what `deleteSpace` does with the Space's folder. The app keeps the default
+    /// (the Trash); tests remove it inside their temporary folder instead (`TestAppState`).
+    init(paths: Paths, discardFolder: @escaping SpaceStore.DiscardFolder = SpaceStore.moveToTrash) {
         self.paths = paths
-        self.store = SpaceStore(paths: paths)
+        self.store = SpaceStore(paths: paths, discardFolder: discardFolder)
         self.web = WebViewRegistry()
         self.terminals = TerminalRegistry()
         self.artifacts = ArtifactHosts()

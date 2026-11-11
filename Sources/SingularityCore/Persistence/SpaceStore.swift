@@ -14,10 +14,22 @@ public struct AppStateFile: Codable, Equatable, Sendable {
 /// Reads and writes Spaces as JSON files. Every write is atomic (written to a temp file,
 /// then renamed into place), so a crash never leaves a half-written file.
 public struct SpaceStore: Sendable {
-    public let paths: Paths
+    /// What happens to a deleted Space's folder. The app moves it to the Trash (`moveToTrash`);
+    /// tests pass a closure that removes it inside their temporary folder, so a test can never
+    /// put anything in the user's real Trash.
+    public typealias DiscardFolder = @Sendable (URL) throws -> Void
 
-    public init(paths: Paths) {
+    public let paths: Paths
+    private let discardFolder: DiscardFolder
+
+    public init(paths: Paths, discardFolder: @escaping DiscardFolder = SpaceStore.moveToTrash) {
         self.paths = paths
+        self.discardFolder = discardFolder
+    }
+
+    /// The app's way to discard a folder: into the user's Trash, so it can be recovered.
+    public static let moveToTrash: DiscardFolder = { folder in
+        try FileManager.default.trashItem(at: folder, resultingItemURL: nil)
     }
 
     private static let encoder: JSONEncoder = {
@@ -97,11 +109,12 @@ public struct SpaceStore: Sendable {
         try Self.encoder.encode(settings).write(to: paths.settingsFile, options: .atomic)
     }
 
-    /// Moves a Space's folder to the Trash (recoverable) rather than deleting it.
+    /// Moves a Space's folder to the Trash (recoverable) rather than deleting it; in tests, does
+    /// whatever `discardFolder` was given at init. Does nothing when the folder doesn't exist.
     public func trashSpaceFolder(slug: String) throws {
         let folder = paths.spaceDirectory(slug)
         guard FileManager.default.fileExists(atPath: folder.path) else { return }
-        try FileManager.default.trashItem(at: folder, resultingItemURL: nil)
+        try discardFolder(folder)
     }
 
     /// Renames a Space's folder. Does nothing (and succeeds) when the old folder doesn't exist

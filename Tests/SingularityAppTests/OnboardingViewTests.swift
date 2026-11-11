@@ -28,10 +28,9 @@ extension AppTests {
         let root: URL
     }
 
-    /// A short path: the agent socket lives under it, and Unix sockets allow ~100 characters.
     private func host(size: CGSize) -> Hosted {
-        let root = URL(filePath: "/private/tmp/sg-t-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
-        let state = AppState(paths: Paths(root: root))
+        let root = TestAppState.makeRoot()
+        let state = TestAppState.make(root: root)
         let shell = QuietShell()
         // An empty home folder: no agent config files, so both rows read "not connected".
         let connector = AgentConnector(launcher: "/Applications/Singularity.app/Contents/MacOS/singularity-mcp",
@@ -44,15 +43,10 @@ extension AppTests {
         return Hosted(state: state, window: window, shell: shell, root: root)
     }
 
-    /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers) and
-    /// writes pending saves, so nothing recreates the data folder after it is removed (see
-    /// `OnboardingStateTests.shutDown`).
+    /// Closes the window, stops the `AppState` (`TestAppState.shutDown`) and removes its folder.
     private func tearDown(_ hosted: Hosted) {
         hosted.window.close()
-        hosted.state.flushSaves()
-        hosted.state.mcp?.stop()
-        hosted.state.plugins.terminateAll()
-        hosted.state.artifacts.stopAll()
+        TestAppState.shutDown(hosted.state)
         try? FileManager.default.removeItem(at: hosted.root)
     }
 
