@@ -46,6 +46,16 @@ fi
 cp "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
 # The script every plugin's background program starts through (gives plugins their API).
 cp -R "$ROOT/Resources/plugin-host" "$APP/Contents/Resources/"
+# Ready-made plugins (every folder of Plugins/ except the template) and the authoring guide with the
+# template, for the welcome flow. Copied before signing, so the signature seals them.
+RSYNC_SKIP=(--exclude node_modules --exclude .git --exclude .DS_Store)
+mkdir -p "$APP/Contents/Resources/Plugins" "$APP/Contents/Resources/plugin-guide"
+for plugin in "$ROOT"/Plugins/*/; do
+  [[ "$(basename "$plugin")" == template ]] && continue
+  rsync -a "${RSYNC_SKIP[@]}" "$plugin" "$APP/Contents/Resources/Plugins/$(basename "$plugin")/"
+done
+cp "$ROOT/docs/plugins/AUTHORING.md" "$APP/Contents/Resources/plugin-guide/"
+rsync -a "${RSYNC_SKIP[@]}" "$ROOT/Plugins/template/" "$APP/Contents/Resources/plugin-guide/template/"
 cp "$ROOT/Resources/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/"   # licences of bundled software
 
 # SwiftPM puts target resources in <Package>_<Target>.bundle next to the binary.
