@@ -6,3 +6,6 @@ xcuserdata/
 .DS_Store
 dist/
 __pycache__/
+
+# Brainstorm mockups (superpowers visual companion)
+.superpowers/

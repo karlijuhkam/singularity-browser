@@ -12,7 +12,8 @@ Things that came up while building but were not in the v1 brief.
 
 ## Approved: projects
 
-- (none left)
+- **First-run onboarding screen.** Owner decision 2026-11-11, design in progress. On first launch: customise the first Space, connect an agent (Claude Code mostly, Codex too; automatically where possible), and a plugin step that lists the plugins shipped in the app plus how an agent can write one.
+- **Claude Chat plugin (top priority after onboarding).** Owner decision 2026-11-11. A ready-made plugin that gives a Claude chat inside Singularity through the Agent SDK, on the user's own Claude subscription; this is the "AI only inside plugins, round 2" from `CLAUDE.md`. Needs its own design. Open questions for the owner: where a plugin shows a chat (plugins cannot own a panel or tab today), and how it reaches Claude (plugin backgrounds have no network; running the user's installed `claude` as a declared command would keep the login with Claude Code, so Singularity holds no key or token). It appears in the onboarding plugin list once it exists.
 
 ## Approved, but blocked outside the project
 
