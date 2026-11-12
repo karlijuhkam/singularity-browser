@@ -24,11 +24,76 @@ import Testing
 
     @Test func parsePermission() {
         let bash = parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm x.txt","description":"d"}}"#)
-        #expect(bash == .permission(tool: "Bash", input: "rm x.txt"))
-        guard case let .permission(tool, input) = parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Edit","tool_input":{"file_path":"/a/b","new":"c"}}"#) else { Issue.record("no"); return }
+        #expect(bash == .permission(tool: "Bash", input: "command: rm x.txt\ndescription: d", isComplete: true))
+        guard case let .permission(tool, input, isComplete) = parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Edit","tool_input":{"file_path":"/a/b","new":"c"}}"#) else { Issue.record("no"); return }
         #expect(tool == "Edit")
-        #expect(input.contains("\"file_path\" : \"/a/b\""))
-        #expect(input.contains("\n"))
+        #expect(input == "file_path: /a/b\n{\n  \"new\" : \"c\"\n}")
+        #expect(isComplete)
+    }
+
+    func permission(_ tool: String, _ input: [String: Any]) -> (input: String, isComplete: Bool)? {
+        let root: [String: Any] = ["hook_event_name": "PermissionRequest", "tool_name": tool, "tool_input": input]
+        guard let data = try? JSONSerialization.data(withJSONObject: root),
+              case let .permission(_, text, isComplete) = ClaudeHook.parse(data) else { return nil }
+        return (text, isComplete)
+    }
+
+    /// What Allow approves must be visible: the fields that say where or what come first, one
+    /// per line, then everything else as sorted JSON.
+    @Test func identifyingFieldsComeFirst() throws {
+        let input: [String: Any] = ["url": "https://x.test", "pattern": "*.swift", "path": "/p", "notebook_path": "/n.ipynb",
+                                    "file_path": "/f", "command": "make", "description": "Build", "other": 1, "zeta": "z"]
+        let shown = try #require(permission("Tool", input))
+        #expect(shown.input == """
+        file_path: /f
+        path: /p
+        notebook_path: /n.ipynb
+        command: make
+        url: https://x.test
+        pattern: *.swift
+        description: Build
+        {
+          "other" : 1,
+          "zeta" : "z"
+        }
+        """)
+        #expect(shown.isComplete)
+        // Only strings count as identifying; anything else stays in the JSON.
+        let odd = try #require(permission("Tool", ["file_path": 5, "path": ["a"]]))
+        #expect(odd.input == "{\n  \"file_path\" : 5,\n  \"path\" : [\n    \"a\"\n  ]\n}")
+        // Nothing else left: no JSON at all.
+        #expect(try #require(permission("Read", ["file_path": "/etc/hosts"])).input == "file_path: /etc/hosts")
+    }
+
+    /// Bash: the command first, before any other identifying field.
+    @Test func bashShowsTheCommandFirst() throws {
+        let shown = try #require(permission("Bash", ["command": "ls -la\npwd", "description": "List", "path": "/tmp",
+                                                     "run_in_background": true]))
+        #expect(shown.input == "command: ls -la\npwd\npath: /tmp\ndescription: List\n{\n  \"run_in_background\" : true\n}")
+        #expect(shown.isComplete)
+    }
+
+    /// A Write of a big file: `content` sorts before `file_path`, yet the path is on the first
+    /// line; the text was cut, and says so through `isComplete`.
+    @Test func longInputIsMarkedIncomplete() throws {
+        let content = String(repeating: "a", count: 10_000)
+        let write = try #require(permission("Write", ["content": content, "file_path": "/Users/me/project/big.txt"]))
+        #expect(write.input.hasPrefix("file_path: /Users/me/project/big.txt\n"))
+        #expect(!write.isComplete)
+        #expect(write.input.count == InboxText.inputLimit)
+        #expect(write.input.hasSuffix("…"))
+        let small = try #require(permission("Write", ["content": "hello", "file_path": "/tmp/a.txt"]))
+        #expect(small.isComplete)
+        #expect(small.input == "file_path: /tmp/a.txt\n{\n  \"content\" : \"hello\"\n}")
+        // A long Bash command.
+        let bash = try #require(permission("Bash", ["command": "echo " + String(repeating: "x", count: 5_000)]))
+        #expect(bash.input.hasPrefix("command: echo xxx"))
+        #expect(!bash.isComplete)
+        // Exactly at the limit is complete; one more is not.
+        let fits = try #require(permission("Bash", ["command": String(repeating: "y", count: InboxText.inputLimit - 9)]))
+        #expect(fits.input.count == InboxText.inputLimit && fits.isComplete)
+        let over = try #require(permission("Bash", ["command": String(repeating: "y", count: InboxText.inputLimit - 8)]))
+        #expect(!over.isComplete)
     }
 
     @Test func permissionForAskUserQuestionIsIgnored() {
@@ -100,8 +165,9 @@ import Testing
         _ = ClaudeHook.parse(Data(deep.utf8))
         _ = parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":5}}"#)
         _ = parse(#"{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":{"questions":[1,{"question":3}]}}"#)
-        guard case let .permission(_, input) = parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Write","tool_input":{"c":""# + big + #""}}"#) else { Issue.record("no"); return }
+        guard case let .permission(_, input, isComplete) = parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Write","tool_input":{"c":""# + big + #""}}"#) else { Issue.record("no"); return }
         #expect(input.count <= InboxText.inputLimit)
+        #expect(!isComplete)
     }
 
     @Test func answerReplyEchoesQuestionsAndAddsAnswers() {

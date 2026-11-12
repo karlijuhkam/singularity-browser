@@ -152,6 +152,14 @@ extension AppTests {
         """
     }
 
+    /// A Write whose input is too long to show in full (`content` sorts before `file_path`).
+    static func writeJSON(contentLength: Int) -> String {
+        """
+        {"session_id":"f32c","hook_event_name":"PermissionRequest","tool_name":"Write",
+         "tool_input":{"content":"\(String(repeating: "a", count: contentLength))","file_path":"/Users/me/project/notes.md"}}
+        """
+    }
+
     static let askPermissionJSON = """
     {"session_id":"f32c","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion",
      "tool_input":{"questions":[{"question":"Which database should we use?","options":[{"label":"SQLite"}]}]}}
@@ -255,8 +263,8 @@ extension AppTests {
         let denied = f.arrive(Self.permissionJSON("rm b.txt"))
         #expect(f.held.count == 2)
         let entries = f.held
-        #expect(entries[0].kind == .permission(tool: "Bash", input: "rm a.txt"))
-        #expect(entries[1].kind == .permission(tool: "Bash", input: "rm b.txt"))
+        #expect(entries[0].kind == .permission(tool: "Bash", input: "command: rm a.txt\ndescription: Remove a file", isComplete: true))
+        #expect(entries[1].kind == .permission(tool: "Bash", input: "command: rm b.txt\ndescription: Remove a file", isComplete: true))
 
         f.center.decidePermission(entries[0].id, allow: true)
         #expect(allowed.replies == [ClaudeHook.permissionReply(allow: true)])
@@ -273,6 +281,36 @@ extension AppTests {
         f.center.decidePermission(ids.question, allow: true)
         #expect(permission.replies.isEmpty && question.replies.isEmpty)
         #expect(f.held.count == 2)
+    }
+
+    /// The owner cannot see everything Allow would approve: Allow is refused even when called
+    /// directly (not only hidden on the card), the request keeps waiting, and Deny still works.
+    @Test func incompletePermissionCanOnlyBeDenied() throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        let connection = f.arrive(Self.writeJSON(contentLength: 10_000))
+        let entry = try #require(f.held.first)
+        guard case .permission(let tool, let input, let isComplete) = entry.kind else { Issue.record("not a permission"); return }
+        #expect(tool == "Write" && !isComplete)
+        #expect(input.hasPrefix("file_path: /Users/me/project/notes.md\n"))
+
+        f.center.decidePermission(entry.id, allow: true)
+        f.passTheLockout()
+        f.center.perform(.decidePermission(entry.id, allow: true))
+        #expect(connection.replies.isEmpty)
+        #expect(f.held.map(\.id) == [entry.id])
+
+        f.center.perform(.decidePermission(entry.id, allow: false))
+        #expect(connection.replies == [ClaudeHook.permissionReply(allow: false)])
+        #expect(f.held.isEmpty)
+
+        // A small input is complete and can be allowed.
+        let small = f.arrive(Self.writeJSON(contentLength: 10))
+        let smallEntry = try #require(f.held.first)
+        #expect(smallEntry.kind == .permission(tool: "Write", input: "file_path: /Users/me/project/notes.md\n{\n  \"content\" : \"aaaaaaaaaa\"\n}",
+                                               isComplete: true))
+        f.center.decidePermission(smallEntry.id, allow: true)
+        #expect(small.replies == [ClaudeHook.permissionReply(allow: true)])
     }
 
     @Test func stopSetsTheDoneMessage() throws {
@@ -596,6 +634,19 @@ extension AppTests {
         let entry = try #require(f.held.first)
         let choices = InboxPermissionButtons.choices(for: entry)
         #expect(choices.map(\.title) == ["Allow", "Deny"])
+        #expect(InboxPermissionText(entry)?.cutNote == nil)
+        // A permission that could not be shown in full: Deny only (and Go to terminal, which every
+        // card with a tab has).
+        let long = f.arrive(Self.writeJSON(contentLength: 10_000))
+        let cut = try #require(f.held.first { $0.id != entry.id })
+        #expect(InboxPermissionButtons.choices(for: cut).map(\.title) == ["Deny"])
+        #expect(cut.tabID != nil)
+        let text = try #require(InboxPermissionText(cut))
+        #expect(text.cutNote == "Too long to show in full.")
+        #expect(text.headline == "Wants to use Write")
+        #expect(text.input.hasPrefix("file_path: /Users/me/project/notes.md\n"))
+        f.center.decidePermission(cut.id, allow: false)
+        #expect(long.replies == [ClaudeHook.permissionReply(allow: false)])
         #expect(InboxPermissionButtons.choices(for: InboxEntry(kind: .done, spaceID: f.two.id, tabID: f.tab.id,
                                                                agent: "x", message: nil, arrived: Date())).isEmpty)
         // Just arrived: ignored.

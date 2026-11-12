@@ -236,8 +236,8 @@ import Testing
     }
     @Test func severalHeldPerTab() {
         var inbox = Inbox()
-        _ = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)
-        _ = inbox.hold(.permission(tool: "Bash", input: "pwd"), tab: facts(), agent: "A", now: at(1))
+        _ = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)
+        _ = inbox.hold(.permission(tool: "Bash", input: "pwd", isComplete: true), tab: facts(), agent: "A", now: at(1))
         #expect(inbox.visible.count == 2)
     }
     @Test func workingTabWithVisibleEntryIsNotCountedAsWorking() {
@@ -248,7 +248,7 @@ import Testing
     }
     @Test func wentToTerminalReturnsHeldAndKeepsApprovals() {
         var inbox = Inbox()
-        let held = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)!
+        let held = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)!
         _ = inbox.apply(rec(.blocked), tab: facts(), agent: "A", now: now)
         let appr = inbox.addApproval(approval(), spaceID: space, tabID: tab, deadline: at(120), now: now)
         let removed = inbox.wentToTerminal(tab)
@@ -278,7 +278,7 @@ import Testing
     }
     @Test func demoteForPermission() {
         var inbox = Inbox()
-        let held = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)!
+        let held = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)!
         inbox.demote(held.id)
         #expect(inbox.visible[0].kind == .waiting(.permission))
     }
@@ -320,7 +320,7 @@ import Testing
     @Test func noteReleasesHeldEntriesOfThatTabOnly() {
         var inbox = Inbox()
         let q = inbox.hold(.question([]), tab: facts(), agent: "A", now: now)!
-        let p = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)!
+        let p = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)!
         let other = inbox.hold(.question([]), tab: facts(tab: UUID()), agent: "A", now: now)!
         inbox.noteLastMessage("Done", tabID: tab)
         #expect(Set(inbox.takeReleased().map(\.id)) == [q.id, p.id])
@@ -330,21 +330,21 @@ import Testing
     @Test func workingReleasesHeldPermissionButNotQuestion() {
         var inbox = Inbox()
         let q = inbox.hold(.question([]), tab: facts(), agent: "A", now: now)!
-        let p = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)!
+        let p = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)!
         _ = inbox.apply(rec(.working), tab: facts(), agent: "A", now: now)
         #expect(inbox.takeReleased().map(\.id) == [p.id])
         #expect(inbox.entries.map(\.id) == [q.id])
     }
     @Test func blockedReleasesNothing() {
         var inbox = Inbox()
-        _ = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)
+        _ = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)
         _ = inbox.apply(rec(.blocked, kind: .permission), tab: facts(), agent: "A", now: now)
         #expect(inbox.takeReleased().isEmpty)
     }
     @Test func doneReleasesHeldQuestion() {
         var inbox = Inbox()
         let q = inbox.hold(.question([]), tab: facts(), agent: "A", now: now)!
-        let p = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)!
+        let p = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)!
         _ = inbox.apply(rec(.done), tab: facts(), agent: "A", now: now)
         #expect(Set(inbox.takeReleased().map(\.id)) == [q.id, p.id])
         #expect(inbox.entries.count == 1)   // just the done entry
@@ -354,21 +354,21 @@ import Testing
         let q = inbox.hold(.question([]), tab: facts(), agent: "A", now: now)!
         _ = inbox.apply(rec(.idle), tab: facts(), agent: "A", now: now)
         #expect(inbox.takeReleased().map(\.id) == [q.id])
-        let p = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)!
+        let p = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)!
         _ = inbox.apply(.status([]), tab: facts(), agent: "A", now: now)
         #expect(inbox.takeReleased().map(\.id) == [p.id])
     }
     @Test func programExitedReleasesHeld() {
         var inbox = Inbox()
         let q = inbox.hold(.question([]), tab: facts(), agent: "A", now: now)!
-        let p = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(), agent: "A", now: now)!
+        let p = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(), agent: "A", now: now)!
         _ = inbox.apply(.programExited, tab: facts(program: nil), agent: "A", now: now)
         #expect(Set(inbox.takeReleased().map(\.id)) == [q.id, p.id])
         #expect(inbox.entries.isEmpty)
     }
     @Test func releaseIgnoresOtherTabsAndApprovals() {
         var inbox = Inbox()
-        let other = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(tab: UUID()), agent: "A", now: now)!
+        let other = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(tab: UUID()), agent: "A", now: now)!
         let appr = inbox.addApproval(approval(), spaceID: space, tabID: tab, deadline: at(120), now: now)
         _ = inbox.apply(rec(.working), tab: facts(), agent: "A", now: now)
         _ = inbox.apply(.programExited, tab: facts(program: nil), agent: "A", now: now)
@@ -379,7 +379,7 @@ import Testing
         var inbox = Inbox()
         _ = inbox.apply(rec(.done), tab: facts(tab: UUID()), agent: "A", now: at(1))
         _ = inbox.apply(rec(.blocked), tab: facts(tab: UUID()), agent: "A", now: at(2))
-        _ = inbox.hold(.permission(tool: "Bash", input: "ls"), tab: facts(tab: UUID()), agent: "A", now: at(3))
+        _ = inbox.hold(.permission(tool: "Bash", input: "ls", isComplete: true), tab: facts(tab: UUID()), agent: "A", now: at(3))
         _ = inbox.addApproval(approval(), spaceID: space, tabID: nil, deadline: at(200), now: at(4))
         #expect(inbox.visible.map(name) == ["approval", "permission", "waiting", "done"])
     }
@@ -471,7 +471,7 @@ import Testing
     }
 
     @Test func bodyByKind() {
-        #expect(InboxNotificationText.make(entry(.permission(tool: "Bash", input: "ls")), spaceName: "W").body == "Wants to use Bash")
+        #expect(InboxNotificationText.make(entry(.permission(tool: "Bash", input: "ls", isComplete: true)), spaceName: "W").body == "Wants to use Bash")
         let approval = InboxApproval(actor: "Claude", action: "click Buy", detail: "d")
         #expect(InboxNotificationText.make(entry(.approval(approval)), spaceName: "W").body == "Wants to click Buy")
         #expect(InboxNotificationText.make(entry(.waiting(.attention)), spaceName: "W").body == "Waiting for you")

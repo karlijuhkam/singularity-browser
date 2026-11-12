@@ -222,7 +222,8 @@ private struct InboxCard: View {
         case .waiting: InboxWaitingBody(message: entry.message)
         case .done: InboxDoneBody(message: entry.message)
         case .question(let questions): InboxQuestionBody(entry: entry, questions: questions, onAction: onAction)
-        case .permission(let tool, let input): InboxPermissionBody(tool: tool, input: input)
+        case .permission:
+            if let shown = InboxPermissionText(entry) { InboxPermissionBody(shown: shown) }
         case .approval(let approval): InboxApprovalBody(approval: approval)
         }
     }
@@ -379,30 +380,52 @@ private struct InboxQuestionBody: View {
     }
 }
 
-/// Claude Code wants to use a tool: which one, and its input (for Bash the command) in a small
-/// scrolling monospaced box. Allow and Deny are in `InboxCardButtons`.
+/// Claude Code wants to use a tool: which one, and its input (where or what first, see
+/// `ClaudeHook`) in a small scrolling monospaced box; when the input had to be cut, a line that
+/// says so. Allow and Deny are in `InboxCardButtons`.
 private struct InboxPermissionBody: View {
-    let tool: String
-    let input: String
+    let shown: InboxPermissionText
 
     var body: some View {
-        let text = InboxText.cleanBlock(input, limit: InboxText.inputLimit)
         VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: "Wants to use \(InboxText.clean(tool, limit: 80))")
+            Text(verbatim: shown.headline)
                 .font(.system(size: 12))
                 .fixedSize(horizontal: false, vertical: true)
-            if !text.isEmpty { InboxBlockText(text: text, maxHeight: 90) }
+            if !shown.input.isEmpty { InboxBlockText(text: shown.input, maxHeight: 90) }
+            if let note = shown.cutNote {
+                Text(verbatim: note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
 
-/// Allow and Deny for a held permission request. Neither is a default button: the owner decides
+/// The texts a permission card shows, each cleaned (all of it comes from Claude Code's input).
+struct InboxPermissionText {
+    let headline: String   // "Wants to use <tool>"
+    let input: String      // keeps line breaks; empty when there is none
+    /// "Too long to show in full." when the input was cut; nil otherwise.
+    let cutNote: String?
+
+    init?(_ entry: InboxEntry) {
+        guard case .permission(let tool, let input, let isComplete) = entry.kind else { return nil }
+        headline = "Wants to use \(InboxText.clean(tool, limit: 80))"
+        self.input = InboxText.cleanBlock(input, limit: InboxText.inputLimit)
+        cutNote = isComplete ? nil : "Too long to show in full."
+    }
+}
+
+/// Allow and Deny for a held permission request; only Deny when the input could not be shown in
+/// full (Go to terminal, on every card with a tab, shows Claude Code's own prompt with all of it). Neither is a default button: the owner decides
 /// about his own machine with a deliberate click.
 enum InboxPermissionButtons {
     static func choices(for entry: InboxEntry) -> [InboxApprovalButtons.Choice] {
-        guard case .permission = entry.kind else { return [] }
-        return [InboxApprovalButtons.Choice(title: "Allow", action: .decidePermission(entry.id, allow: true)),
-                InboxApprovalButtons.Choice(title: "Deny", action: .decidePermission(entry.id, allow: false))]
+        guard case .permission(_, _, let isComplete) = entry.kind else { return [] }
+        let deny = InboxApprovalButtons.Choice(title: "Deny", action: .decidePermission(entry.id, allow: false))
+        guard isComplete else { return [deny] }
+        return [InboxApprovalButtons.Choice(title: "Allow", action: .decidePermission(entry.id, allow: true)), deny]
     }
 }
 

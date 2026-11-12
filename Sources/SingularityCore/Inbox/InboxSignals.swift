@@ -143,7 +143,7 @@ public enum InboxNotificationText {
         let raw: String
         switch entry.kind {
         case .question(let questions): raw = questions.first?.question ?? ""
-        case .permission(let tool, _): raw = "Wants to use \(tool)"
+        case .permission(let tool, _, _): raw = "Wants to use \(tool)"
         case .approval(let approval): raw = "Wants to \(approval.action)"
         case .waiting: raw = entry.message ?? "Waiting for you"
         case .done: raw = entry.message ?? "Finished"

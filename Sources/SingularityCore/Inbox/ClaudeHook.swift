@@ -5,8 +5,9 @@ public enum ClaudeHookEvent: Equatable, Sendable {
     /// A held AskUserQuestion. `questions` hold CLEANED text only; `toolInput` is the original
     /// `tool_input` object as JSON text, read again by `ClaudeHook.answerReply`.
     case question(questions: [InboxQuestion], toolInput: String)
-    /// A held permission request; `input` is cleaned and ready to show.
-    case permission(tool: String, input: String)
+    /// A held permission request; `input` is cleaned and ready to show. `isComplete` is false
+    /// when `input` had to be cut to fit (`InboxText.inputLimit`).
+    case permission(tool: String, input: String, isComplete: Bool)
     case stop(lastMessage: String?)
     /// Anything else, unreadable, or not safe to show (the terminal's own prompt stays alone).
     case ignored
@@ -45,7 +46,8 @@ public enum ClaudeHook {
                   let input = root["tool_input"] as? [String: Any] else { return .ignored }
             let cleanTool = InboxText.clean(tool, limit: toolNameLimit)
             guard !cleanTool.isEmpty else { return .ignored }
-            return .permission(tool: cleanTool, input: permissionText(tool: tool, input: input))
+            let shown = permissionText(tool: tool, input: input)
+            return .permission(tool: cleanTool, input: shown.text, isComplete: shown.isComplete)
         case "Stop":
             let raw = root["last_assistant_message"] as? String
             let text = raw.map { InboxText.clean($0, limit: InboxText.messageLimit) }
@@ -82,13 +84,33 @@ public enum ClaudeHook {
         return result
     }
 
-    /// For Bash the command is what the owner needs to read; otherwise the whole input, pretty-printed.
-    private static func permissionText(tool: String, input: [String: Any]) -> String {
-        if tool == "Bash", let command = input["command"] as? String {
-            return InboxText.cleanBlock(command, limit: InboxText.inputLimit)
+    /// The input fields that say where or what a tool acts on, in the order the card shows them.
+    static let identifyingKeys = ["file_path", "path", "notebook_path", "command", "url", "pattern", "description"]
+
+    /// What the permission card shows, and whether that is all of it.
+    /// The identifying fields (those that are strings) come first, each on its own line as
+    /// `name: value`, for Bash the command before the others; then every other key as sorted,
+    /// pretty-printed JSON (none when nothing is left). So the destination of a `Write` is on
+    /// the first line even though `content` sorts before `file_path`. Cut to
+    /// `InboxText.inputLimit`; `isComplete` false when it had to be cut, and then the inbox
+    /// does not offer Allow: the owner must never approve what they can't see.
+    private static func permissionText(tool: String, input: [String: Any]) -> (text: String, isComplete: Bool) {
+        var keys = identifyingKeys
+        if tool == "Bash", let index = keys.firstIndex(of: "command") {
+            keys.insert(keys.remove(at: index), at: 0)
         }
-        let text = jsonText(input, pretty: true) ?? ""
-        return InboxText.cleanBlock(text, limit: InboxText.inputLimit)
+        var lines: [String] = []
+        var rest = input
+        for key in keys {
+            guard let value = input[key] as? String else { continue }
+            lines.append("\(key): \(value)")
+            rest[key] = nil
+        }
+        if !rest.isEmpty, let json = jsonText(rest, pretty: true) { lines.append(json) }
+        // Cleaned in full first, so the length that decides "complete" is the length shown.
+        let full = InboxText.cleanBlock(lines.joined(separator: "\n"), limit: .max)
+        let isComplete = full.count <= InboxText.inputLimit
+        return (isComplete ? full : InboxText.cleanBlock(full, limit: InboxText.inputLimit), isComplete)
     }
 
     // MARK: Replies

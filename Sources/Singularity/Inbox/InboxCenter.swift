@@ -402,9 +402,9 @@ final class InboxCenter {
             turnEnded(tabID: tabID, lastMessage: lastMessage)
         case .question(let questions, let toolInput):
             hold(.question(questions), toolInput: toolInput, tabID: tabID, spaceID: spaceID, connection: connection)
-        case .permission(let tool, let input):
-            hold(.permission(tool: tool, input: input), toolInput: nil, tabID: tabID, spaceID: spaceID,
-                 connection: connection)
+        case .permission(let tool, let input, let isComplete):
+            hold(.permission(tool: tool, input: input, isComplete: isComplete), toolInput: nil, tabID: tabID,
+                 spaceID: spaceID, connection: connection)
         }
     }
 
@@ -416,10 +416,17 @@ final class InboxCenter {
         finishHeld(id, reply: ClaudeHook.answerReply(toolInput: toolInput, answers: answers), why: "question answered")
     }
 
-    /// Allow (this once) or Deny for a held permission request.
+    /// Allow (this once) or Deny for a held permission request. Allow is refused (nothing
+    /// happens, the request keeps waiting) for a request whose input could not be shown in full:
+    /// the owner must never approve what they can't see. The card offers only Deny then; this
+    /// holds the rule for any other caller too.
     func decidePermission(_ id: UUID, allow: Bool) {
         guard heldRequests[id] != nil,
-              case .permission = inbox.entries.first(where: { $0.id == id })?.kind else { return }
+              case .permission(_, _, let isComplete) = inbox.entries.first(where: { $0.id == id })?.kind else { return }
+        if allow, !isComplete {
+            logChange("allow refused: the request was too long to show in full", tabID: heldRequests[id]?.tabID)
+            return
+        }
         finishHeld(id, reply: ClaudeHook.permissionReply(allow: allow), why: allow ? "permission allowed" : "permission denied")
     }
 

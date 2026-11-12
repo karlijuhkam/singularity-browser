@@ -70,7 +70,9 @@ extension AppTests {
         _ = inbox.hold(.question([InboxQuestion(question: message, header: "Database", options: ["SQLite", "Postgres"]),
                                   InboxQuestion(question: message, options: ["A", "B"], multiSelect: true)]),
                        tab: tab(spaceID), agent: "Claude Code", now: now)
-        _ = inbox.hold(.permission(tool: "Bash", input: block), tab: tab(spaceID), agent: "Claude Code", now: now)
+        _ = inbox.hold(.permission(tool: "Bash", input: block, isComplete: true), tab: tab(spaceID), agent: "Claude Code", now: now)
+        // Cut to fit: the card says so and offers only Deny and Go to terminal.
+        _ = inbox.hold(.permission(tool: "Write", input: block, isComplete: false), tab: tab(spaceID), agent: "Claude Code", now: now)
         _ = inbox.addApproval(InboxApproval(actor: "Claude Code", action: "click", detail: message, url: "https://example.com/",
                                             tabTitle: "Shop", text: block, siteHost: "example.com"),
                               spaceID: spaceID, tabID: UUID(), deadline: now.addingTimeInterval(95), now: now)
@@ -195,7 +197,7 @@ extension AppTests {
         #expect(longMessage.count == InboxText.messageLimit)
         #expect(longBlock.count == InboxText.inputLimit)
         f.center.replaceInboxForTesting(everyKind(f.space.id, message: String(longMessage), block: longBlock))
-        #expect(f.center.inbox.visible.count == 7)
+        #expect(f.center.inbox.visible.count == 8)
 
         for name in [NSAppearance.Name.aqua, .darkAqua] {
             let appearance = try #require(NSAppearance(named: name))

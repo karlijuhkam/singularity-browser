@@ -41,7 +41,10 @@ public enum InboxWaitingReason: String, Sendable { case question, permission, au
 
 public enum InboxKind: Equatable, Sendable {
     case question([InboxQuestion])                   // held Claude Code question
-    case permission(tool: String, input: String)     // held Claude Code permission request
+    /// Held Claude Code permission request. `isComplete` false: `input` had to be cut, so the
+    /// owner cannot see everything Allow would approve; the card then offers only Deny and
+    /// Go to terminal, and `InboxCenter` refuses an Allow.
+    case permission(tool: String, input: String, isComplete: Bool)
     case approval(InboxApproval)                     // browser approval
     case waiting(InboxWaitingReason)                 // level 1
     case done                                        // level 1
