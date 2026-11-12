@@ -114,7 +114,7 @@ final class WebTabController: NSObject {
             try? await Task.sleep(for: .milliseconds(100))
         }
         // A navigation held for the user's approval doesn't count as loading yet; wait for the
-        // answer (approval sheets time out on their own), then for the load it may start.
+        // answer (approvals time out on their own), then for the load it may start.
         if pendingNavigationApprovals > 0 {
             while pendingNavigationApprovals > 0 {
                 try? await Task.sleep(for: .milliseconds(100))

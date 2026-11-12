@@ -381,9 +381,11 @@ final class AgentToolbox {
         var request = AgentApprovals.Request(actor: AgentApprovals.displayName(forClient: record.client), action: action,
                                              detail: detail, url: url?.absoluteString, spaceName: space.name,
                                              tabTitle: tabTitle, text: text)
-        // "Show Tab" in the sheet: agent tabs load in the background, so the user may not have seen the page.
+        // "Show Tab" on the inbox entry: agent tabs load in the background, so the user may not
+        // have seen the page. The entry carries the tab: closing it denies the request.
         if let tabID = record.tabID {
             request.showTab = { [weak state] in state?.showTab(tabID, in: space.id) }
+            request.tabID = tabID
         }
         return request
     }

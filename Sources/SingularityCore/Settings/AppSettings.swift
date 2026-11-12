@@ -42,7 +42,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// Run terminal tabs through the owner's installed herdr-core (`hc`), so shells outlive the
     /// app (see `HerdrCore`). Off by default; falls back to the built-in terminal when `hc` is missing.
     public var terminalUsesHerdrCore: Bool = false
-    /// How long an agent approval sheet waits before counting as "Deny".
+    /// How long an agent approval waits in the inbox before counting as "Deny".
     public var agentApprovalTimeoutSeconds: Int = 120
 
     public init() {}

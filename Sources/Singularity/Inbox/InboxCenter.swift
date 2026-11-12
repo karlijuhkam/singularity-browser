@@ -3,8 +3,9 @@ import Observation
 import SingularityCore
 
 /// The app's side of the agent inbox: owns the Core `Inbox` (all the rules live there) and feeds
-/// it what happens in the app: terminal signals from `TerminalSession`, and the owner going to a
-/// terminal or closing it (from `AppState`).
+/// it what happens in the app: terminal signals from `TerminalSession`, the owner going to a
+/// terminal or closing it (from `AppState`), and browser approvals (from `AgentApprovals`), which
+/// wait here for the owner's answer.
 ///
 /// "Looked at" is decided once, when something arrives (`facts`): app active, window key, tab on
 /// screen. After that only deliberate actions remove an entry (`wentToTerminal`), never the app
@@ -27,6 +28,19 @@ final class InboxCenter {
     @ObservationIgnored var onArrival: (InboxEntry) -> Void = { _ in }
     /// Called whenever the list changed (Task 5: withdraw notifications, Dock badge).
     @ObservationIgnored var onChange: () -> Void = {}
+    /// A browser approval arrived while Singularity is in the background: bounce the Dock icon
+    /// once, as the approval sheet did. Tests replace it.
+    @ObservationIgnored var requestAttention: () -> Void = { NSApp.requestUserAttention(.informationalRequest) }
+
+    /// A browser approval waiting for the owner: the paused `AgentApprovals.check` (its
+    /// continuation) and the clock. Kept by entry id until it is answered, exactly once.
+    private struct WaitingApproval {
+        let continuation: CheckedContinuation<AgentApprovals.Outcome, Never>
+        let pending: AgentApprovals.PendingApproval
+        var deadline: ContinuousClock.Instant
+        var timer: Task<Void, Never>?
+    }
+    @ObservationIgnored private var waitingApprovals: [UUID: WaitingApproval] = [:]
 
     /// The rail's tray button (its AppKit view), so the panel can open beside it.
     @ObservationIgnored weak var railAnchor: NSView?
@@ -92,8 +106,9 @@ final class InboxCenter {
         releaseHeld(gone)
     }
 
-    /// "Go to terminal" / "Show Tab" on a card: shows the tab and closes the panel. For anything
-    /// but an approval this also counts as going to the terminal.
+    /// "Go to terminal" on a card: shows the tab and closes the panel. For anything but an
+    /// approval this also counts as going to the terminal. (An approval's "Show Tab" is
+    /// `showApprovalTab`: it keeps the panel open and restarts the clock.)
     func goTo(_ entry: InboxEntry) {
         closePanel()
         guard let tabID = entry.tabID else { return }
@@ -109,6 +124,147 @@ final class InboxCenter {
         if removed.isHeld || Self.isApproval(removed) { releaseHeld([removed]) }
     }
 
+    // MARK: Browser approvals
+
+    /// `AgentApprovals`' presenter: adds an approval entry and waits for the owner's answer, the
+    /// deadline (`.timedOut`), or the entry leaving another way (tab closed, Space deleted, app
+    /// quitting: `.denied`). Never returns an allowed outcome on its own, except `.auto` for a
+    /// request the rules let through at that moment (`releaseApprovalsThatNowPass`).
+    func requestApproval(_ pending: AgentApprovals.PendingApproval) async -> AgentApprovals.Outcome {
+        // A request for a Space or tab that is already gone: no entry, "no".
+        if let state {
+            guard let space = state.space(pending.spaceID) else { return .denied }
+            if let tabID = pending.request.tabID, space.tab(tabID) == nil { return .denied }
+        }
+        let request = pending.request
+        let approval = InboxApproval(
+            actor: request.actor, action: request.action, detail: request.detail, url: request.url,
+            tabTitle: request.tabTitle, text: request.text,
+            siteHost: pending.siteOrigin.map { URL(string: $0)?.host() ?? $0 })
+        let arrived = now()
+
+        // The check pauses here until `finishApproval` resumes it. The closure runs at once, on
+        // the main actor, so the entry and its waiting record exist before anything can answer.
+        return await withCheckedContinuation { continuation in
+            let entry = inbox.addApproval(approval, spaceID: pending.spaceID, tabID: request.tabID,
+                                          deadline: arrived.addingTimeInterval(Self.seconds(pending.timeout)),
+                                          now: arrived)
+            waitingApprovals[entry.id] = WaitingApproval(continuation: continuation, pending: pending,
+                                                         deadline: .now + pending.timeout)
+            startApprovalTimer(entry.id)
+            logChange("approval added", tabID: entry.tabID)
+            onChange()
+            announceApproval(entry)
+        }
+    }
+
+    /// The owner's answer from the card: `.approved`, `.approvedSite` or `.denied`. Anything else,
+    /// or an entry that is no longer waiting, does nothing.
+    func decideApproval(_ id: UUID, _ outcome: AgentApprovals.Outcome) {
+        guard let waiting = waitingApprovals[id] else { return }
+        switch outcome {
+        case .approved, .denied:
+            finishApproval(id, outcome)
+        case .approvedSite:
+            // Only offered when the rules name a site to allow.
+            guard waiting.pending.siteOrigin != nil else { return }
+            finishApproval(id, .approvedSite)
+            // `AgentApprovals.check` records the site when its task runs on, which the line
+            // above queued on the main actor; look at the other requests after that.
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                self?.releaseApprovalsThatNowPass()
+            }
+        case .auto, .timedOut, .refused:
+            return
+        }
+    }
+
+    /// "Show Tab" on the card: shows the tab the request is about and gives the owner the full
+    /// time again. Does not answer, and does not take the entry away (going to a tab never
+    /// removes approvals, see `wentToTerminal`).
+    func showApprovalTab(_ id: UUID) {
+        guard let waiting = waitingApprovals[id] else { return }
+        if let showTab = waiting.pending.request.showTab {
+            showTab()
+        } else if let tabID = waiting.pending.request.tabID {
+            state?.showTab(tabID, in: waiting.pending.spaceID)
+        } else {
+            return
+        }
+        // Showing the tab could have ended the request (it never should); then there is no clock.
+        guard waitingApprovals[id] != nil else { return }
+        let timeout = waiting.pending.timeout
+        waitingApprovals[id]?.deadline = .now + timeout
+        inbox.setDeadline(id, now().addingTimeInterval(Self.seconds(timeout)))
+    }
+
+    /// After an "Allow on <site>": other waiting requests that the rules now let through go
+    /// ahead (`.auto`). Each is asked at this moment; the always-ask cases never pass.
+    func releaseApprovalsThatNowPass() {
+        for (id, waiting) in waitingApprovals where waiting.pending.passesNow() {
+            finishApproval(id, .auto)
+        }
+    }
+
+    /// The Space is being deleted: its waiting approvals (also those without a tab) are denied.
+    func spaceDeleted(_ spaceID: UUID) {
+        for (id, waiting) in waitingApprovals where waiting.pending.spaceID == spaceID {
+            finishApproval(id, .denied)
+        }
+    }
+
+    /// The app is quitting: every waiting approval is denied.
+    func denyAllApprovals() {
+        for id in waitingApprovals.keys {
+            finishApproval(id, .denied)
+        }
+    }
+
+    /// Answers a waiting approval and takes its entry away. Exactly once: the waiting record is
+    /// taken out first, so any later call for the same id (a late answer, the timer, a tab
+    /// closing) finds nothing and does nothing. Resuming a continuation twice would crash.
+    private func finishApproval(_ id: UUID, _ outcome: AgentApprovals.Outcome) {
+        guard let waiting = waitingApprovals.removeValue(forKey: id) else { return }
+        waiting.timer?.cancel()
+        if inbox.remove(id) != nil { onChange() }
+        logChange("approval \(outcome.logValue)", tabID: waiting.pending.request.tabID)
+        waiting.continuation.resume(returning: outcome)
+    }
+
+    /// Ends the request as `.timedOut` at its deadline. "Show Tab" moves the deadline, so the
+    /// deadline is read again after every wake-up. The task holds the inbox strongly on purpose:
+    /// a waiting request must always get its answer, so the inbox lives at least that long.
+    private func startApprovalTimer(_ id: UUID) {
+        waitingApprovals[id]?.timer = Task { @MainActor in
+            while let deadline = self.waitingApprovals[id]?.deadline, ContinuousClock.now < deadline {
+                do {
+                    try await Task.sleep(until: deadline, clock: .continuous)
+                } catch {
+                    return   // cancelled: answered some other way
+                }
+            }
+            self.finishApproval(id, .timedOut)
+        }
+    }
+
+    /// Singularity active: the panel opens by itself, without the keyboard, and no notification
+    /// (the owner is here). In the background, or when the panel could not open: a notification
+    /// and a Dock bounce.
+    private func announceApproval(_ entry: InboxEntry) {
+        if appIsActive() {
+            showPanel(takingFocus: false)
+            if isPanelShown { return }
+        }
+        onArrival(entry)
+        requestAttention()
+    }
+
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        let parts = duration.components
+        return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
+    }
+
     /// Tests only: replaces the whole list (built with Core's `Inbox` methods) without announcing
     /// anything.
     func replaceInboxForTesting(_ inbox: Inbox) {
@@ -118,9 +274,14 @@ final class InboxCenter {
     // MARK: Helpers
 
     /// Entries that left the inbox while an agent (or a page) still waits for an answer: held hook
-    /// requests and browser approvals. Nothing is held yet; Task 8 replies "no decision" to each
-    /// held request here, and the approval tasks answer an approval that left this way.
-    private func releaseHeld(_ entries: [InboxEntry]) {}
+    /// requests and browser approvals. An approval that left without an answer (tab closed,
+    /// dismissed) is denied. Nothing is held yet; Task 8 replies "no decision" to each held
+    /// request here.
+    private func releaseHeld(_ entries: [InboxEntry]) {
+        for entry in entries where Self.isApproval(entry) {
+            finishApproval(entry.id, .denied)
+        }
+    }
 
     /// Stores `updated` when it differs (bookkeeping included). Returns whether what the owner
     /// can see changed: the entries or the working tabs.

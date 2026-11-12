@@ -167,6 +167,12 @@ final class AppState {
         }
 
         approvals.timeoutSeconds = { [weak self] in self?.settings.agentApprovalTimeoutSeconds ?? 120 }
+        // Approvals wait in the inbox. No inbox (the app going away) = "no".
+        approvals.presenter = { [weak self] pending in
+            guard let self else { return .denied }
+            return await self.inbox.requestApproval(pending)
+        }
+        approvals.currentSpace = { [weak self] id in self?.space(id) }
 
         let mcp = MCPHub(state: self)
         mcp.start(socketPath: paths.mcpSocket.path)
@@ -174,9 +180,11 @@ final class AppState {
 
         plugins.start()
 
-        // When the app quits: write pending changes, hang up all shells, kill plugin processes.
+        // When the app quits: deny waiting approvals, write pending changes, hang up all shells,
+        // kill plugin processes.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.inbox.denyAllApprovals()
                 self?.flushSaves()
                 self?.artifacts.stopAll()
                 self?.terminals.tearDownAll()
@@ -473,6 +481,7 @@ final class AppState {
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
         for tab in space.tabs { inbox.tabClosed(tab.id) }
+        inbox.spaceDeleted(id) // approvals without a tab (artifact prompts) are denied too
         artifacts.stop(id)
         plugins.spaceRemoved(id)
         knownArtifactPages[id] = nil
@@ -526,7 +535,7 @@ final class AppState {
     /// Switches to the tab's Space (if needed) and selects the tab.
     func showTab(_ tabID: UUID, in spaceID: UUID) {
         guard space(spaceID)?.tab(tabID) != nil else { return }
-        closeWelcome() // the user asked to see the tab (approval sheet's "Show Tab")
+        closeWelcome() // the user asked to see the tab (an approval's "Show Tab")
         if selectedSpaceID != spaceID { selectSpace(spaceID) }
         selectTab(tabID)
     }
@@ -1069,7 +1078,9 @@ final class AppState {
         guard let space = space(spaceID), let (tab, session) = activeTerminal(in: space) else { return .noTerminal }
         let started = Date()
 
-        // Same policy as agents: read-only refuses, allow-all sends, ask always shows a sheet.
+        // Same policy as agents: read-only refuses, allow-all sends, ask always asks (an inbox
+        // entry showing the text). The request has no tab (`tabID` nil, no Show Tab): the page
+        // asking is not where the text goes, and the terminal is named in `detail`.
         let outcome = await approvals.check(
             AgentActionContext(kind: .artifactPrompt, pageOrigin: artifacts.host(spaceID)?.origin.flatMap(AgentApprovalRules.origin(of:))),
             space: space,

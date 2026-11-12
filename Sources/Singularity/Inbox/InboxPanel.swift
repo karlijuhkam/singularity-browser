@@ -19,6 +19,8 @@ extension InboxCenter {
         switch action {
         case .goTo(let entry): goTo(entry)
         case .dismiss(let id): dismiss(id)
+        case .decideApproval(let id, let outcome): decideApproval(id, outcome)
+        case .showApprovalTab(let id): showApprovalTab(id)
         }
     }
 }

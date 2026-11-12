@@ -88,10 +88,14 @@ private struct InboxAnchor: NSViewRepresentable {
 // MARK: - The list
 
 /// What a button on a card asks for. `InboxCenter.perform` carries it out; later tasks add the
-/// answers to questions, permissions and approvals.
+/// answers to questions and permissions.
 enum InboxCardAction {
     case goTo(InboxEntry)
     case dismiss(UUID)
+    /// Allow (`.approved`), Allow on <site> (`.approvedSite`) or Deny (`.denied`).
+    case decideApproval(UUID, AgentApprovals.Outcome)
+    /// Shows the tab, restarts the clock, answers nothing.
+    case showApprovalTab(UUID)
 }
 
 /// The panel's header: "Inbox" and how many more agents are working.
@@ -275,7 +279,9 @@ private struct InboxPermissionBody: View {
     }
 }
 
-/// Task 6 adds Allow, Allow on <site> and Deny.
+/// "<actor> wants to <action>", the element or URL it is about, the page's address, and the text
+/// to be typed or sent (password text arrives already masked). The buttons are in
+/// `InboxApprovalButtons`.
 private struct InboxApprovalBody: View {
     let approval: InboxApproval
 
@@ -283,10 +289,11 @@ private struct InboxApprovalBody: View {
         let actor = InboxText.clean(approval.actor, limit: 80)
         let action = InboxText.clean(approval.action, limit: InboxText.messageLimit)
         let detail = InboxText.clean(approval.detail, limit: InboxText.messageLimit)
+        let url = InboxText.clean(approval.url ?? "", limit: InboxText.messageLimit)
         let text = InboxText.cleanBlock(approval.text ?? "", limit: InboxText.inputLimit)
         VStack(alignment: .leading, spacing: 4) {
             Text(verbatim: "\(actor) wants to \(action)")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 12, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
             if !detail.isEmpty {
                 Text(verbatim: detail)
@@ -295,15 +302,24 @@ private struct InboxApprovalBody: View {
                     .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !text.isEmpty { InboxBlockText(text: text) }
+            if !url.isEmpty, url != detail {
+                Text(verbatim: url)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !text.isEmpty { InboxBlockText(text: text, maxHeight: 90) }
         }
     }
 }
 
 /// Long text (a command, the text a page is about to receive): monospaced, in a box that scrolls
-/// beyond 120 pt, like the approval sheet's.
+/// beyond `maxHeight`.
 private struct InboxBlockText: View {
     let text: String
+    var maxHeight: CGFloat = 120
     @State private var height: CGFloat = 0
 
     var body: some View {
@@ -315,7 +331,7 @@ private struct InboxBlockText: View {
                 .padding(6)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         }
-        .frame(height: min(max(height, 20), 120))
+        .frame(height: min(max(height, 20), maxHeight))
         .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
@@ -327,24 +343,77 @@ private struct InboxCardButtons: View {
     let onAction: (InboxCardAction) -> Void
 
     var body: some View {
-        let isApproval = if case .approval = entry.kind { true } else { false }
-        let isDone = entry.kind == .done
         // No button here is a default button (no `.keyboardShortcut(.defaultAction)`, nothing
         // prominent): Return typed elsewhere must never press one.
-        if isDone || entry.tabID != nil {
-            HStack(spacing: 6) {
-                if isDone {
-                    Button("Dismiss") { onAction(.dismiss(entry.id)) }
-                        .controlSize(.small)
-                }
-                Spacer(minLength: 0)
-                if entry.tabID != nil {
-                    Button(isApproval ? "Show Tab" : "Go to terminal") { onAction(.goTo(entry)) }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11))
+        if case .approval = entry.kind {
+            InboxApprovalButtons(entry: entry, onAction: onAction)
+        } else {
+            let isDone = entry.kind == .done
+            if isDone || entry.tabID != nil {
+                HStack(spacing: 6) {
+                    if isDone {
+                        Button("Dismiss") { onAction(.dismiss(entry.id)) }
+                            .controlSize(.small)
+                    }
+                    Spacer(minLength: 0)
+                    if entry.tabID != nil {
+                        Button("Go to terminal") { onAction(.goTo(entry)) }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11))
+                    }
                 }
             }
         }
+    }
+}
+
+/// Allow, Allow on <site> (only when the rules offer it), Deny, and Show Tab (only when the
+/// request is about a tab). Plain small buttons, none of them the default.
+struct InboxApprovalButtons: View {
+    let entry: InboxEntry
+    let onAction: (InboxCardAction) -> Void
+
+    /// One button: its title and what it does.
+    struct Choice {
+        let title: String
+        let action: InboxCardAction
+    }
+
+    /// The answer buttons, left to right, and Show Tab (at the right, as a link). The view shows
+    /// exactly these, so tests read the buttons from here.
+    static func choices(for entry: InboxEntry) -> (answers: [Choice], showTab: Choice?) {
+        guard case .approval(let approval) = entry.kind else { return ([], nil) }
+        var answers = [Choice(title: "Allow", action: .decideApproval(entry.id, .approved))]
+        if let siteHost = approval.siteHost {
+            // The host comes from the page's address: cleaned like any page text.
+            answers.append(Choice(title: "Allow on " + InboxText.clean(siteHost, limit: 80),
+                                  action: .decideApproval(entry.id, .approvedSite)))
+        }
+        answers.append(Choice(title: "Deny", action: .decideApproval(entry.id, .denied)))
+        let showTab = entry.tabID == nil ? nil : Choice(title: "Show Tab", action: .showApprovalTab(entry.id))
+        return (answers, showTab)
+    }
+
+    var body: some View {
+        let choices = Self.choices(for: entry)
+        HStack(spacing: 6) {
+            ForEach(Array(choices.answers.enumerated()), id: \.offset) { index, choice in
+                // A `String` title is shown as written (never looked up as a localisation key).
+                Button(choice.title) { onAction(choice.action) }
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    // A long "Allow on <site>" gives way first; Allow and Deny keep their size.
+                    .layoutPriority(index == 1 && choices.answers.count == 3 ? -1 : 0)
+            }
+            Spacer(minLength: 0)
+            if let showTab = choices.showTab {
+                Button(showTab.title) { onAction(showTab.action) }
+                    .buttonStyle(.link)
+                    .font(.system(size: 11))
+                    .fixedSize()
+            }
+        }
+        .controlSize(.small)
     }
 }
 

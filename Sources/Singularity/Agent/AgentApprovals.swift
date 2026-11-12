@@ -1,9 +1,9 @@
-import AppKit
+import Foundation
 import SingularityCore
 
-/// Decides whether an agent (or artifact page) action may happen, asking the user when the
-/// Space's policy says so. This runs inside the app on every action, so it holds no matter which
-/// client is connected or how.
+/// Decides whether an agent (or artifact page) action may happen, asking the user (through the
+/// inbox) when the Space's policy says so. This runs inside the app on every action, so it holds
+/// no matter which client is connected or how.
 @MainActor
 final class AgentApprovals {
     enum Outcome {
@@ -44,7 +44,8 @@ final class AgentApprovals {
         }
     }
 
-    /// What the confirmation sheet shows.
+    /// What the inbox entry shows. Everything in it comes from an agent or a page: the card
+    /// cleans it and shows it as plain text only.
     struct Request {
         /// "Claude Code", "An artifact page".
         var actor: String
@@ -57,42 +58,40 @@ final class AgentApprovals {
         var tabTitle: String?
         /// Text being typed or sent (already masked for password fields).
         var text: String?
-        /// Brings the tab the action is about on screen (behind the sheet). Nil when there is
-        /// no such tab yet, e.g. for "open a page".
+        /// Brings the tab the action is about on screen. Nil when there is no such tab yet, e.g.
+        /// for "open a page", or for an artifact prompt.
         var showTab: (@MainActor () -> Void)? = nil
+        /// The tab the action is about (the entry carries it: closing that tab denies). Set
+        /// together with `showTab`; nil when there is none.
+        var tabID: UUID? = nil
     }
 
-    /// Target of the sheet's "Show Tab" button, and the sheet's deadline. AppKit buttons call an
-    /// Objective-C selector on a target object, so the closure needs this small wrapper.
-    private final class SheetControls: NSObject {
-        var deadline: ContinuousClock.Instant
-        let timeout: Duration
-        let showTab: (@MainActor () -> Void)?
-
-        init(timeout: Duration, showTab: (@MainActor () -> Void)?) {
-            self.timeout = timeout
-            self.deadline = .now + timeout
-            self.showTab = showTab
-        }
-
-        @MainActor @objc func showTabClicked(_ sender: Any?) {
-            showTab?()
-            // The user is looking at the page now: give them the full time again.
-            deadline = .now + timeout
-        }
+    /// A question waiting for the owner, handed to `presenter` (the inbox).
+    struct PendingApproval {
+        var request: Request
+        var spaceID: UUID
+        /// What "Allow on <site>" would allow; nil = don't offer it.
+        var siteOrigin: String?
+        var timeout: Duration
+        /// True when the rules would now let it through without asking (after "Allow on site"
+        /// was given for another request). Evaluated when asked, never cached.
+        var passesNow: @MainActor () -> Bool
     }
 
     /// Per Space: sites the user chose "Allow on this site" for. Only kept until the app quits.
     private var allowedOrigins: [UUID: Set<String>] = [:]
-    private var isPresenting = false
 
-    /// Seconds a sheet waits for an answer (Settings → Agents; set by AppState).
+    /// Seconds a request waits for an answer (Settings → Agents; set by AppState).
     var timeoutSeconds: () -> Int = { 120 }
 
-    /// The window the sheet attaches to (tests put their own here).
-    var presentingWindow: () -> NSWindow? = {
-        NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain })
-    }
+    /// Shows the question to the owner and returns the answer (or `.timedOut`, `.denied`). Set by
+    /// AppState to the inbox's `requestApproval`. Nil (tests without an inbox) = denied.
+    var presenter: (@MainActor (PendingApproval) async -> Outcome)?
+
+    /// The Space as it is now, for `passesNow` (the policy may change while a request waits).
+    /// Set by AppState; nil = use the Space as it was when the request came. A Space that is
+    /// gone (nil) never passes.
+    var currentSpace: ((UUID) -> Space?)?
 
     private var timeout: Duration {
         .seconds(max(5, timeoutSeconds()))
@@ -107,7 +106,7 @@ final class AgentApprovals {
         case .deny(let reason):
             return .refused(reason)
         case .ask(let siteOrigin):
-            let outcome = await ask(request, siteOrigin: siteOrigin)
+            let outcome = await ask(request, context: context, space: space, siteOrigin: siteOrigin)
             if case .approvedSite = outcome, let siteOrigin {
                 allowedOrigins[space.id, default: []].insert(siteOrigin)
             }
@@ -115,81 +114,33 @@ final class AgentApprovals {
         }
     }
 
-    /// Shows the sheet (one at a time) and waits for the answer or the timeout.
-    private func ask(_ request: Request, siteOrigin: String?) async -> Outcome {
-        while isPresenting {
-            try? await Task.sleep(for: .milliseconds(100))
+    /// Hands the question to the inbox and waits for the answer or the timeout.
+    private func ask(_ request: Request, context: AgentActionContext, space: Space, siteOrigin: String?) async -> Outcome {
+        guard let presenter else { return .denied }
+        let pending = PendingApproval(
+            request: request, spaceID: space.id, siteOrigin: siteOrigin, timeout: timeout,
+            passesNow: { [weak self] in
+                guard let self else { return false }
+                // The Space as it is now; one that is gone never passes.
+                let now: Space?
+                if let currentSpace = self.currentSpace { now = currentSpace(space.id) } else { now = space }
+                guard let now else { return false }
+                let decision = AgentApprovalRules.decide(context, policy: now.agentPolicy,
+                                                         allowedOrigins: self.allowedOrigins[space.id] ?? [])
+                switch decision {
+                case .allow: return true
+                case .deny, .ask: return false
+                }
+            })
+        let outcome = await presenter(pending)
+        // Only the owner's answers come back from the inbox, or `.auto` for a request that the
+        // rules let through now. Anything else would be a mistake: treat it as "no".
+        switch outcome {
+        case .approved, .denied, .timedOut: return outcome
+        case .approvedSite: return siteOrigin == nil ? .denied : outcome
+        case .auto: return pending.passesNow() ? .auto : .denied
+        case .refused: return .denied
         }
-        isPresenting = true
-        defer { isPresenting = false }
-
-        guard let window = presentingWindow() else { return .denied }
-        NSApp.requestUserAttention(.informationalRequest) // bounces the Dock icon if we're in the background
-
-        let alert = NSAlert()
-        alert.messageText = "\(request.actor) wants to \(request.action)"
-        var lines = [request.detail]
-        if let url = request.url { lines.append(url) }
-        lines.append("Space “\(request.spaceName)”" + (request.tabTitle.map { " · tab “\($0)”" } ?? ""))
-        alert.informativeText = lines.joined(separator: "\n")
-        // Below the message: the text being sent (if any) and a "Show Tab" button. The button
-        // sits here, not among the alert's own buttons, because those always close the sheet.
-        let controls = SheetControls(timeout: timeout, showTab: request.showTab)
-        var accessories: [NSView] = []
-        if let text = request.text {
-            let scrollView = NSTextView.scrollableTextView()
-            scrollView.translatesAutoresizingMaskIntoConstraints = false
-            scrollView.widthAnchor.constraint(equalToConstant: 420).isActive = true
-            scrollView.heightAnchor.constraint(equalToConstant: 90).isActive = true
-            if let textView = scrollView.documentView as? NSTextView {
-                textView.string = text.count > 4000 ? String(text.prefix(4000)) + "\n…" : text
-                textView.isEditable = false
-                textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-            }
-            accessories.append(scrollView)
-        }
-        if request.showTab != nil {
-            let button = NSButton(title: "Show Tab", target: controls, action: #selector(SheetControls.showTabClicked(_:)))
-            button.bezelStyle = .rounded
-            button.controlSize = .small
-            accessories.append(button)
-        }
-        if !accessories.isEmpty {
-            let stack = NSStackView(views: accessories)
-            stack.orientation = .vertical
-            stack.alignment = .leading
-            stack.spacing = 8
-            // NSAlert sizes the accessory from its frame, so give the stack its fitted size.
-            stack.frame = NSRect(origin: .zero, size: stack.fittingSize)
-            alert.accessoryView = stack
-        }
-
-        alert.addButton(withTitle: "Allow")
-        var siteButton: NSApplication.ModalResponse?
-        if let siteOrigin {
-            let host = URL(string: siteOrigin)?.host() ?? siteOrigin
-            alert.addButton(withTitle: "Allow on \(host)")
-            siteButton = .alertSecondButtonReturn
-        }
-        let deny = alert.addButton(withTitle: "Deny")
-        deny.keyEquivalent = "\u{1b}" // Esc
-
-        // Close the sheet after the timeout; an unanswered request is treated as "no".
-        // ("Show Tab" moves the deadline, hence the loop.)
-        let timer = Task {
-            while !Task.isCancelled, ContinuousClock.now < controls.deadline {
-                try? await Task.sleep(until: controls.deadline, clock: .continuous)
-            }
-            guard !Task.isCancelled else { return }
-            window.endSheet(alert.window, returnCode: .abort)
-        }
-        let response = await alert.beginSheetModal(for: window)
-        timer.cancel()
-
-        if response == .abort { return .timedOut }
-        if response == .alertFirstButtonReturn { return .approved }
-        if let siteButton, response == siteButton { return .approvedSite }
-        return .denied
     }
 
     /// "claude-code" → "Claude Code".
