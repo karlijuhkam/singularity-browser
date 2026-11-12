@@ -497,6 +497,14 @@ needs the owner's own look (no builder launched a copy of the app, see R2).
    into. It is in `IDEAS.md` under "New, not yet decided".
 10. **herdr-core**: when `hc attach` ends but the shell lives on, the tab's entry stays (the agent
     may still be running in herdr).
+11. **Banners.** A level-1 entry that arrives hidden behind a held request of its tab (Claude
+    Code's `blocked` record just after its permission hook) gets no banner; in the other order
+    its banner is withdrawn at once. Only banners this copy of the app posted are withdrawn (a
+    development copy shares the bundle id, and so macOS's list of delivered banners). Before
+    each banner the notification setting is read again, and macOS is asked only while it is
+    undetermined: a "no" or a missed prompt is not remembered for the run.
+12. **The permission card** shows the fields that say where or what first, then the rest; a card
+    whose input was too long to show in full can only be denied or taken to the terminal (R23).
 
 ### Rulings
 
@@ -525,7 +533,9 @@ needs the owner's own look (no builder launched a copy of the app, see R2).
   answered in the terminal (Yes there does not end the hook). A held question is not released
   by "working", because Claude Code reports working while the question hook runs; it goes back
   on end of turn, done, idle or the program exiting. *Cost if wrong:* a stale permission card
-  until the hold limit.
+  until the hold limit. *Cost of the rule itself:* answering one of several held permissions in
+  the terminal makes the tab report working, which hands the other held permissions of that tab
+  back to the terminal (their cards go; they are answered there).
 - **R8. Claude Code's second, permission-style request for a question** (it sends one whenever
   the question went back to the terminal) gets "no decision" at once and never makes a card.
   *Cost if wrong:* none seen.
@@ -533,17 +543,19 @@ needs the owner's own look (no builder launched a copy of the app, see R2).
   summary in its status record, whichever arrives first. *Cost if wrong:* the card shows the
   summary.
 - **R10. Small review findings were fixed at once** rather than parked. *Cost:* extra fix rounds.
-- **R11. "Installed" means exactly what Install writes** (same matcher, same timeouts). A hook
-  of ours with an old timeout, or only some of the three, reads as not installed, so the button
-  says Install and repairs it. *Cost if wrong:* one extra Install press after a change.
+- **R11. "Installed" means exactly what Install writes** (same command, see R21; same matcher,
+  same timeouts). A hook of ours with an old timeout or the old bare command, or only some of
+  the three, reads as not installed, so the button says Install and repairs it. *Cost if wrong:*
+  one extra Install press after a change.
 - **R12. At most 5 browser approvals wait per Space;** one more is denied at once. *Why:* a page
   calling `prompt()` in a loop would otherwise flood cards, banners and Dock bounces (the sheet
   showed one at a time). *Cost if wrong:* an agent making more than 5 approval-needing calls at
   once in one Space gets some denied and has to retry.
-- **R13. Allow, Allow on <site> and Deny ignore clicks for 0.5 s** after the inbox appears or a
-  card is added, removed or moved. *Why:* the second click of a double-click on Deny must not land
-  on the next card's Allow, and an inbox opening by itself must not catch a click meant for the
-  page. *Cost if wrong:* a quick deliberate click is ignored once.
+- **R13. Every answer button ignores clicks for 0.5 s** after the inbox appears or a card is
+  added, removed or moved: an approval's Allow, Allow on <site> and Deny, a question's options
+  and Send, and a permission's Allow and Deny. *Why:* the second click of a double-click on Deny
+  must not land on the next card's Allow, and an inbox opening by itself must not catch a click
+  meant for the page. *Cost if wrong:* a quick deliberate click is ignored once.
 - **R14. An answer is checked against the Space's current policy:** an Allow given after the
   Space was switched to read-only (or deleted) becomes a deny. The approval rules themselves are
   unchanged. *Cost if wrong:* none seen.
@@ -553,19 +565,53 @@ needs the owner's own look (no builder launched a copy of the app, see R2).
 - **R16. A hook request counts only when it comes from a program running inside that tab**
   (checked through the process tree); otherwise "no decision". *Why:* the tab's id is inherited
   by tmux or screen started in a Singularity tab, and Claude Code in a terminal outside
-  Singularity would then send its questions to the inbox. *Cost if wrong:* where the process tree
-  can't show the link (a tool that re-parents Claude Code), questions stay in the terminal.
+  Singularity would then send its questions to the inbox. *Cost:* where the process tree can't
+  show the link, questions stay in the terminal. That includes Claude Code running inside tmux,
+  screen or any other multiplexer that daemonises, even one started in a Singularity tab, in
+  both terminal modes (its server is not a descendant of the tab's shell): no level 2, Claude
+  Code shows its own prompt, and level 1 works only as far as the multiplexer passes OSC
+  sequences through.
 - **R17. The app answers each request with a "got it" byte within 5 s,** or the helper gives up
   and Claude Code shows its own prompt. *Why:* a hung app would otherwise leave Claude Code on a
   spinner for up to an hour. *Cost if wrong:* if Singularity is busy for more than 5 s, that one
   question falls back to the terminal.
 - **R18. At most 5 held requests per tab;** a sixth gets "no decision" at once. *Cost if wrong:* a
   sixth simultaneous question or permission from one tab shows only in the terminal.
+- (R19 and R20 were build-process calls with no effect on behaviour: the Install row's button is
+  shown or left out, never greyed out; main was merged into the branch before the final review.)
+- **R21. The hook command is guarded:** Install writes each hook as
+  `'<path to singularity-hook>' 2>/dev/null || cat >/dev/null` (the path quoted as for a shell).
+  *Why:* Claude Code runs the hook in every session, also outside Singularity, and the helper is
+  missing whenever the app bundle is moved, deleted, being rebuilt (`scripts/build-app.sh`
+  removes it first) or swapped by an update; the bare path then made `sh` print "No such file or
+  directory" and exit 127, a hook error in every session. With the guard that message is hidden,
+  `cat` reads the hook input to the end (a large Write would otherwise fail on a closed pipe) and
+  the hook exits 0 with no output: no decision. The helper's reply on stdout passes unchanged.
+  A hook of ours written the old way (the bare quoted path) still counts as ours but not
+  current, so the row says Install and repairs it; Remove takes out both forms. *Cost if
+  wrong:* a helper that fails in some other way is silent too (its error messages are hidden),
+  and Claude Code shows its own prompt.
+- **R22. Working outranks done** when a tab has several status records: blocked > error >
+  working > done > idle. *Why:* Claude Code keeps records for its subagents and tasks; one that
+  finished while the main turn goes on made the tab look done (a false done card and banner,
+  the tab's held requests handed back, and no banner at the real end). Not yet seen against a
+  live Claude Code turn with a subagent. *Cost if wrong:* a tab whose child record keeps saying
+  working after the turn ended shows no done card until that record goes.
+- **R23. A permission that cannot be shown in full can only be denied or taken to the
+  terminal.** The card shows the fields that say where or what first, each on its own line as
+  `name: value` (`file_path`, `path`, `notebook_path`, `command`, `url`, `pattern`,
+  `description`, those that are text, in that order; for Bash the command first), then the
+  other fields as sorted JSON, all cut at 4000 characters. When it had to be cut, the card says
+  "Too long to show in full." and offers only Deny and Go to terminal, and the app refuses an
+  Allow for it from anywhere (the request keeps waiting). *Why:* the owner must never approve
+  what they can't see; before, a `Write` of a file over about 4000 characters showed no
+  destination path at all, because `content` sorts before `file_path`. *Cost if wrong:* a long
+  command or a big file write is allowed in the terminal, not in the inbox.
 
 ### Known rough edges (left for later)
 
-- If the owner refuses banners when macOS asks and then allows them in System Settings, banners
-  stay off until Singularity is restarted.
+- Banners left over from an earlier run of the app (or a crash) are not withdrawn by the next
+  run: each run withdraws only the banners it posted itself (see "Differs" 11).
 - Remove takes out a `"hooks": {}` or `"Stop": []` that was empty before Install, if the owner
   had such empty entries himself.
 - An end-of-turn hook from one Claude Code session hands back held requests of every session in
