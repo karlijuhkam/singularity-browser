@@ -35,6 +35,18 @@ expect_not "real data: only a variable whose name ends in SINGULARITY_HOME" \
 expect_not "real data: empty text (the process ended)" \
   has_own_data_folder ""
 
+# copy_decision <ps text> <still running>: the only way run.sh decides to signal a pid.
+OWN="$APP_CMD HOME=/Users/someone SINGULARITY_HOME=/Users/someone/Singularity-dev"
+REAL="$APP_CMD HOME=/Users/someone LOGNAME=someone"
+decision_is() { [ "$(copy_decision "$2" "$3")" = "$1" ]; }
+expect "decision: own data folder, running → signal"            decision_is signal "$OWN" 1
+expect "decision: real data, running → refuse"                  decision_is refuse "$REAL" 1
+expect "decision: environment unreadable, running → refuse"     decision_is refuse "$APP_CMD" 1
+expect "decision: empty text, still running → refuse"           decision_is refuse "" 1
+expect "decision: relative SINGULARITY_HOME, running → refuse"  decision_is refuse "$APP_CMD SINGULARITY_HOME=dev" 1
+expect "decision: exited (empty text) → ignore"                 decision_is ignore "" 0
+expect "decision: exited after the read → ignore"               decision_is ignore "$OWN" 0
+
 expect     "data folder: absolute path"        usable_data_folder /private/tmp/sg-dev
 expect_not "data folder: relative path"        usable_data_folder dev
 expect_not "data folder: unexpanded ~/"        usable_data_folder "~/dev"
@@ -50,6 +62,15 @@ expect "run.sh: the real-data check comes before the build" \
   [ "$(line_of 'refuse_copy_on_real_data   #')" -lt "$BUILD_LINE" ]
 expect "run.sh: kill only after the checks" \
   [ "$(line_of 'kill -TERM')" -gt "$BUILD_LINE" ]
+# Exactly one kill, of one pid, in the "signal" branch of a fresh pid_decision.
+expect "run.sh: one kill, for a single pid" \
+  [ "$(grep -c 'kill ' "$ROOT/scripts/run.sh")" = 1 -a -n "$(grep -F 'kill -TERM "$pid"' "$ROOT/scripts/run.sh")" ]
+expect "run.sh: the kill is in the signal branch of pid_decision" \
+  [ "$(line_of 'case "$(pid_decision "$pid")" in')" -lt "$(line_of '    signal)')" \
+    -a "$(line_of '    signal)')" -lt "$(line_of 'kill -TERM')" \
+    -a "$(( $(line_of 'kill -TERM') - $(line_of '    signal)') ))" -le 2 ]
+expect "run.sh: the wait is only for the signalled pids" \
+  grep -q 'for pid in \$signalled' "$ROOT/scripts/run.sh"
 
 echo
 if (( failures )); then echo "$failures run test(s) failed"; exit 1; fi

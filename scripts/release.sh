@@ -219,7 +219,7 @@ if [[ "$MODE" == release ]]; then
 $CHANGES"
   # Running it again after a failure in step 7 or 8: the release commit is HEAD, so Info.plist already
   # has this version and the run would only say "not higher". Say how to finish it instead.
-  if [[ "$VERSION" == "$CURRENT_VERSION" && "$(git log -1 --format=%s)" == "Release $VERSION" ]] \
+  if [[ "$VERSION" == "$CURRENT_VERSION" && "$(git log -1 --no-show-signature --format=%s)" == "Release $VERSION" ]] \
      && ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
     FROM=7   # origin/main as this clone last saw it: already the release commit means it was pushed
     [[ "$(git rev-parse -q --verify origin/main || true)" == "$(git rev-parse HEAD)" ]] && FROM=8
@@ -566,7 +566,7 @@ else
   {
     echo "# Release notes for Singularity $VERSION: one line per point. Lines starting with # are left out."
     echo "# An empty file cancels the release."
-    git log --format='%s' ${PREVIOUS_TAG:+"$PREVIOUS_TAG..HEAD"}
+    git log --no-show-signature --format='%s' ${PREVIOUS_TAG:+"$PREVIOUS_TAG..HEAD"}
   } >"$NOTES"
   ${EDITOR:-vi} "$NOTES"
   sed -i '' '/^#/d' "$NOTES"
@@ -603,16 +603,24 @@ will_write "$RELEASE_NOTES"
 sed -e '/^[[:space:]]*$/d' -e 's/^/- /' "$NOTES" >"$RELEASE_NOTES"
 
 # ---- a last look before the steps that cannot be undone -----------------------------------------
-echo
-echo "Ready to publish Singularity $VERSION (build $BUILD):"
-if (( NOTARIZE )); then
-  echo "  notarized:  yes"
-else
-  echo "  notarized:  NO (Gatekeeper stops it on other Macs)"
+publish_summary() {
+  echo
+  echo "Ready to publish Singularity $VERSION (build $BUILD):"
+  if (( NOTARIZE )); then
+    echo "  notarized:  yes"
+  else
+    echo "  notarized:  NO (Gatekeeper stops it on other Macs)"
+  fi
+  echo "  signed by:  $IDENTITY_NAME"
+  echo "  release notes:"
+  sed 's/^/    /' "$RELEASE_NOTES"
+}
+publish_summary
+# The answer is read from the terminal (ask_to_publish, which also asks there). When stdout goes
+# somewhere else, such as a log file, the summary is shown in the terminal too.
+if [[ "$ASSUME_YES" == 0 && ! -t 1 ]] && { : >/dev/tty; } 2>/dev/null; then
+  publish_summary >/dev/tty
 fi
-echo "  signed by:  $IDENTITY_NAME"
-echo "  release notes:"
-sed 's/^/    /' "$RELEASE_NOTES"
 ask_to_publish "$ASSUME_YES" || fail "not published; the release is cancelled."
 
 # ---- step 7: commit and push --------------------------------------------------------------------

@@ -100,14 +100,17 @@ expect_not "origin: a path below it"         origin_is_repo https://github.com/o
 expect_not "origin: a local path"            origin_is_repo /private/tmp/owner/repo owner/repo
 
 # ask_to_publish reads the answer from a terminal (a file here); only y or Y publishes.
+# The question goes to the terminal too ($TMP/shown here), not to stdout, which may be a log file.
 ask() {   # ask <--yes: 0|1> <answer, or "none" for no terminal>; output in $OUT
   local status=0 terminal="$TMP/terminal"
+  : >"$TMP/shown"
   if [[ "$2" == none ]]; then terminal="$TMP/no-such-terminal"; else printf '%s\n' "$2" >"$terminal"; fi
-  OUT="$(ask_to_publish "$1" "$terminal" 2>&1 </dev/null)" || status=$?
+  OUT="$(ask_to_publish "$1" "$terminal" "$TMP/shown" 2>&1 </dev/null)" || status=$?
   return "$status"
 }
 expect     "publish? y publishes"                ask 0 y
-expect     "publish? … the question was asked"   contains "$OUT" "Publish? [y/N]"
+expect     "publish? … asked in the terminal"    grep -qF "Publish? [y/N]" "$TMP/shown"
+expect_not "publish? … not on stdout"            contains "$OUT" "Publish?"
 expect     "publish? Y publishes"                ask 0 Y
 expect_not "publish? n stops"                    ask 0 n
 expect_not "publish? yes stops (only y or Y)"    ask 0 yes
@@ -270,6 +273,8 @@ if [[ -f "$ROOT/scripts/lib/release-guard.sh" ]]; then
   git -C "$REPO" -c user.name=test -c user.email=test@invalid commit -q -m "Release 9.9.9" -- Resources/Info.plist
   mkdir -p "$REPO/dist"
   for file in Singularity-9.9.9.zip appcast.xml release-notes.md; do echo "from the failed run" > "$REPO/dist/$file"; done
+  # log.showSignature adds gpg's lines to `git log` when commits are signed; the subject must still match.
+  git -C "$REPO" config log.showSignature true
   expect_not "re-run: refused"                          release 9.9.9
   expect_not "re-run: … not \"not higher\""             contains "$OUT" "not higher"
   expect_not "re-run: … not \"Nothing was pushed\""     contains "$OUT" "Nothing was pushed"
@@ -301,6 +306,7 @@ if [[ -f "$ROOT/scripts/lib/release-guard.sh" ]]; then
   git -C "$REPO" -c user.name=test -c user.email=test@invalid commit -q --allow-empty -m "Release 9.9.9 notes"
   expect_not "re-run other subject: refused"            release 9.9.9
   expect     "re-run other subject: … not higher"       contains "$OUT" "not higher"
+  git -C "$REPO" config --unset log.showSignature
   rm -rf "$REPO/dist"
   reset_repo
   expect     "re-run: the repository is back"           plist_unchanged

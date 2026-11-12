@@ -28,23 +28,24 @@ origin_is_repo() {
   [[ "$(tr '[:upper:]' '[:lower:]' <<<"$path")" == "$(tr '[:upper:]' '[:lower:]' <<<"$2")" ]]
 }
 
-# ask_to_publish <1 if --yes was given, else 0> [terminal]: the last question before the release
-# commit. Succeeds with --yes, or when the answer typed in the terminal is y or Y. The answer is read
-# from the terminal itself (/dev/tty; the second argument is for tests), never from stdin, which can
-# be a pipe. Without a terminal it refuses, unless --yes was given.
+# ask_to_publish <1 if --yes was given, else 0> [answer from] [question to]: the last question before
+# the release commit. Succeeds with --yes, or when the answer typed in the terminal is y or Y. The
+# question is written to the terminal and the answer read from it (/dev/tty; the two other arguments
+# are for tests), never stdin/stdout, which can be a pipe or a log file. Without a terminal it
+# refuses, unless --yes was given.
 ask_to_publish() {
   local answer=""
   if [[ "$1" == 1 ]]; then
     echo "Publishing without asking (--yes)."
     return 0
   fi
-  local terminal="${2:-/dev/tty}"
+  local from="${2:-/dev/tty}" to="${3:-/dev/tty}"
   # Opening /dev/tty fails when the script has no terminal (started by another program).
-  if ! { : <"$terminal"; } 2>/dev/null; then
+  if ! { : <"$from"; } 2>/dev/null || ! { : >>"$to"; } 2>/dev/null; then
     echo "error: there is no terminal to answer \"Publish?\"; run the release in a terminal, or add --yes." >&2
     return 1
   fi
-  printf 'Publish? [y/N] '
-  read -r answer <"$terminal" || true
+  printf 'Publish? [y/N] ' >>"$to"
+  read -r answer <"$from" || true
   [[ "$answer" == y || "$answer" == Y ]]
 }
