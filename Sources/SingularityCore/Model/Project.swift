@@ -24,6 +24,15 @@ public struct Project: Codable, Hashable, Identifiable, Sendable {
         return trimmed.isEmpty ? Self.defaultName(forPath: path) : trimmed
     }
 
+    /// A project for a folder chosen in a file panel (an absolute path): named after the folder,
+    /// with a path under the home folder stored as "~/…" so space.json stays portable.
+    public static func forFolder(_ absolutePath: String, home: String = NSHomeDirectory()) -> Project {
+        var path = absolutePath
+        while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+        let stored = HomePath.abbreviate(path, home: home)
+        return Project(name: defaultName(forPath: stored), path: stored)
+    }
+
     /// "~/Developer/acme-web" → "acme-web"; "~" → "Home".
     public static func defaultName(forPath path: String) -> String {
         let last = (path as NSString).lastPathComponent

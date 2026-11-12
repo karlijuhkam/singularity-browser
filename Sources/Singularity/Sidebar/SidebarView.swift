@@ -291,7 +291,8 @@ private struct SplitRow: View {
                     .contextMenu { TabContextMenu(tab: tab, space: space) }
                     // No drag source here: dragging the row reorders the whole split in the
                     // sidebar. Panes are rearranged by dragging their header on the page.
-                    .help(tab.displayTitle)
+                    // No room for a project tag on a chip, so the tooltip names it.
+                    .help(tab.displayTitle + (space.projectName(of: tab).map { " (\($0))" } ?? ""))
                 }
             }
         }
@@ -323,7 +324,21 @@ private struct FolderGroup: View {
                 TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id), atRow: row) }
             }
         } label: {
-            Label(folder.name, systemImage: folder.isExpanded ? "folder" : "folder.fill")
+            HStack(spacing: 6) {
+                Label(folder.name, systemImage: folder.isExpanded ? "folder" : "folder.fill")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                // The folder's own project: terminals opened in here start in it.
+                if let project = space.ownProject(ofFolder: folder.id) {
+                    Text(ProjectTag.short(project.displayName))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        // Keeps its width; the folder's name truncates instead.
+                        .fixedSize()
+                        .layoutPriority(1)
+                }
+            }
                 // A tab dropped on the folder itself goes to the end of it (also when collapsed or empty).
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -332,6 +347,18 @@ private struct FolderGroup: View {
                     TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id)) }
                 }
                 .contextMenu {
+                    Button("New Terminal") { state.openTerminal(inFolder: folder.id) }
+                    if !space.projects.isEmpty {
+                        Menu("Project") {
+                            // A Toggle in a menu is drawn as an item with a checkmark.
+                            Toggle("None", isOn: projectChoice(nil))
+                            Divider()
+                            ForEach(space.projects) { project in
+                                Toggle(project.displayName, isOn: projectChoice(project.id))
+                            }
+                        }
+                    }
+                    Divider()
                     Button("Rename…") {
                         state.nameRequest = NameRequest(title: "Rename Folder", initialValue: folder.name) { name in
                             state.renameFolder(folder.id, to: name)
@@ -352,6 +379,16 @@ private struct FolderGroup: View {
                     Button("Delete Folder (keep contents)") { state.deleteFolder(folder.id) }
                 }
         }
+    }
+}
+
+extension FolderGroup {
+    /// On when `projectID` is this folder's own project (nil = "None"); switching it on chooses it.
+    fileprivate func projectChoice(_ projectID: UUID?) -> Binding<Bool> {
+        Binding(
+            get: { space.ownProject(ofFolder: folder.id)?.id == projectID },
+            set: { isOn in if isOn { state.setFolderProject(folder.id, projectID) } }
+        )
     }
 }
 

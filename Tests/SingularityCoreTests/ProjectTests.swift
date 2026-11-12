@@ -240,6 +240,17 @@ import Testing
         #expect(f.space.folder(f.loose.id)?.projectID == nil)
     }
 
+    /// "Add Project…" in Edit Space: the chosen folder becomes a project named after it.
+    @Test func projectForAChosenFolder() {
+        let project = Project.forFolder("/Users/x/Developer/acme-web", home: "/Users/x")
+        #expect(project.name == "acme-web" && project.path == "~/Developer/acme-web")
+        // Another user's folder that merely starts with the same letters is not under home.
+        #expect(Project.forFolder("/Users/xy/code", home: "/Users/x").path == "/Users/xy/code")
+        let home = Project.forFolder("/Users/x", home: "/Users/x")
+        #expect(home.path == "~" && home.name == "Home")
+        #expect(Project.forFolder("/opt/tools/", home: "/Users/x").name == "tools")
+    }
+
     @Test func emptyNameFallsBackToFolderName() {
         #expect(Project(name: "  ", path: "~/Developer/acme-web").displayName == "acme-web")
         #expect(Project(name: " Web ", path: "~/Developer/acme-web").displayName == "Web")

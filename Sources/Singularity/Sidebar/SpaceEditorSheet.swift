@@ -2,7 +2,7 @@ import AppKit
 import SingularityCore
 import SwiftUI
 
-/// Sheet for creating or editing a Space: name, colour, terminal working directory.
+/// Sheet for creating or editing a Space: name, colour, terminal working directory, projects.
 struct SpaceEditorSheet: View {
     @Environment(AppState.self) private var state
     @Environment(\.dismiss) private var dismiss
@@ -14,6 +14,7 @@ struct SpaceEditorSheet: View {
     @State private var agentsEnabled = false
     @State private var agentPolicy: AgentPolicy = .ask
     @State private var agentInspection = false
+    @State private var projects: [Project] = []
 
     private var existing: Space? { request.spaceID.flatMap { state.space($0) } }
 
@@ -24,6 +25,10 @@ struct SpaceEditorSheet: View {
 
             Form {
                 SpaceFields(name: $name, colorHex: $colorHex, workingDirectory: $workingDirectory)
+
+                LabeledContent("Projects") {
+                    ProjectsEditor(projects: $projects)
+                }
 
                 Toggle(isOn: $agentsEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -87,6 +92,7 @@ struct SpaceEditorSheet: View {
                 agentsEnabled = existing.agentsEnabled
                 agentPolicy = existing.agentPolicy
                 agentInspection = existing.agentInspection
+                projects = existing.projects
             } else {
                 // Pick the first colour no other Space uses yet.
                 let used = Set(state.spaces.map(\.colorHex))
@@ -97,14 +103,18 @@ struct SpaceEditorSheet: View {
 
     private func save() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
+        // A project whose name was cleared gets its folder's name back.
+        let projects = projects.map { Project(id: $0.id, name: $0.displayName, path: $0.path) }
         if let existing {
             state.updateSpace(existing.id, name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
                               agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
             state.setAgentInspection(agentInspection, spaceID: existing.id)
+            state.setProjects(projects, spaceID: existing.id)
         } else {
             let space = state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
                                           agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
             state.setAgentInspection(agentInspection, spaceID: space.id)
+            state.setProjects(projects, spaceID: space.id)
         }
         dismiss()
     }

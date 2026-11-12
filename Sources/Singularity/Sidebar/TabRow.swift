@@ -23,6 +23,10 @@ struct TabRow: View {
                 .strikethrough(isMissing)
                 .foregroundStyle(isMissing ? .secondary : .primary)
             Spacer(minLength: 0)
+            // A terminal's project, only when the folder header doesn't already say it.
+            if let project = space.projectTag(of: tab) {
+                ProjectTag(name: project)
+            }
             AgentBadge(tab: tab)
             if isHovering {
                 Button {
@@ -39,10 +43,19 @@ struct TabRow: View {
         }
         .agentBusyBackground(tab.id)
         .onHover { isHovering = $0 }
-        .help(isMissing ? "The file of this artifact is missing" : (tab.url?.absoluteString ?? ""))
+        .help(helpText)
         .contextMenu { TabContextMenu(tab: tab, space: space) }
         // Lets the row be dragged onto the page to build a split.
         .itemProvider { TabDrag.provider(for: tab.id) }
+    }
+}
+
+extension TabRow {
+    /// The row's tooltip: the address of a page, the project of a terminal.
+    fileprivate var helpText: String {
+        if isMissing { return "The file of this artifact is missing" }
+        if let project = space.projectName(of: tab) { return "Project: \(project)" }
+        return tab.url?.absoluteString ?? ""
     }
 }
 
