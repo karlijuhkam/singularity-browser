@@ -73,7 +73,7 @@ struct ProjectTag: View {
             .layoutPriority(1)
     }
 
-    /// At most 18 characters, cut in the middle: "goworkabit-web-frontend" → "gowork…frontend".
+    /// A name over 18 characters is cut in the middle: "acme-web-frontend-monorepo" → "acme-web…monorepo".
     static func short(_ name: String) -> String {
         guard name.count > 18 else { return name }
         return name.prefix(8) + "…" + name.suffix(8)

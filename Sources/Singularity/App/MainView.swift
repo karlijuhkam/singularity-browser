@@ -35,7 +35,12 @@ struct MainView: View {
             }
 
             if let mode = state.palette {
+                // `.id(mode)`: a new mode is a new palette, with an empty field and the first
+                // row selected. Without it, choosing "New Terminal" in the palette would hand the
+                // typed text and the selected row over to the project picker (SwiftUI keeps a
+                // view's @State while the view stays in place).
                 CommandPaletteView(mode: mode)
+                    .id(mode)
             }
         }
         // Let the sidebar run up under the (invisible) title bar, next to the traffic lights.

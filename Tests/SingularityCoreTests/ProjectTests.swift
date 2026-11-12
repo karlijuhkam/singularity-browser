@@ -130,6 +130,46 @@ import Testing
         #expect(try #require(f.space.tab(second)).section == .open)
     }
 
+    /// A new terminal that takes the selection must be on screen in the sidebar: its folder and
+    /// the folders around it open. (Folders imported from Arc all start closed.)
+    @Test func newTerminalOpensItsFolder() {
+        var f = make()
+        for index in f.space.folders.indices { f.space.folders[index].isExpanded = false }
+        f.space.addTerminal(directory: "~", projectID: nil, inFolder: f.inner.id, select: false)
+        #expect(f.space.folders.allSatisfy { !$0.isExpanded }) // a background tab opens nothing
+        f.space.addTerminal(directory: "~", projectID: nil, inFolder: f.inner.id, select: true)
+        #expect(f.space.folder(f.inner.id)?.isExpanded == true)
+        #expect(f.space.folder(f.task.id)?.isExpanded == true)
+        #expect(f.space.folder(f.loose.id)?.isExpanded == false)
+    }
+
+    /// A split is shown as one row in the folder of its first tab. A pane of it whose own tab
+    /// is not in that folder (a terminal opened in the split) still counts as being there.
+    @Test func splitPaneCountsAsItsSplitsFolder() {
+        var f = make()
+        var page = BrowserTab.web(URL(string: "https://example.com/ticket")!)
+        page.folderID = f.task.id
+        let pane = BrowserTab.terminal(workingDirectory: "~/Developer") // placed in Tabs, as split terminals are
+        let other = BrowserTab.web(URL(string: "https://example.com/other")!)
+        for tab in [page, pane, other] { f.space.append(tab) }
+        let first = f.space.split(pane.id, beside: page.id, edge: .right)
+        let second = f.space.split(other.id, beside: pane.id, edge: .bottom)
+        #expect(first && second)
+
+        f.space.selectedTabID = pane.id
+        #expect(f.space.folderForNewTerminal == f.task.id)
+        #expect(f.space.terminalStart(inFolder: f.space.folderForNewTerminal, alwaysAsk: false)
+                == .start(directory: "~/Developer/acme-web", projectID: f.web.id))
+        // A terminal split beside the web pane that sits in Tasks's split starts in Task's project.
+        #expect(f.space.splitTerminalStart(beside: other.id).projectID == f.web.id)
+        // A terminal without a project still means the Space's folder (the spec's rule).
+        #expect(f.space.splitTerminalStart(beside: pane.id).projectID == nil)
+
+        // Out of the split, the tab is just a tab in Tabs again.
+        f.space.removeFromSplit(pane.id)
+        #expect(f.space.folderForNewTerminal == nil)
+    }
+
     @Test func pickerOrder() {
         var f = make()
         #expect(f.space.projectChoices.map(\.name) == ["acme-web", "acme-docs", "Space folder"])

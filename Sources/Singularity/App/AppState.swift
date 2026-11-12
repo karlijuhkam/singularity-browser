@@ -1248,7 +1248,7 @@ final class AppState {
 
 // MARK: - Small UI request types
 
-enum PaletteMode: Equatable {
+enum PaletteMode: Hashable {
     /// Cmd+T / Cmd+K: results open in a new tab.
     case newTab
     /// Clicking the address row: URLs load in the selected tab.

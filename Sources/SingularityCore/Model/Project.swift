@@ -84,10 +84,20 @@ extension Space {
         return nil
     }
 
-    /// The folder a new terminal lands in: the selected tab's folder (nil when it has none).
+    /// The folder a new terminal lands in: the one the selected tab is shown in (nil = none).
     public var folderForNewTerminal: UUID? {
-        guard let folderID = selectedTab?.folderID else { return nil }
-        return folder(folderID)?.id
+        selectedTab.flatMap { folderShowing($0) }
+    }
+
+    /// The folder a tab is shown in: its own, or, for a pane of a split, the folder the split's
+    /// row is in. (A split is one sidebar row in the section of its first tab; a terminal opened
+    /// in that split is itself placed in Tabs, but to the user it is in that folder.)
+    public func folderShowing(_ tab: BrowserTab) -> UUID? {
+        if let own = tab.folderID.flatMap({ folder($0) }) { return own.id }
+        guard let group = splitGroup(containing: tab.id) else { return nil }
+        let members = Set(group.root.tabIDs)
+        let home = tabsInSidebarOrder.first { members.contains($0.id) }
+        return home?.folderID.flatMap { folder($0) }?.id
     }
 
     /// Where a new terminal starts, or that the picker must ask.
@@ -110,7 +120,7 @@ extension Space {
     public func splitTerminalStart(beside tabID: UUID) -> (directory: String, projectID: UUID?) {
         let spaceFolder: (String, UUID?) = (workingDirectory, nil)
         guard let tab = tab(tabID) else { return spaceFolder }
-        let chosen = tab.isTerminal ? project(tab.projectID) : effectiveProject(ofFolder: tab.folderID)
+        let chosen = tab.isTerminal ? project(tab.projectID) : effectiveProject(ofFolder: folderShowing(tab))
         return chosen.map { ($0.path, $0.id) } ?? spaceFolder
     }
 
@@ -141,13 +151,23 @@ extension Space {
     // MARK: - Changing
 
     /// Adds a terminal tab at the end of `folderID` (or of Tabs, when that folder doesn't exist).
+    /// With `select`, that folder and the folders around it are opened, so the selected tab's
+    /// row is on screen (folders imported from Arc start closed).
     @discardableResult
     public mutating func addTerminal(directory: String, projectID: UUID?, inFolder folderID: UUID?, select: Bool) -> UUID {
         var tab = BrowserTab.terminal(workingDirectory: directory)
         tab.projectID = project(projectID)?.id
         tab.folderID = folderID.flatMap { folder($0) }?.id
         append(tab)
-        if select { selectedTabID = tab.id }
+        if select {
+            selectedTabID = tab.id
+            var seen = Set<UUID>()
+            var current = tab.folderID
+            while let id = current, seen.insert(id).inserted, let index = folders.firstIndex(where: { $0.id == id }) {
+                folders[index].isExpanded = true
+                current = folders[index].parentID
+            }
+        }
         return tab.id
     }
 

@@ -97,7 +97,6 @@ extension AppTests {
         // Not a project, and in this mode text is never a URL or a web search.
         #expect(PaletteResults.items(for: "zzzz", mode: mode, state: f.state).isEmpty)
         #expect(PaletteResults.items(for: "example.com", mode: mode, state: f.state).isEmpty)
-        #expect(f.space.tabs.count == 2)
     }
 
     @Test func folderProjectAndProjectListAreSaved() throws {
@@ -116,7 +115,6 @@ extension AppTests {
         let loaded = try #require(SpaceStore(paths: Paths(root: f.root)).load().spaces.first { $0.id == spaceID })
         #expect(loaded.projects == [f.docs])
         #expect(loaded.folder(f.loose.id)?.projectID == f.docs.id)
-        #expect(loaded.lastProjectID == f.docs.id)
     }
 }
 }

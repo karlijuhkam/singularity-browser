@@ -200,8 +200,16 @@ Built as designed. Small things the design did not say, decided while building:
   tab's title truncates instead.
 - Clearing a project's name in Edit Space gives it its folder's name back on Save. "Add
   Project…" accepts several folders at once.
-- No extra scope line was added to `CLAUDE.md`: the item is in `IDEAS.md`'s approved list, which
-  the 2026-11-10 scope change already covers.
+- **One addition to the split rule.** A terminal opened in a split is still placed in Tabs, but
+  the split's row sits in the folder of its first tab. With such a pane focused, New Terminal
+  now treats it as being in that folder (lands there, starts in that folder's project), and a
+  split terminal opened beside a web pane of that split takes that folder's project. Without
+  this, a task folder holding "ticket page + terminal" as a split would ask every time and put
+  the new terminal in Tabs. The design did not cover this case.
+- A new terminal opens its folder (and the folders around it) in the sidebar if they were closed.
+- Choosing "New Terminal" in the command palette opens the picker with an empty field.
+- A project's folder cannot be changed in place: remove it and add it again (folders and
+  terminals that pointed at it lose it). Left out; say if it is missed.
 - A terminal row's tooltip names its project (also when the row shows no tag).
 - Not exercised by hand: this was verified with unit tests, `AppState` tests and off-screen
   pictures of the sidebar and Edit Space. `IDEAS.md` lists what is left for a hands-on check.
