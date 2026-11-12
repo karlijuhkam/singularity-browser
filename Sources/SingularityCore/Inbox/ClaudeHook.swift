@@ -17,6 +17,10 @@ public enum ClaudeHookEvent: Equatable, Sendable {
 public enum ClaudeHook {
     public static let noDecision = Data()            // empty stdout, exit 0
     public static let maxWireBytes = 2_000_000       // longer lines are dropped
+    /// The app's first byte on a connection it is going to answer (ASCII ACK), written from the
+    /// main actor: it shows the helper the app is alive. The helper waits a few seconds for it,
+    /// then gives up (no decision), and strips it from what it prints.
+    public static let ack: UInt8 = 0x06
     static let maxQuestions = 4
     static let maxOptions = 8
     static let toolNameLimit = 100

@@ -5,6 +5,12 @@ import SingularityCore
 /// What the inbox needs from a held Claude Code hook call. `HookConnection` is the real one; the
 /// tests use a fake that records the replies.
 protocol HookReplying: AnyObject, Sendable {
+    /// The process id of the helper on the other end, as the kernel reports it; nil if unknown.
+    var peerPID: pid_t? { get }
+    /// Writes the acknowledgement byte (`ClaudeHook.ack`) at once, before any reply: the helper
+    /// gives up after a few seconds without it. Called from the main actor, so it shows the app is
+    /// alive. Only the first call counts.
+    func acknowledge()
     /// Writes `data` as the hook's output and closes the connection. Only the first call counts.
     /// `ClaudeHook.noDecision` (empty) means "no decision": Claude Code shows its own prompt.
     func reply(_ data: Data)
@@ -54,6 +60,7 @@ final class HookSocket: @unchecked Sendable {
 /// something to read, including "the other side hung up" (a read of 0 bytes). While a request is
 /// held that is the only thing that can come, so it tells us the helper went away.
 final class HookConnection: HookReplying, @unchecked Sendable {
+    let peerPID: pid_t?
     private let fd: Int32
     private let idleLimit: Duration
     private let onRequest: HookSocket.Handler
@@ -73,11 +80,35 @@ final class HookConnection: HookReplying, @unchecked Sendable {
     private var peerLeft = false
     private var peerLeftReported = false
     private var replied = false
+    private var acknowledged = false
 
     fileprivate init(fd: Int32, idleLimit: Duration, onRequest: @escaping HookSocket.Handler) {
         self.fd = fd
         self.idleLimit = idleLimit
         self.onRequest = onRequest
+        // The process that connected (the kernel records it for Unix sockets). The inbox checks it
+        // runs inside the tab's shell.
+        var pid: pid_t = 0
+        var size = socklen_t(MemoryLayout<pid_t>.size)
+        if getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &size) == 0, pid > 0 {
+            peerPID = pid
+        } else {
+            peerPID = nil
+        }
+    }
+
+    func acknowledge() {
+        let first = lock.withLock {
+            defer { acknowledged = true }
+            return !acknowledged && !replied
+        }
+        guard first else { return }
+        queue.async {
+            guard self.phase == .held else { return }
+            // One byte into an empty socket buffer: a non-blocking write cannot come up short.
+            var byte = ClaudeHook.ack
+            _ = write(self.fd, &byte, 1)
+        }
     }
 
     var onClosedByPeer: (@Sendable () -> Void)? {

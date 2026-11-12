@@ -66,6 +66,32 @@ import Testing
     @Test func unknownProcessReturnsNil() {
         #expect(ProcessInspector.programName(pid: 999_999) == nil)
         #expect(ProcessInspector.currentDirectory(pid: 999_999) == nil)
+        #expect(ProcessInspector.parentPID(of: 999_999) == nil)
+    }
+
+    /// The hook's check that a request comes from inside the tab's shell.
+    @Test func descendantWalk() {
+        // 50 → 40 → 30 → 20 → 1 (launchd); 70 → 60 → 1; 90 ↔ 91 (a broken table, a loop).
+        let table: [pid_t: pid_t] = [50: 40, 40: 30, 30: 20, 20: 1, 70: 60, 60: 1, 90: 91, 91: 90]
+        func parent(_ pid: pid_t) -> pid_t? { table[pid] }
+        #expect(ProcessInspector.isDescendant(50, of: 30, parent: parent))
+        #expect(ProcessInspector.isDescendant(50, of: 20, parent: parent))
+        #expect(ProcessInspector.isDescendant(30, of: 30, parent: parent))       // the shell itself
+        #expect(!ProcessInspector.isDescendant(70, of: 30, parent: parent))      // another terminal
+        #expect(!ProcessInspector.isDescendant(20, of: 50, parent: parent))      // an ancestor is no descendant
+        #expect(!ProcessInspector.isDescendant(50, of: 1, parent: parent))       // launchd is everyone's
+        #expect(!ProcessInspector.isDescendant(90, of: 30, parent: parent))      // loop: ends, "no"
+        #expect(!ProcessInspector.isDescendant(80, of: 30, parent: parent))      // unknown process
+        #expect(!ProcessInspector.isDescendant(0, of: 30, parent: parent))
+        #expect(!ProcessInspector.isDescendant(-5, of: 30, parent: parent))
+        // Depth limit: a chain longer than maxDepth counts as "no".
+        func long(_ pid: pid_t) -> pid_t? { pid > 1000 ? pid - 1 : nil }
+        #expect(ProcessInspector.isDescendant(1010, of: 1000, maxDepth: 10, parent: long))
+        #expect(!ProcessInspector.isDescendant(1011, of: 1000, maxDepth: 10, parent: long))
+        // The real table: this test process is its parent's descendant, not the other way round.
+        #expect(ProcessInspector.parentPID(of: getpid()) == getppid())
+        #expect(ProcessInspector.isDescendant(getpid(), of: getppid()))
+        #expect(!ProcessInspector.isDescendant(getppid(), of: getpid()))
     }
 }
 

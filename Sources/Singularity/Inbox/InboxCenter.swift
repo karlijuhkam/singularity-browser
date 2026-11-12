@@ -46,6 +46,7 @@ final class InboxCenter {
     /// permission request, see `hookArrived`). Kept by entry id until it gets its one reply.
     private struct HeldRequest {
         let connection: any HookReplying
+        let tabID: UUID
         /// The question's original `tool_input` as JSON text, which `ClaudeHook.answerReply` reads
         /// again (the entry holds only cleaned text). Nil for a permission request.
         let toolInput: String?
@@ -57,6 +58,15 @@ final class InboxCenter {
     /// waiting entry). Safely below the hook's own `timeout` of 3600 s: when that runs out first,
     /// Claude Code kills the helper and the owner's answer would be lost. Tests shorten it.
     @ObservationIgnored var holdLimit: Duration = .seconds(3300)
+
+    /// At most this many requests are held per tab; one more gets "no decision" at once (its
+    /// prompt appears in the terminal). Bounds open connections and entries, e.g. for a runaway
+    /// loop of nested `claude -p` runs, which inherit the tab's variables.
+    static let maxHeldPerTab = 5
+
+    /// The tab's shell process id, for the check that a hook request comes from inside that tab.
+    /// Nil: ask the tab's terminal session. Tests set it (their helper is the test's own child).
+    @ObservationIgnored var tabShellPID: ((UUID) -> pid_t?)?
 
     /// At most this many approvals wait at once per Space; one more is denied at once. The sheet
     /// showed one at a time, so a page calling `prompt()` in a loop could not flood anything;
@@ -362,15 +372,25 @@ final class InboxCenter {
 
     /// A hook call from `singularity-hook`, relayed by the hook socket. Decides at once, or holds
     /// it as an entry until the owner answers. Every call gets exactly one reply on `connection`:
-    /// - a tab we don't know, a hook that isn't ours, or the AskUserQuestion permission stage
+    /// First the acknowledgement byte, written here on the main actor: the helper waits for it a
+    /// few seconds, so a stuck app costs Claude Code seconds, not the hook's hour. Then:
+    /// - a tab we don't know, a helper that does not run inside that tab's shell (see
+    ///   `comesFromTheTab`), a hook that isn't ours, or the AskUserQuestion permission stage
     ///   (its dialog is the question itself): "no decision" at once;
     /// - Stop: "no decision" at once (it never waits), and its text becomes the done entry's;
-    /// - a question or permission request while the owner looks at that terminal: "no decision"
-    ///   at once, so Claude Code shows its own prompt there;
+    /// - a question or permission request while the owner looks at that terminal, or with
+    ///   `maxHeldPerTab` already held for the tab: "no decision" at once, so Claude Code shows its
+    ///   own prompt there;
     /// - otherwise held: answered in the inbox, or handed back to the terminal ("no decision") by
     ///   any of the ways listed at `finishHeld`.
     func hookArrived(tabID: UUID, hookInput: Data, connection: any HookReplying) {
+        connection.acknowledge()
         guard let spaceID = state?.spaces.first(where: { $0.tab(tabID) != nil })?.id else {
+            connection.reply(ClaudeHook.noDecision)
+            return
+        }
+        guard comesFromTheTab(tabID, connection: connection) else {
+            logChange("hook from outside the tab's shell: no decision", tabID: tabID)
             connection.reply(ClaudeHook.noDecision)
             return
         }
@@ -411,7 +431,23 @@ final class InboxCenter {
         }
     }
 
+    /// SINGULARITY_TAB is inherited by everything started in the tab, including a tmux or screen
+    /// server that later serves panes in Terminal.app; Claude Code there must not send its
+    /// questions here. So the helper must run inside this tab's shell: a descendant of its
+    /// process. Peer or shell unknown: "no". (A tmux server started inside a herdr-core shell
+    /// still counts as inside; accepted.)
+    private func comesFromTheTab(_ tabID: UUID, connection: any HookReplying) -> Bool {
+        guard let peer = connection.peerPID,
+              let shell = tabShellPID?(tabID) ?? state?.terminals.existingSession(tabID)?.shellPID else { return false }
+        return ProcessInspector.isDescendant(peer, of: shell)
+    }
+
     private func hold(_ kind: InboxKind, toolInput: String?, tabID: UUID, spaceID: UUID, connection: any HookReplying) {
+        guard heldRequests.values.filter({ $0.tabID == tabID }).count < Self.maxHeldPerTab else {
+            logChange("already \(Self.maxHeldPerTab) held for the tab: no decision", tabID: tabID)
+            connection.reply(ClaudeHook.noDecision)
+            return
+        }
         let program = state?.terminals.existingSession(tabID)?.foregroundProgram
         let tab = facts(tabID: tabID, spaceID: spaceID, foregroundProgram: program)
         let agent = InboxRules.agentName(statusApp: "claude-code", foregroundProgram: program)
@@ -420,7 +456,7 @@ final class InboxCenter {
             connection.reply(ClaudeHook.noDecision)
             return
         }
-        heldRequests[entry.id] = HeldRequest(connection: connection, toolInput: toolInput)
+        heldRequests[entry.id] = HeldRequest(connection: connection, tabID: tabID, toolInput: toolInput)
         startHoldTimer(entry.id)
         // Set after the record exists: if the helper is already gone, this calls back at once.
         let id = entry.id
@@ -482,7 +518,7 @@ final class InboxCenter {
         held.connection.onClosedByPeer = nil
         let removed = removeEntry ? inbox.remove(id) : nil
         if removed != nil { listDidChange() }
-        logChange(why, tabID: removed?.tabID)
+        logChange(why, tabID: held.tabID)
         if let reply { held.connection.reply(reply) }
     }
 

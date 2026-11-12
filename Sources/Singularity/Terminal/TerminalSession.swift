@@ -87,6 +87,16 @@ final class TerminalSession {
         start(in: workingDirectory)
     }
 
+    /// The shell's process id while it runs: the view's own child, or with herdr-core the shell
+    /// herdr-core reports (the view's child is `hc attach`). The inbox only takes Claude Code hook
+    /// requests from processes below it.
+    var shellPID: pid_t? {
+        guard isRunning else { return nil }
+        if let herdrShellPID { return herdrShellPID }
+        guard let pid = view.process?.shellPid, pid > 0 else { return nil }
+        return pid
+    }
+
     /// Waits until the shell has printed its first output (it is ready for input), at most `timeout`.
     func waitUntilReady(timeout: Duration = .seconds(5)) async {
         let deadline = ContinuousClock.now + timeout

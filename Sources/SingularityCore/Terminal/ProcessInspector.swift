@@ -22,6 +22,32 @@ public enum ProcessInspector {
         return name.isEmpty ? nil : name
     }
 
+    /// The process's parent, from the kernel's process table (`proc_pidinfo`, BSD info).
+    public static func parentPID(of pid: pid_t) -> pid_t? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard pid > 0, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return pid_t(info.pbi_ppid)
+    }
+
+    /// Whether `pid` is `ancestor` itself or one of its descendants: walks up the parent chain at
+    /// most `maxDepth` steps. Unknown processes, launchd (pid 1) as the ancestor, a loop in the
+    /// chain (only with a broken `parent`), or too long a chain all count as "no".
+    /// - Parameter parent: the parent lookup; tests pass their own.
+    public static func isDescendant(_ pid: pid_t, of ancestor: pid_t, maxDepth: Int = 64,
+                                    parent: (pid_t) -> pid_t? = parentPID(of:)) -> Bool {
+        guard pid > 0, ancestor > 1 else { return false }
+        var current = pid
+        var seen: Set<pid_t> = []
+        for _ in 0...maxDepth {
+            if current == ancestor { return true }
+            guard current > 1, seen.insert(current).inserted,
+                  let next = parent(current), next > 0 else { return false }
+            current = next
+        }
+        return false
+    }
+
     /// The process's current working directory.
     public static func currentDirectory(pid: pid_t) -> String? {
         var info = proc_vnodepathinfo()

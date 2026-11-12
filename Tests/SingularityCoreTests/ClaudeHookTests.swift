@@ -179,6 +179,8 @@ import Testing
         // Not JSON: the hook is sent as {} (the app then ignores it).
         #expect(String(decoding: ClaudeHook.wireLine(tabID: "t", hookInput: Data("nope".utf8)), as: UTF8.self)
                 == #"{"hook":{},"tab":"t"}"# + "\n")
+        // The acknowledgement byte (the helper's copy is `ackByte`).
+        #expect(ClaudeHook.ack == 0x06)
     }
 
     @Test func parseWireLineRejectsBadLines() {

@@ -20,9 +20,21 @@ extension AppTests {
     final class FakeConnection: HookReplying, @unchecked Sendable {
         private let lock = NSLock()
         private var stored: [Data] = []
+        private var ackCount = 0
         var onClosedByPeer: (@Sendable () -> Void)?
+        /// This test process by default, which the fixture names as the tab's shell.
+        let peerPID: pid_t?
+
+        init(peerPID: pid_t? = getpid()) {
+            self.peerPID = peerPID
+        }
 
         var replies: [Data] { lock.withLock { stored } }
+        var acks: Int { lock.withLock { ackCount } }
+
+        func acknowledge() {
+            lock.withLock { ackCount += 1 }
+        }
 
         func reply(_ data: Data) {
             lock.withLock { stored.append(data) }
@@ -92,6 +104,9 @@ extension AppTests {
         state.inbox.onArrival = { recorder.arrivals.append($0) }
         state.inbox.onChange = {}
         state.inbox.requestAttention = {}
+        // The tab's "shell" is this test process: the fake connections say they come from it, and
+        // the real helper the tests start is its child, so both count as inside the tab.
+        state.inbox.tabShellPID = { _ in getpid() }
         return Fixture(root: root, state: state, one: one, two: two, tab: tab, recorder: recorder)
     }
 
@@ -165,6 +180,7 @@ extension AppTests {
         defer { tearDown(f) }
         let connection = f.arrive(Self.questionJSON)
         #expect(connection.replies.isEmpty)
+        #expect(connection.acks == 1)
         let entry = try #require(f.held.first)
         #expect(f.held.count == 1)
         #expect(entry.kind == .question([InboxQuestion(question: Self.question, header: "Database",
@@ -293,7 +309,50 @@ extension AppTests {
         defer { tearDown(f) }
         let connection = f.arrive(Self.questionJSON, tabID: UUID())
         #expect(connection.replies == [ClaudeHook.noDecision])
+        #expect(connection.acks == 1)
         #expect(f.center.inbox.entries.isEmpty)
+    }
+
+    /// SINGULARITY_TAB leaks into whatever the tab starts (a tmux server serving Terminal.app
+    /// panes later): a helper that does not run inside the tab's shell gets "no decision" at once,
+    /// for questions, permissions and Stop alike. So does an unknown peer or shell.
+    @Test func requestsFromOutsideTheTabAreNotHeld() throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        f.status(.done, "user picked SQLite")
+        for json in [Self.questionJSON, Self.permissionJSON(), Self.stopJSON] {
+            // launchd is no descendant of this process; nor is "unknown".
+            for peer in [pid_t(1), nil] {
+                let connection = f.arrive(json, connection: FakeConnection(peerPID: peer))
+                #expect(connection.replies == [ClaudeHook.noDecision])
+            }
+        }
+        #expect(f.held.isEmpty)
+        #expect(f.recorder.arrivals.count == 1)   // the done entry only
+        #expect(f.center.inbox.visible.first?.message == "user picked SQLite")
+
+        // The tab's shell is not known (no terminal session for it): "no" as well.
+        f.center.tabShellPID = nil
+        let connection = f.arrive(Self.questionJSON)
+        #expect(connection.replies == [ClaudeHook.noDecision])
+        #expect(f.held.isEmpty)
+    }
+
+    /// At most `maxHeldPerTab` held per tab; the next one goes to the terminal at once.
+    @Test func atMostFiveHeldPerTab() throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        #expect(InboxCenter.maxHeldPerTab == 5)
+        let held = (0..<5).map { f.arrive(Self.permissionJSON("rm \($0).txt")) }
+        let extra = f.arrive(Self.questionJSON)
+        #expect(f.held.count == 5)
+        #expect(held.allSatisfy { $0.replies.isEmpty })
+        #expect(extra.replies == [ClaudeHook.noDecision])
+        // One answered: room for one more.
+        f.center.decidePermission(f.held[0].id, allow: false)
+        let next = f.arrive(Self.questionJSON)
+        #expect(next.replies.isEmpty)
+        #expect(f.held.count == 5)
     }
 
     @Test func twoPermissionsFromOneTabAreTwoEntries() throws {
@@ -590,9 +649,17 @@ extension AppTests {
         private let errors = Pipe()
         private let input = Pipe()
         let started = ContinuousClock.now
+        /// Writes stdin off the main actor (it may be larger than the pipe holds) and tells whether
+        /// all of it was written. Claude Code reports a hook that stops reading early (EPIPE) as a
+        /// failed hook, so every test checks this.
+        private var writer: Task<Bool, Never>?
 
-        init(_ url: URL, environment: [String: String], stdin: String) throws {
-            // The helper may exit without reading its stdin; writing to it must not kill the tests.
+        convenience init(_ url: URL, environment: [String: String], stdin: String) throws {
+            try self.init(url, environment: environment, stdin: Data(stdin.utf8))
+        }
+
+        init(_ url: URL, environment: [String: String], stdin: Data) throws {
+            // A helper that stopped reading must show up as a failed write, not kill the tests.
             signal(SIGPIPE, SIG_IGN)
             process.executableURL = url
             process.environment = environment
@@ -600,14 +667,26 @@ extension AppTests {
             process.standardOutput = output
             process.standardError = errors
             try process.run()
-            try? input.fileHandleForWriting.write(contentsOf: Data(stdin.utf8))
-            try? input.fileHandleForWriting.close()
+            let handle = input.fileHandleForWriting
+            writer = Task.detached {
+                defer { try? handle.close() }
+                do {
+                    try handle.write(contentsOf: stdin)
+                    return true
+                } catch {
+                    return false
+                }
+            }
         }
 
         /// Waits for the helper to exit; its status, stdout and stderr, and how long it ran.
-        func finish(limit: Duration = .seconds(10)) async throws -> (status: Int32, stdout: Data, stderr: Data, took: Duration) {
+        /// Expects that the helper read all of its stdin.
+        func finish(limit: Duration = .seconds(10), sourceLocation: SourceLocation = #_sourceLocation) async throws
+            -> (status: Int32, stdout: Data, stderr: Data, took: Duration) {
             try await waitUntil("the helper to exit", limit: limit) { !process.isRunning }
             let took = ContinuousClock.now - started
+            let wroteAll = await writer?.value ?? false
+            #expect(wroteAll, "the helper did not read all of its stdin", sourceLocation: sourceLocation)
             let stdout = output.fileHandleForReading.readDataToEndOfFile()
             let stderr = errors.fileHandleForReading.readDataToEndOfFile()
             return (process.terminationStatus, stdout, stderr, took)
@@ -730,6 +809,108 @@ extension AppTests {
             #expect(result.stderr.isEmpty, "\(name)")
             #expect(result.took < .seconds(2), "\(name) took \(result.took)")
         }
+
+        // A large hook input (a Write of a big file) in a terminal that is not Singularity's: more
+        // than the pipe holds, so the helper must read it all before going quietly.
+        let large = Self.permissionJSON(String(repeating: "x", count: 300_000))
+        for (name, environment) in cases {
+            let result = try await HelperRun(helper, environment: environment, stdin: large).finish(limit: .seconds(5))
+            #expect(result.status == 0 && result.stdout.isEmpty && result.stderr.isEmpty, "large, \(name)")
+        }
+    }
+
+    /// Over `maxWireBytes`, inside a Singularity tab with the app listening: read to the end,
+    /// nothing sent, no output, exit 0.
+    @Test func helperReadsAnOversizedInputToTheEnd() async throws {
+        let helper = try requireHelper()
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        let huge = Data(Self.permissionJSON(String(repeating: "x", count: 2_500_000)).utf8)
+        let run = try HelperRun(helper, environment: ["SINGULARITY_TAB": f.tab.id.uuidString,
+                                                      "SINGULARITY_HOOK_SOCKET": f.state.paths.hookSocket.path],
+                                stdin: huge)
+        let result = try await run.finish()
+        #expect(result.status == 0 && result.stdout.isEmpty && result.stderr.isEmpty)
+        #expect(f.center.inbox.entries.isEmpty)
+    }
+
+    /// A listener for the acknowledgement tests: reads the helper's line, then does `then` with
+    /// the connection (write something, or nothing) and keeps it open until the test ends.
+    private final class ScriptedListener: @unchecked Sendable {
+        let listener: MCPSocketListener
+
+        init(path: String, then answer: @escaping @Sendable (Int32) -> Void) {
+            let box = Box()
+            listener = MCPSocketListener(path: path) { client in
+                DispatchQueue.global().async {
+                    _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
+                    var buffer = [UInt8](repeating: 0, count: 4096)
+                    var line = Data()
+                    while !line.contains(0x0A) {
+                        let count = read(client, &buffer, buffer.count)
+                        if count <= 0 { break }
+                        line.append(contentsOf: buffer[0..<count])
+                    }
+                    box.add(client)
+                    answer(client)
+                }
+            }
+            self.box = box
+        }
+
+        private let box: Box
+        final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private var clients: [Int32] = []
+            func add(_ fd: Int32) { lock.withLock { clients.append(fd) } }
+            func closeAll() { lock.withLock { clients.forEach { close($0) }; clients = [] } }
+        }
+
+        func stop() {
+            listener.stop()
+            box.closeAll()
+        }
+    }
+
+    private func helperAgainst(_ answer: @escaping @Sendable (Int32) -> Void) async throws
+        -> (status: Int32, stdout: Data, stderr: Data, took: Duration) {
+        let helper = try requireHelper()
+        let folder = Self.shortFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appending(path: "hook.sock").path
+        let scripted = ScriptedListener(path: path, then: answer)
+        try scripted.listener.start()
+        defer { scripted.stop() }
+        let run = try HelperRun(helper, environment: ["SINGULARITY_TAB": UUID().uuidString, "SINGULARITY_HOOK_SOCKET": path],
+                                stdin: Self.questionJSON)
+        return try await run.finish(limit: .seconds(12))
+    }
+
+    /// The app accepted but never acknowledged (its main thread is stuck): the helper gives up
+    /// after about 5 s with no output, instead of holding Claude Code for the hook's hour.
+    @Test func helperGivesUpWithoutAnAcknowledgement() async throws {
+        let result = try await helperAgainst { _ in }
+        #expect(result.status == 0 && result.stdout.isEmpty && result.stderr.isEmpty)
+        #expect(result.took > .seconds(4.5) && result.took < .seconds(8), "took \(result.took)")
+    }
+
+    /// The acknowledgement byte is stripped and the rest passes through unchanged; any other
+    /// first byte is not our app: nothing printed.
+    @Test func helperStripsTheAcknowledgement() async throws {
+        let answered = try await helperAgainst { client in
+            let bytes: [UInt8] = [ClaudeHook.ack] + Array("{\"ok\":1}\n".utf8)
+            _ = bytes.withUnsafeBytes { write(client, $0.baseAddress, bytes.count) }
+            shutdown(client, SHUT_WR)
+        }
+        #expect(answered.status == 0 && answered.stderr.isEmpty)
+        #expect(String(decoding: answered.stdout, as: UTF8.self) == "{\"ok\":1}\n")
+        #expect(answered.took < .seconds(3))
+
+        let stranger = try await helperAgainst { client in
+            _ = write(client, "{\"ok\":1}", 8)
+            shutdown(client, SHUT_WR)
+        }
+        #expect(stranger.status == 0 && stranger.stdout.isEmpty && stranger.stderr.isEmpty)
     }
 
     /// The helper keeps its own copy of the wire framing (it does not link SingularityCore): the
