@@ -158,8 +158,8 @@ A check is one HTTPS request to github.com, which sees your IP address and the a
 
 | Script | What it does |
 |---|---|
-| `scripts/run.sh` | Debug build, assembled and signed into `build/Singularity.app`, then launched as a development copy with its own data folder (`~/Singularity-dev`, or `SINGULARITY_HOME=…`). Quits only a previous development copy of this checkout |
-| `scripts/test.sh` | Unit tests (Swift Testing), tests of the agents' launcher and of the release scripts, and the plugins' Bun tests when Bun has been fetched |
+| `scripts/run.sh` | Debug build, assembled and signed into `build/Singularity.app`, then launched as a development copy with its own data folder (`~/Singularity-dev`, or `SINGULARITY_HOME=…`, an absolute path). Quits only a previous development copy of this checkout that has its own data folder; if a copy from `build/` runs on your real data, it asks you to quit that one yourself and builds nothing |
+| `scripts/test.sh` | Unit tests (Swift Testing), tests of the agents' launcher, of the release scripts and of `run.sh`'s checks, and the plugins' Bun tests when Bun has been fetched |
 | `scripts/build-app.sh` | Just the debug `.app` (`SIGN_IDENTITY=…` to choose a certificate) |
 | `scripts/release.sh <version>` | A release: see [Releasing](#releasing) |
 | `scripts/icon/make_icns.sh` | Rebuilds `Resources/AppIcon.icns` from the orb renders (`render_orb.py` ports the singularity.rroosa.ee shader) |
@@ -168,11 +168,11 @@ The project is SwiftPM only; there's no Xcode project. Scope, architecture and d
 
 ## Releasing
 
-For the maintainer. `scripts/release.sh <version>` (for example `0.2.0`) does everything in one go, from `main` with a clean tree: runs the tests, bumps the version, builds a universal app, signs it, zips it, signs the zip with the update key, writes the update feed (`appcast.xml`), pushes the release commit and publishes a GitHub release with the zip and the feed. The release is created as a draft and published last, so installed copies only ever see a complete release. The header of the script lists its modes and environment switches. `scripts/release.sh --skip-notarize` makes a signed local build and publishes nothing.
+For the maintainer. `scripts/release.sh <version>` (for example `0.2.0`) does everything in one go, from `main` with a clean tree: runs the tests, bumps the version, builds a universal app, signs it, zips it, signs the zip with the update key, writes the update feed (`appcast.xml`), pushes the release commit and publishes a GitHub release with the zip and the feed. The release is created as a draft and published last, so installed copies only ever see a complete release. Before it builds, it checks that the push and the release can work (`origin` is the GitHub repository, `gh` may push to it, the repository is public, `git push --dry-run` works, commit signing works if it is switched on). Before the first step that cannot be undone, it shows the version, build, signing and release notes and asks `Publish? [y/N]`; `--yes` skips the question and is required when there is no terminal. If it fails after the release commit, it prints the commands that finish the release by hand; running it again with the same version prints them too. The header of the script lists its modes and environment switches. `scripts/release.sh --skip-notarize` makes a signed local build and publishes nothing.
 
 Needed once:
 1. The update key: a pair made with Sparkle's `generate_keys` (its private half stays in the login keychain, keep a backup in a password manager; its public half is `PUBLIC_ED_KEY` in `scripts/release.sh`). Without the private key no installed copy can ever be updated again.
 2. For notarized builds: a **Developer ID Application** certificate in the Apple Developer team that should appear as Singularity's developer (the script defaults to `TEAM_ID=T748B76PPL`), and notarization credentials: `xcrun notarytool store-credentials singularity-notary --apple-id <you> --team-id <team>`. Without them the script signs with the team's Apple Development certificate and marks the release "not notarized".
-3. `gh` logged in with access to the repository.
+3. `gh` logged in with an account that can push to the repository, and the repository public (installed copies download the feed and the zip without logging in).
 
 To try the update flow without publishing anything, `release.sh <version> --scratch <dir>` builds a throwaway bundle with a throwaway key and a local feed (see the script's header).

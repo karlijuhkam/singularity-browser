@@ -4,33 +4,49 @@
 # app, signs it, writes Sparkle's update feed and publishes everything as a GitHub release, from
 # which installed copies update themselves.
 #
-#   scripts/release.sh <version> [--notes-file <path>]   # a release, e.g. scripts/release.sh 0.2.0
+#   scripts/release.sh <version> [--notes-file <path>] [--yes]   # a release, e.g. scripts/release.sh 0.2.0
 #   scripts/release.sh --skip-notarize                   # a signed local build of the current
 #                                                        # version in dist/; publishes nothing
 #   scripts/release.sh <version> --scratch <dir>         # a throwaway update-test bundle (below)
 #
+#   --notes-file <path>  the release notes, instead of editing them in $EDITOR (step 6)
+#   --yes                publish without the "Publish? [y/N]" question (step 6); a release started
+#                        without a terminal is refused unless it has --yes
+#
 # A release, step by step (failure messages refer to these numbers):
 #   1. Checks, before anything changes: the version is N.N.N; on main; no uncommitted changes; the
-#      version is higher than Resources/Info.plist's; the tag v<version> is free; main is in sync
-#      with origin/main; gh is logged in; the update key in the keychain matches PUBLIC_ED_KEY;
-#      a signing certificate of team TEAM_ID exists. A leftover draft release of this version
-#      (from a failed run) is deleted; a published one stops the release.
-#   2. scripts/test.sh passes.
+#      version is higher than Resources/Info.plist's; the tag v<version> is free; origin is
+#      github.com/<REPO>; main is in sync with origin/main; gh is logged in, its account may push
+#      to the repository and the repository is public (installed copies download from it without
+#      logging in); `git push --dry-run` works; when commit.gpgsign is on, git can sign a commit;
+#      the update key in the keychain matches PUBLIC_ED_KEY; a signing certificate of team TEAM_ID
+#      exists. A leftover draft release of this version (from a failed run) is deleted; a
+#      published one stops the release.
+#   2. scripts/test.sh passes; then nothing in the repository may have changed.
 #   3. Resources/Info.plist gets the new version and the next build number. Any failure from here
-#      until step 7 restores it.
+#      until step 7 restores it, and removes the zip, appcast.xml and notes this run wrote.
 #   4. Build, assemble, stamp the feed URL and the public update key into the bundle's Info.plist
-#      (only release bundles update; the checked-in Info.plist has neither), sign. Notarized and
-#      stapled when the team has a Developer ID certificate and the notary profile works;
-#      otherwise signed with the team's Apple Development certificate and marked "not notarized".
+#      (only release bundles update; the checked-in Info.plist has neither), sign; again nothing
+#      but the version bump may have changed. Notarized and stapled when the team has a Developer
+#      ID certificate and the notary profile works; otherwise signed with the team's Apple
+#      Development certificate and marked "not notarized".
 #   5. dist/Singularity-<version>.zip, signed with the update key; dist/Singularity.app is removed,
 #      so no second stamped copy of the app lies around.
 #   6. Release notes: the commit subjects since the previous tag, opened in $EDITOR to trim
 #      (--notes-file skips that). They become the GitHub release text and what Sparkle shows.
-#      Then dist/appcast.xml, Sparkle's feed with this one release.
+#      Then dist/appcast.xml, Sparkle's feed with this one release. Last, the script shows the
+#      version, build, whether it is notarized, the signing certificate and the notes, and asks
+#      "Publish? [y/N]" in the terminal; anything but y stops the release. --yes publishes without
+#      asking; without a terminal (started by another program) the release needs --yes.
 #   7. Commit "Release <version>" and push main (no tag).
 #   8. A draft GitHub release for that commit gets the zip and appcast.xml, then is published as
 #      "latest". Publishing creates the tag, so installed copies only ever see complete releases.
 #   9. Fetch the new tag; print the release's address.
+#
+# A failure in step 7, 8 or 9 prints the commands that finish the release by hand (with the files in
+# dist/, which are kept from step 7 on), and, while the commit is not pushed, how to drop it instead
+# (git reset --hard origin/main). Running `release.sh <version>` again for a version whose
+# "Release <version>" commit is HEAD but which has no tag prints the same commands and stops.
 #
 # --scratch <dir> builds a bundle for testing updates offline, with a throwaway key and a local feed.
 # It needs SCRATCH_PUBLIC_KEY and SCRATCH_KEY_FILE (a throwaway key pair: scripts/make-scratch-key.sh)
@@ -53,13 +69,15 @@
 #                   xcrun notarytool store-credentials singularity-notary --apple-id <you> --team-id <team>
 #   RELEASE_CHECKS_ONLY=1
 #                   stop right after the checks that need nothing but this folder (the version, the
-#                   branch, uncommitted changes, the version is higher, the tag is free locally; with
+#                   branch, uncommitted changes, an unfinished earlier run of this version, the
+#                   version is higher, the tag is free locally; with
 #                   --scratch: its variables). Nothing reaches the network, gh, the keychain or a
 #                   build. scripts/test-release.sh uses it.
 #   RELEASE_TEST_HOLD_AFTER_BUMP=1
 #                   for scripts/test-release.sh only: after the local checks, bump Resources/Info.plist
-#                   as step 3 does, then wait up to 10 s for the test to stop the script with a signal
-#                   (the exit trap must put Info.plist back). Never builds or reaches the network.
+#                   as step 3 does and write stand-ins for dist/'s zip, appcast.xml and notes, then
+#                   wait up to 10 s for the test to stop the script with a signal (the exit trap must
+#                   put Info.plist back and remove the stand-ins). Never builds or reaches the network.
 #
 # One-time setup for notarization: create a "Developer ID Application" certificate at
 # developer.apple.com → Certificates, IDs & Profiles → "+", download it and double-click to install.
@@ -68,6 +86,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/lib/version.sh"
 source "$ROOT/scripts/lib/release-guard.sh"
+source "$ROOT/scripts/lib/release-helpers.sh"
 
 # Baked into every installed copy for good: changing these strands the copies already out there.
 REPO="karlijuhkam/singularity-browser"
@@ -87,7 +106,7 @@ PB=/usr/libexec/PlistBuddy
 
 fail() { echo "error: $*" >&2; exit 1; }
 usage() {
-  echo "usage: scripts/release.sh <version> [--notes-file <path>]   (a release, e.g. 0.2.0)" >&2
+  echo "usage: scripts/release.sh <version> [--notes-file <path>] [--yes]   (a release, e.g. 0.2.0)" >&2
   echo "       scripts/release.sh --skip-notarize                   (a local build; publishes nothing)" >&2
   echo "       scripts/release.sh <version> --scratch <dir>         (an update-test bundle)" >&2
   exit 2
@@ -100,11 +119,13 @@ MODE=release            # release | skip-notarize | scratch
 VERSION=""
 NOTES_FILE=""
 SCRATCH_DIR=""
+ASSUME_YES=0            # 1: --yes, publish without asking
 while (( $# )); do
   case "$1" in
     --skip-notarize) [[ "$MODE" == release ]] || usage; MODE=skip-notarize ;;
     --scratch)       [[ "$MODE" == release && $# -ge 2 ]] || usage; MODE=scratch; SCRATCH_DIR="$2"; shift ;;
     --notes-file)    [[ $# -ge 2 ]] || usage; NOTES_FILE="$2"; shift ;;
+    --yes)           ASSUME_YES=1 ;;
     -h|--help)       usage ;;
     -*)              usage ;;
     *)               [[ -z "$VERSION" ]] || usage; VERSION="$1" ;;
@@ -124,6 +145,7 @@ else
   valid_version "$VERSION" || fail "\"$VERSION\" is not a version: use three numbers, like 0.2.0."
 fi
 [[ -z "$NOTES_FILE" || -r "$NOTES_FILE" ]] || fail "cannot read the notes file $NOTES_FILE."
+[[ "$MODE" == release || "$ASSUME_YES" == 0 ]] || usage   # only a release asks before publishing
 
 # ---- what happens on failure --------------------------------------------------------------------
 # Success is a flag set right before each intended exit, not read from $?: bash 3.2 (macOS's
@@ -134,7 +156,31 @@ SUCCEEDED=0        # 1 right before every successful exit
 RESTORE_PLIST=0    # 1 between the version bump (step 3) and the release commit (step 7)
 COMMITTED=0        # 1 once the "Release <version>" commit exists
 STAMPED_APP=""     # a release's dist/Singularity.app (it carries the live feed URL and key)
+RELEASE_FILES=()   # the zip, appcast.xml and notes this release wrote in dist/ (see will_write)
+TOLD=0             # 1 when the reason for stopping was already printed in full
 TEMP_DIR="$(mktemp -d /private/tmp/sg-release-XXXX)"
+
+# will_write <file>: a file in dist/ that this release is about to write. If the release stops before
+# its commit, the version was never released and the exit trap removes the file again.
+will_write() {
+  if [[ "$MODE" == release ]]; then RELEASE_FILES+=("$1"); fi
+}
+
+# finish_by_hand <step>: prints the commands that finish a release whose commit exists, from <step>
+# (7, 8 or 9) on, and, while the commit may not be pushed yet, how to drop it instead.
+finish_by_hand() {
+  if (( $1 <= 7 )); then echo "  7. git push origin main" >&2; fi
+  if (( $1 <= 8 )); then
+    echo "  8. (if a draft v$VERSION exists: gh release delete v$VERSION --repo $REPO --yes)" >&2
+    echo "     gh release create v$VERSION --repo $REPO --draft --target $(git rev-parse HEAD) --title \"Singularity $VERSION\" --notes-file \"$DIST/release-notes.md\" \"$DIST/Singularity-$VERSION.zip\" \"$DIST/appcast.xml\"" >&2
+    echo "     gh release edit v$VERSION --repo $REPO --draft=false --latest" >&2
+  fi
+  echo "  9. git fetch --tags" >&2
+  if (( $1 <= 7 )); then
+    echo "Or drop the release commit, as long as it is not pushed, and start again: git reset --hard origin/main" >&2
+  fi
+}
+
 on_exit() {
   rm -rf "$TEMP_DIR"
   (( SUCCEEDED )) && return 0
@@ -145,17 +191,15 @@ on_exit() {
     git checkout -- Resources/Info.plist && echo "Resources/Info.plist is restored." >&2
   fi
   [[ "$MODE" == release ]] || return 0
+  (( TOLD )) && return 0
   if (( ! COMMITTED )); then
+    # Never released, so its zip, feed and notes go too. From step 7 on they are kept: the
+    # commands that finish the release by hand need them.
+    rm -f ${RELEASE_FILES[@]+"${RELEASE_FILES[@]}"}
     echo "The release stopped at step $STEP. Nothing was pushed or published." >&2
   else
     echo "The release stopped at step $STEP. Repeat by hand from there:" >&2
-    if (( STEP <= 7 )); then echo "  7. git push origin main" >&2; fi
-    if (( STEP <= 8 )); then
-      echo "  8. (if a draft v$VERSION exists: gh release delete v$VERSION --repo $REPO --yes)" >&2
-      echo "     gh release create v$VERSION --repo $REPO --draft --target $(git rev-parse HEAD) --title \"Singularity $VERSION\" --notes-file dist/release-notes.md dist/Singularity-$VERSION.zip dist/appcast.xml" >&2
-      echo "     gh release edit v$VERSION --repo $REPO --draft=false --latest" >&2
-    fi
-    echo "  9. git fetch --tags" >&2
+    finish_by_hand "$STEP"
   fi
 }
 trap on_exit EXIT
@@ -173,6 +217,21 @@ if [[ "$MODE" == release ]]; then
   CHANGES="$(git status --porcelain)"
   [[ -z "$CHANGES" ]] || fail "there are uncommitted changes; commit or remove them first:
 $CHANGES"
+  # Running it again after a failure in step 7 or 8: the release commit is HEAD, so Info.plist already
+  # has this version and the run would only say "not higher". Say how to finish it instead.
+  if [[ "$VERSION" == "$CURRENT_VERSION" && "$(git log -1 --format=%s)" == "Release $VERSION" ]] \
+     && ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+    FROM=7   # origin/main as this clone last saw it: already the release commit means it was pushed
+    [[ "$(git rev-parse -q --verify origin/main || true)" == "$(git rev-parse HEAD)" ]] && FROM=8
+    echo "error: $VERSION is committed (\"Release $VERSION\" is HEAD) but not published (there is no tag v$VERSION)." >&2
+    echo "Finish it by hand from step $FROM (if https://github.com/$REPO/releases/tag/v$VERSION is already published, only step 9 is left):" >&2
+    finish_by_hand "$FROM"
+    for file in "$DIST/release-notes.md" "$DIST/Singularity-$VERSION.zip" "$DIST/appcast.xml"; do
+      [[ -f "$file" ]] || echo "warning: $file is missing, and step 8 needs it. If the commit is not pushed, drop it and release again; if it is, release the next version." >&2
+    done
+    TOLD=1
+    exit 1
+  fi
   version_gt "$VERSION" "$CURRENT_VERSION" \
     || fail "$VERSION is not higher than the current version $CURRENT_VERSION (Resources/Info.plist)."
   [[ "$CURRENT_BUILD" =~ ^[0-9]+$ ]] || fail "CFBundleVersion in Resources/Info.plist is not a whole number: $CURRENT_BUILD"
@@ -197,6 +256,12 @@ bump_version() {
 
 if [[ "${RELEASE_TEST_HOLD_AFTER_BUMP:-}" == 1 && "$MODE" == release ]]; then
   bump_version
+  # Stand-ins for the files steps 5 and 6 write, which the exit trap must remove as well.
+  mkdir -p "$DIST"
+  for file in "$DIST/Singularity-$VERSION.zip" "$DIST/appcast.xml" "$DIST/release-notes.md"; do
+    will_write "$file"
+    echo "test stand-in" >"$file"
+  done
   echo "holding after the bump (RELEASE_TEST_HOLD_AFTER_BUMP=1)"
   for _ in $(seq 100); do sleep 0.1; done
   fail "RELEASE_TEST_HOLD_AFTER_BUMP: no signal came within 10 s."
@@ -225,12 +290,35 @@ sparkle_tool() {
 }
 
 if [[ "$MODE" == release ]]; then
+  # Steps 7 and 8 push to origin and publish on $REPO: check now that both can work. All of these
+  # only read.
+  ORIGIN_URL="$(git remote get-url origin 2>/dev/null)" \
+    || fail "there is no remote named origin: git remote add origin https://github.com/$REPO.git"
+  origin_is_repo "$ORIGIN_URL" "$REPO" \
+    || fail "origin is $ORIGIN_URL, not github.com/$REPO: git remote set-url origin https://github.com/$REPO.git"
   git fetch -q origin main || fail "could not fetch origin main."
   [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] \
     || fail "main is not the same commit as origin/main; pull or push first."
   REMOTE_TAG="$(git ls-remote --tags origin "refs/tags/v$VERSION")" || fail "could not list origin's tags."
   [[ -z "$REMOTE_TAG" ]] || fail "the tag v$VERSION already exists on origin."
   gh auth status >/dev/null 2>&1 || fail "gh is not logged in: gh auth login"
+  # "true public" when gh's account may push and anyone may download (a private repository would
+  # publish without an error, while every installed copy got "not found" for the feed).
+  REPO_ACCESS="$(gh api "repos/$REPO" --jq '"\(.permissions.push) \(.visibility)"' 2>/dev/null)" \
+    || fail "gh cannot see the repository $REPO: log in with an account that has access (gh auth login)."
+  [[ "${REPO_ACCESS% *}" == true ]] \
+    || fail "the account gh is logged in with cannot push to $REPO: gh auth login with one that can."
+  [[ "${REPO_ACCESS#* }" == public ]] \
+    || fail "$REPO is not public, so installed copies could not download updates: make it public first."
+  PUSH_TEST="$(git push --dry-run origin main 2>&1)" \
+    || fail "git cannot push to origin (git push --dry-run origin main failed); fix the credentials first:
+$PUSH_TEST"
+  # With commit.gpgsign on, step 7's commit is signed: try it now, not after a long build. commit-tree
+  # writes a loose commit object that no branch or tag points at, so nothing in the repository changes.
+  if [[ "$(git config --type=bool --get commit.gpgsign || true)" == true ]]; then
+    git commit-tree -S -m "signing test" "$(git rev-parse 'HEAD^{tree}')" >/dev/null 2>&1 \
+      || fail "commit.gpgsign is on, but git cannot sign a commit: fix the signing key (or switch commit.gpgsign off) first."
+  fi
   GENERATE_KEYS="$(sparkle_tool generate_keys)"
   # -p only prints the public key of the key pair already in the login keychain; it creates nothing.
   KEYCHAIN_KEY="$("$GENERATE_KEYS" -p 2>/dev/null | tr -d '[:space:]')" \
@@ -250,16 +338,17 @@ identities() {
     local pem team name
     pem="$(security find-certificate -a -Z -p | awk -v h="$hash" 'BEGIN { RS = "SHA-1 hash: " } index($0, h) == 1' \
            | sed -n '/BEGIN CERT/,/END CERT/p')"
+    # No `exit` in these awks: stopping early would kill openssl with SIGPIPE (see first_identity).
     team="$(printf '%s\n' "$pem" | openssl x509 -noout -subject -nameopt multiline 2>/dev/null \
-            | awk -F' = ' '/organizationalUnitName/ { print $2; exit }')"
+            | awk -F' = ' '!seen && /organizationalUnitName/ { print $2; seen = 1 }')"
     name="$(printf '%s\n' "$pem" | openssl x509 -noout -subject -nameopt multiline 2>/dev/null \
-            | awk -F' = ' '/commonName/ { print $2; exit }')"
+            | awk -F' = ' '!seen && /commonName/ { print $2; seen = 1 }')"
     printf '%s\t%s\t%s\n' "$hash" "$team" "$name"
   done
 }
 # First identity of TEAM_ID whose name starts with $1; prints "fingerprint<TAB>name".
 identity_in_team() {
-  identities | awk -F'\t' -v team="$TEAM_ID" -v prefix="$1" '$2 == team && index($3, prefix) == 1 { print $1 "\t" $3; exit }'
+  identities | first_identity "$TEAM_ID" "$1"
 }
 
 NOTARIZE=0        # 1: notarize and staple (a release with a Developer ID and a working notary profile)
@@ -307,6 +396,7 @@ fi
 if [[ "$MODE" == release ]]; then
   STEP=2; echo "→ step 2: scripts/test.sh"
   "$ROOT/scripts/test.sh"
+  release_commit_guard "$START_HEAD" unbumped || fail "the repository changed while the tests ran."
 fi
 
 # ---- step 3: version ----------------------------------------------------------------------------
@@ -411,6 +501,9 @@ codesign --force --options runtime ${TIMESTAMP[@]+"${TIMESTAMP[@]}"} --entitleme
 codesign --force --options runtime ${TIMESTAMP[@]+"${TIMESTAMP[@]}"} --entitlements "$ENTITLEMENTS" \
   --sign "$IDENTITY" "$APP"
 codesign --verify --deep --strict --verbose=1 "$APP"
+if [[ "$MODE" == release ]]; then
+  release_commit_guard "$START_HEAD" || fail "the repository changed during the build."
+fi
 
 if [[ "$MODE" == skip-notarize ]]; then
   ditto -c -k --keepParent "$APP" "$ZIP"
@@ -426,6 +519,7 @@ if (( NOTARIZE )); then
   # nothing called Singularity-<version>.zip exists that could be handed out by mistake.
   rm -f "$ZIP"
   UPLOAD="$DIST/.notarize-upload.zip"
+  will_write "$UPLOAD"
   ditto -c -k --keepParent "$APP" "$UPLOAD"
   RESULT="$(xcrun notarytool submit "$UPLOAD" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1)" || { echo "$RESULT"; rm -f "$UPLOAD"; fail "notarytool failed."; }
   echo "$RESULT"
@@ -443,6 +537,7 @@ fi
 # ---- step 5: zip and sign it with the update key ------------------------------------------------
 STEP=5
 echo "→ step 5: $ZIP"
+will_write "$ZIP"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"   # after stapling, so the ticket is inside the download
 # sign_update prints the enclosure's attributes: sparkle:edSignature="…" length="…".
@@ -488,6 +583,7 @@ if [[ "$MODE" == scratch ]]; then
 else
   ZIP_URL="https://github.com/$REPO/releases/download/v$VERSION/Singularity-$VERSION.zip"
   APPCAST="$DIST/appcast.xml"
+  will_write "$APPCAST"
 fi
 "$ROOT/scripts/appcast.sh" --version "$VERSION" --build "$BUILD" --url "$ZIP_URL" --length "$LENGTH" \
   --signature "$ED_SIGNATURE" --min-system "$($PB -c 'Print LSMinimumSystemVersion' "$PLIST")" \
@@ -503,7 +599,21 @@ fi
 
 # The GitHub release's text: the same lines, as a Markdown list.
 RELEASE_NOTES="$DIST/release-notes.md"
+will_write "$RELEASE_NOTES"
 sed -e '/^[[:space:]]*$/d' -e 's/^/- /' "$NOTES" >"$RELEASE_NOTES"
+
+# ---- a last look before the steps that cannot be undone -----------------------------------------
+echo
+echo "Ready to publish Singularity $VERSION (build $BUILD):"
+if (( NOTARIZE )); then
+  echo "  notarized:  yes"
+else
+  echo "  notarized:  NO (Gatekeeper stops it on other Macs)"
+fi
+echo "  signed by:  $IDENTITY_NAME"
+echo "  release notes:"
+sed 's/^/    /' "$RELEASE_NOTES"
+ask_to_publish "$ASSUME_YES" || fail "not published; the release is cancelled."
 
 # ---- step 7: commit and push --------------------------------------------------------------------
 STEP=7

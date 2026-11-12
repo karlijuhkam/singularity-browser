@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Offline tests for the release scripts: scripts/lib/version.sh, scripts/appcast.sh and the checks
-# at the start of scripts/release.sh. No build, no network, no keychain.
+# Offline tests for the release scripts: scripts/lib/*.sh, scripts/appcast.sh and the checks at the
+# start of scripts/release.sh. No build, no network, no keychain.
 #
 # release.sh only ever runs here in a throwaway git repository under /private/tmp (a copy of the
 # scripts and Resources/Info.plist, on a branch named main), and always with RELEASE_CHECKS_ONLY=1,
@@ -10,7 +10,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Checked first: bash 3.2 exits with status 0 when `source` finds no file and an EXIT trap is set.
-for file in scripts/lib/version.sh scripts/lib/release-guard.sh scripts/appcast.sh scripts/release.sh; do
+for file in scripts/lib/version.sh scripts/lib/release-guard.sh scripts/lib/release-helpers.sh \
+            scripts/appcast.sh scripts/release.sh; do
   [[ -f "$ROOT/$file" ]] || { echo "FAIL $file is missing"; exit 1; }
 done
 
@@ -51,6 +52,70 @@ expect "plist: short version set" [ "$($PB -c 'Print CFBundleShortVersionString'
 expect "plist: build set"         [ "$($PB -c 'Print CFBundleVersion' "$TMP/Info.plist")" = 42 ]
 changed="$(diff "$ROOT/Resources/Info.plist" "$TMP/Info.plist" | grep -c '^[<>]' || true)"
 expect "plist: only two lines changed" [ "$changed" = 4 ]
+
+# ---- release-helpers.sh -------------------------------------------------------------------------
+source "$ROOT/scripts/lib/release-helpers.sh"
+
+# first_identity, as release.sh uses it: at the end of a pipe, under `set -euo pipefail`. The
+# producer writes far more than a pipe holds after the match, so a filter that stopped reading at
+# the first match would kill it with SIGPIPE (status 141) and fail the pipeline.
+TAB=$'\t'
+identity_lines() {   # identity_lines <line>…: those lines, then 20000 lines of another team
+  printf '%s\n' "$@"
+  local i
+  for ((i = 0; i < 20000; i++)); do printf 'FFFF%05d\tOTHERTEAM1\tApple Development: Someone Else\n' "$i"; done
+}
+pick() {   # pick <team> <prefix> <line>…: runs first_identity in a subshell with pipefail; output in $OUT
+  local team="$1" prefix="$2" status=0; shift 2
+  OUT="$( set -euo pipefail; identity_lines "$@" | first_identity "$team" "$prefix" )" || status=$?
+  return "$status"
+}
+expect "identity: match on the first line, pipefail holds" \
+  pick T748B76PPL "Apple Development" "AAAA${TAB}T748B76PPL${TAB}Apple Development: Owner (X1)"
+expect "identity: … prints fingerprint and name"  [ "$OUT" = "AAAA${TAB}Apple Development: Owner (X1)" ]
+expect "identity: two matches, the first wins" \
+  pick T748B76PPL "Apple Development" \
+  "BBBB${TAB}T748B76PPL${TAB}Apple Development: Owner (X1)" "CCCC${TAB}T748B76PPL${TAB}Apple Development: Owner (X2)"
+expect "identity: … it is the first"               [ "$OUT" = "BBBB${TAB}Apple Development: Owner (X1)" ]
+expect "identity: other teams and other names are skipped" \
+  pick T748B76PPL "Developer ID Application" \
+  "DDDD${TAB}OTHERTEAM1${TAB}Developer ID Application: Other" "EEEE${TAB}T748B76PPL${TAB}Apple Development: Owner" \
+  "FFFF${TAB}T748B76PPL${TAB}Developer ID Application: Owner"
+expect "identity: … the team's Developer ID"       [ "$OUT" = "FFFF${TAB}Developer ID Application: Owner" ]
+expect "identity: no match, no output, no failure" pick T748B76PPL "Developer ID Application"
+expect "identity: … empty"                         [ -z "$OUT" ]
+
+expect     "origin: https"                   origin_is_repo https://github.com/owner/repo owner/repo
+expect     "origin: https .git"              origin_is_repo https://github.com/owner/repo.git owner/repo
+expect     "origin: ssh scp form"            origin_is_repo git@github.com:owner/repo.git owner/repo
+expect     "origin: ssh scp form, no .git"   origin_is_repo git@github.com:owner/repo owner/repo
+expect     "origin: ssh:// form"             origin_is_repo ssh://git@github.com/owner/repo.git owner/repo
+expect     "origin: trailing slash"          origin_is_repo https://github.com/owner/repo/ owner/repo
+expect     "origin: case is ignored"         origin_is_repo https://github.com/Owner/Repo.git owner/repo
+expect_not "origin: another repository"      origin_is_repo https://github.com/owner/other.git owner/repo
+expect_not "origin: a longer name"           origin_is_repo https://github.com/owner/repo-fork owner/repo
+expect_not "origin: another owner"           origin_is_repo git@github.com:someone/repo.git owner/repo
+expect_not "origin: another host"            origin_is_repo https://gitlab.com/owner/repo.git owner/repo
+expect_not "origin: a path below it"         origin_is_repo https://github.com/owner/repo/extra owner/repo
+expect_not "origin: a local path"            origin_is_repo /private/tmp/owner/repo owner/repo
+
+# ask_to_publish reads the answer from a terminal (a file here); only y or Y publishes.
+ask() {   # ask <--yes: 0|1> <answer, or "none" for no terminal>; output in $OUT
+  local status=0 terminal="$TMP/terminal"
+  if [[ "$2" == none ]]; then terminal="$TMP/no-such-terminal"; else printf '%s\n' "$2" >"$terminal"; fi
+  OUT="$(ask_to_publish "$1" "$terminal" 2>&1 </dev/null)" || status=$?
+  return "$status"
+}
+expect     "publish? y publishes"                ask 0 y
+expect     "publish? … the question was asked"   contains "$OUT" "Publish? [y/N]"
+expect     "publish? Y publishes"                ask 0 Y
+expect_not "publish? n stops"                    ask 0 n
+expect_not "publish? yes stops (only y or Y)"    ask 0 yes
+expect_not "publish? an empty answer stops"      ask 0 ""
+expect_not "publish? no terminal stops"          ask 0 none
+expect     "publish? … and says to add --yes"    contains "$OUT" "--yes"
+expect     "publish? --yes without a terminal"   ask 1 none
+expect     "publish? --yes does not ask"         ask 1 n
 
 # ---- appcast.sh ---------------------------------------------------------------------------------
 NOTES="$TMP/notes.txt"
@@ -124,6 +189,8 @@ expect     "release: … message says not higher"      contains "$OUT" "not high
 expect     "release: … and the tree stays clean"     clean_tree
 expect_not "release: 0.0.1 (lower) refused"          release 0.0.1
 expect_not "release: --skip-notarize with a version refused" release 9.9.9 --skip-notarize
+expect_not "release: --yes with --skip-notarize refused" release --skip-notarize --yes
+expect     "release: 9.9.9 --yes passes the local checks" release 9.9.9 --yes
 
 # The control: with nothing wrong, the local checks pass (so the refusals above are real).
 expect     "release: 9.9.9 passes the local checks"  release 9.9.9
@@ -178,6 +245,15 @@ if [[ -f "$ROOT/scripts/lib/release-guard.sh" ]]; then
   expect_not "guard: a new file refused"              guard
   reset_repo
   expect_not "guard: no bump refused"                 guard
+  # "unbumped": after the tests, before the version bump, there must be no change at all.
+  unbumped() { local status=0; OUT="$(cd "$REPO" && release_commit_guard "$START" unbumped 2>&1)" || status=$?; return "$status"; }
+  expect     "guard unbumped: a clean tree passes"    unbumped
+  echo "new" > "$REPO/new-file.txt"
+  expect_not "guard unbumped: a new file refused"     unbumped
+  expect     "guard unbumped: … message names it"     contains "$OUT" "new-file.txt"
+  reset_repo; bump
+  expect_not "guard unbumped: the bump refused too"   unbumped
+  reset_repo
   git -C "$REPO" -c user.name=test -c user.email=test@invalid commit -q --allow-empty -m "made during the run"
   bump
   expect_not "guard: HEAD moved refused"              guard
@@ -187,7 +263,51 @@ else
   bad "guard: scripts/lib/release-guard.sh exists"
 fi
 
-# Closing the terminal (SIGHUP) or SIGTERM after the version bump restores Info.plist.
+# Running a version again whose "Release <version>" commit is HEAD but has no tag (a run that failed
+# in step 7 or 8): the commands that finish it, not "not higher"; dist/'s files stay.
+if [[ -f "$ROOT/scripts/lib/release-guard.sh" ]]; then
+  set_plist_version "$REPO/Resources/Info.plist" 9.9.9 2
+  git -C "$REPO" -c user.name=test -c user.email=test@invalid commit -q -m "Release 9.9.9" -- Resources/Info.plist
+  mkdir -p "$REPO/dist"
+  for file in Singularity-9.9.9.zip appcast.xml release-notes.md; do echo "from the failed run" > "$REPO/dist/$file"; done
+  expect_not "re-run: refused"                          release 9.9.9
+  expect_not "re-run: … not \"not higher\""             contains "$OUT" "not higher"
+  expect_not "re-run: … not \"Nothing was pushed\""     contains "$OUT" "Nothing was pushed"
+  expect     "re-run: … step 7: push"                   contains "$OUT" "7. git push origin main"
+  expect     "re-run: … step 8: create the draft"       contains "$OUT" "gh release create v9.9.9"
+  expect     "re-run: … with absolute dist/ paths"      contains "$OUT" "\"$REPO/dist/Singularity-9.9.9.zip\" \"$REPO/dist/appcast.xml\""
+  expect     "re-run: … notes by absolute path"         contains "$OUT" "--notes-file \"$REPO/dist/release-notes.md\""
+  expect     "re-run: … step 8: publish"                contains "$OUT" "--draft=false --latest"
+  expect     "re-run: … the way back"                   contains "$OUT" "git reset --hard origin/main"
+  expect_not "re-run: … no missing-file warning"        contains "$OUT" "missing"
+  expect     "re-run: … dist/ files kept"               [ -f "$REPO/dist/Singularity-9.9.9.zip" -a -f "$REPO/dist/appcast.xml" -a -f "$REPO/dist/release-notes.md" ]
+  expect     "re-run: … tree clean"                     clean_tree
+  # Pushed already (origin/main, as this clone saw it, is the release commit): from step 8 on.
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  expect_not "re-run pushed: refused"                   release 9.9.9
+  expect     "re-run pushed: … from step 8"             contains "$OUT" "from step 8"
+  expect_not "re-run pushed: … no push"                 contains "$OUT" "git push origin main"
+  expect_not "re-run pushed: … no way back"             contains "$OUT" "git reset --hard"
+  git -C "$REPO" update-ref -d refs/remotes/origin/main
+  rm "$REPO/dist/appcast.xml"
+  expect_not "re-run, a file missing: refused"          release 9.9.9
+  expect     "re-run, a file missing: … says which"     contains "$OUT" "$REPO/dist/appcast.xml is missing"
+  # A tag means it was released: then the version is simply not higher.
+  git -C "$REPO" tag v9.9.9
+  expect_not "re-run tagged: refused"                   release 9.9.9
+  expect     "re-run tagged: … not higher"              contains "$OUT" "not higher"
+  git -C "$REPO" tag -d v9.9.9 >/dev/null
+  # Another subject is not a release commit.
+  git -C "$REPO" -c user.name=test -c user.email=test@invalid commit -q --allow-empty -m "Release 9.9.9 notes"
+  expect_not "re-run other subject: refused"            release 9.9.9
+  expect     "re-run other subject: … not higher"       contains "$OUT" "not higher"
+  rm -rf "$REPO/dist"
+  reset_repo
+  expect     "re-run: the repository is back"           plist_unchanged
+fi
+
+# Closing the terminal (SIGHUP) or SIGTERM after the version bump restores Info.plist and removes the
+# dist/ files of the version that was never released.
 # RELEASE_TEST_HOLD_AFTER_BUMP=1 makes the script bump, then wait (10 s at most) instead of going on.
 # RELEASE_CHECKS_ONLY=1 is set too: a script without the hook stops at its local checks.
 for signal in TERM:143 HUP:129; do
@@ -200,12 +320,16 @@ for signal in TERM:143 HUP:129; do
     sleep 0.1
   done
   expect "signal $signal: the script bumped and held" grep -q "holding" "$TMP/hold.log"
+  expect "signal $signal: the dist/ stand-ins exist"     [ -f "$REPO/dist/Singularity-9.9.9.zip" -a -f "$REPO/dist/appcast.xml" -a -f "$REPO/dist/release-notes.md" ]
   kill -"$signal" "$pid" 2>/dev/null || true
   status=0; wait "$pid" || status=$?
   expect "signal $signal: exits with $expected_status"            [ "$status" -eq "$expected_status" ]
   expect "signal $signal: Info.plist restored"          plist_unchanged
   expect "signal $signal: tree clean"                   clean_tree
   expect "signal $signal: says nothing was published"   grep -q "Nothing was pushed or published" "$TMP/hold.log"
+  expect_not "signal $signal: dist/ zip removed"        [ -e "$REPO/dist/Singularity-9.9.9.zip" ]
+  expect_not "signal $signal: dist/ appcast.xml removed" [ -e "$REPO/dist/appcast.xml" ]
+  expect_not "signal $signal: dist/ notes removed"      [ -e "$REPO/dist/release-notes.md" ]
 done
 
 # --scratch needs its three variables; checked before anything is built.
