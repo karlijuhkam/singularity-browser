@@ -6,6 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/env.sh
 swift test "$@"
+scripts/test-launcher.sh
 if [[ -x Vendor/bun/bun ]]; then
   Vendor/bun/bun test Tests/plugins
 fi
