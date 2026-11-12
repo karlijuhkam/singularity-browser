@@ -35,9 +35,29 @@ public enum ClaudeHookSettings {
     static let stopEvent = "Stop"
     static let askMatcher = "AskUserQuestion"
     static let stopTimeoutSeconds = 10
+    /// The `timeout` written on the question and permission hooks, and checked by `status`:
+    /// how long Claude Code lets a held hook run (measured in the live test: no cap). The app's
+    /// hold limit (`InboxCenter.holdLimit`, 3300 s) must stay safely below it.
+    public static let hookTimeoutSeconds = 3600
 
     public static func file(home: URL) -> URL {
         home.appendingPathComponent(".claude/settings.json")
+    }
+
+    /// The file the installer works on, given the process environment:
+    /// - `SINGULARITY_CLAUDE_SETTINGS=<path>`: that file (for trying the Install button safely);
+    /// - else, when `SINGULARITY_HOME` is set (a test copy): `<SINGULARITY_HOME>/claude-settings.json`,
+    ///   so a test copy can never write the owner's real file by accident;
+    /// - else Claude Code's own `~/.claude/settings.json`.
+    /// Empty values count as not set.
+    public static func file(environment: [String: String], home: URL) -> URL {
+        if let path = environment["SINGULARITY_CLAUDE_SETTINGS"], !path.isEmpty {
+            return URL(fileURLWithPath: path)
+        }
+        if let testHome = environment["SINGULARITY_HOME"], !testHome.isEmpty {
+            return URL(fileURLWithPath: testHome, isDirectory: true).appendingPathComponent("claude-settings.json")
+        }
+        return file(home: home)
     }
 
     // MARK: - Public operations

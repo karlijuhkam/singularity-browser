@@ -155,6 +155,8 @@ private struct AgentSettings: View {
     @Environment(AppState.self) private var state
     /// Checks and connects Claude Code and Codex; points them at *this* copy of the app.
     @State private var connector = AgentConnector(launcher: AgentConnector.thisAppLauncher)
+    /// Claude Code's settings file and this copy's hook helper (a test copy gets a file of its own).
+    @State private var hookInstaller = HookInstaller()
 
     var body: some View {
         Form {
@@ -202,7 +204,7 @@ private struct AgentSettings: View {
             Section("Connect agents") {
                 Text("Gives these agents the Singularity tools in every project.")
                     .font(.callout)
-                AgentConnectRows(connector: connector)
+                AgentConnectRows(connector: connector, hookInstaller: hookInstaller)
                 if !connector.launcher.hasPrefix("/Applications/") {
                     Text("This copy of Singularity isn't in /Applications. If you move it, register again with the new path.")
                         .font(.caption)

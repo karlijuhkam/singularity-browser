@@ -15,10 +15,14 @@ struct AgentConnectRows: View {
 
     let connector: AgentConnector
     let style: Style
+    /// Settings passes one: then the "Show questions in the inbox" row sits under Claude Code.
+    /// The welcome flow passes none.
+    let hookInstaller: HookInstaller?
 
-    init(connector: AgentConnector, style: Style = .compact) {
+    init(connector: AgentConnector, style: Style = .compact, hookInstaller: HookInstaller? = nil) {
         self.connector = connector
         self.style = style
+        self.hookInstaller = hookInstaller
     }
 
     var body: some View {
@@ -27,6 +31,9 @@ struct AgentConnectRows: View {
                 Divider()
             }
             row(agent, state: connector.rows[agent] ?? .checking)
+            if agent == .claudeCode, let hookInstaller {
+                InboxHookRowView(installer: hookInstaller, captionFont: captionFont)
+            }
         }
     }
 
