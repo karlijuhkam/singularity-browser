@@ -40,14 +40,14 @@ import Testing
         #expect(perm[0]["matcher"] == nil)
         let stop = try #require(hooks["Stop"] as? [NSDictionary])
         #expect(((stop[0]["hooks"] as? [NSDictionary])?.first?["timeout"] as? Int) == 10)
-        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper) == .installed)
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 3600) == .installed)
         #expect(!out.contains("\\/"))
     }
 
     @Test func emptyTextIsLikeNoFile() throws {
-        #expect(ClaudeHookSettings.status(settingsText: "  \n", helper: helper) == .notInstalled)
+        #expect(ClaudeHookSettings.status(settingsText: "  \n", helper: helper, timeoutSeconds: 3600) == .notInstalled)
         let out = try install(" \n")
-        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper) == .installed)
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 3600) == .installed)
         #expect(try ClaudeHookSettings.remove(settingsText: " \n") == " \n")
     }
 
@@ -64,7 +64,7 @@ import Testing
         let stop = try #require(hooks["Stop"] as? [NSDictionary])
         #expect(stop.count == 2)
         #expect(stop[0] == ((before["hooks"] as? NSDictionary)?["Stop"] as? [NSDictionary])?[0])
-        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper) == .installed)
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 3600) == .installed)
     }
 
     @Test func installKeepsNumbersAndBooleans() throws {
@@ -107,9 +107,9 @@ import Testing
     @Test func installRepointsAnotherCopy() throws {
         let a = "/A/singularity-hook", b = "/B/singularity-hook"
         let out = try install(others, a)
-        #expect(ClaudeHookSettings.status(settingsText: out, helper: b) == .otherCopy(a))
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: b, timeoutSeconds: 3600) == .otherCopy(a))
         let fixed = try install(out, b)
-        #expect(ClaudeHookSettings.status(settingsText: fixed, helper: b) == .installed)
+        #expect(ClaudeHookSettings.status(settingsText: fixed, helper: b, timeoutSeconds: 3600) == .installed)
         #expect(!fixed.contains("/A/"))
         #expect(fixed.components(separatedBy: "singularity-hook").count == 4)
     }
@@ -170,7 +170,7 @@ import Testing
         "{\"hooks\": {\"Stop\": [{\"hooks\": [\"x\"]}]}}", "{\"hooks\": \"x\"}", "{\"hooks\": null}",
     ])
     func unreadableIsRefused(text: String) {
-        #expect(ClaudeHookSettings.status(settingsText: text, helper: helper) == .unreadable)
+        #expect(ClaudeHookSettings.status(settingsText: text, helper: helper, timeoutSeconds: 3600) == .unreadable)
         #expect(throws: ClaudeHookSettings.Unreadable.self) { try install(text) }
         #expect(throws: ClaudeHookSettings.Unreadable.self) { try ClaudeHookSettings.remove(settingsText: text) }
     }
@@ -185,23 +185,79 @@ import Testing
 
     @Test func pathWithSpacesAndQuotes() throws {
         let out = try install(nil, odd)
-        #expect(ClaudeHookSettings.status(settingsText: out, helper: odd) == .installed)
-        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper) == .otherCopy(odd))
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: odd, timeoutSeconds: 3600) == .installed)
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 3600) == .otherCopy(odd))
     }
 
     @Test func partialInstallIsNotInstalled() throws {
         let partial = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"'\#(helper)'","timeout":10}]}]}}"#
-        #expect(ClaudeHookSettings.status(settingsText: partial, helper: helper) == .notInstalled)
+        #expect(ClaudeHookSettings.status(settingsText: partial, helper: helper, timeoutSeconds: 3600) == .notInstalled)
         let fixed = try install(partial)
-        #expect(ClaudeHookSettings.status(settingsText: fixed, helper: helper) == .installed)
+        #expect(ClaudeHookSettings.status(settingsText: fixed, helper: helper, timeoutSeconds: 3600) == .installed)
         #expect(fixed.components(separatedBy: "singularity-hook").count == 4)
-        #expect(ClaudeHookSettings.status(settingsText: nil, helper: helper) == .notInstalled)
-        #expect(ClaudeHookSettings.status(settingsText: "{}", helper: helper) == .notInstalled)
+        #expect(ClaudeHookSettings.status(settingsText: nil, helper: helper, timeoutSeconds: 3600) == .notInstalled)
+        #expect(ClaudeHookSettings.status(settingsText: "{}", helper: helper, timeoutSeconds: 3600) == .notInstalled)
     }
 
     @Test func otherPeoplesHooksAreNotOurs() {
         let text = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/x/singularity-hook-other"},{"type":"prompt","command":"/x/singularity-hook"}]}]}}"#
-        #expect(ClaudeHookSettings.status(settingsText: text, helper: helper) == .notInstalled)
+        #expect(ClaudeHookSettings.status(settingsText: text, helper: helper, timeoutSeconds: 3600) == .notInstalled)
+    }
+
+    @Test func staleTimeoutIsNotInstalled() throws {
+        let out = try install(nil, timeout: 600)
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 600) == .installed)
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 3600) == .notInstalled)
+    }
+
+    @Test func wrongMatcherIsNotInstalled() throws {
+        let out = try install(nil)
+        let wrong = out.replacingOccurrences(of: "\"matcher\" : \"AskUserQuestion\"", with: "\"matcher\" : \"Bash\"")
+        #expect(wrong != out)
+        #expect(ClaudeHookSettings.status(settingsText: wrong, helper: helper, timeoutSeconds: 3600) == .notInstalled)
+        let fixed = try install(wrong)
+        #expect(ClaudeHookSettings.status(settingsText: fixed, helper: helper, timeoutSeconds: 3600) == .installed)
+        #expect(fixed.components(separatedBy: "singularity-hook").count == 4)
+        // A matcher on a hook that should have none.
+        let extra = #"{"hooks":{"PermissionRequest":[{"matcher":"Bash","hooks":[{"type":"command","command":"'\#(helper)'","timeout":3600}]}]}}"#
+        #expect(ClaudeHookSettings.status(settingsText: extra, helper: helper, timeoutSeconds: 3600) == .notInstalled)
+    }
+
+    @Test func doubleQuotedCommandIsOurs() throws {
+        let text = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/A b/singularity-hook\"","timeout":10}]}]}}"#
+        #expect(ClaudeHookSettings.status(settingsText: text, helper: helper, timeoutSeconds: 3600) == .otherCopy("/A b/singularity-hook"))
+        let out = try install(text)
+        #expect(out.components(separatedBy: "singularity-hook").count == 4)
+        #expect(!out.contains("/A b/"))
+        let removed = try ClaudeHookSettings.remove(settingsText: text)
+        #expect(!removed.contains("singularity-hook"))
+        #expect(ClaudeHookSettings.unquote(#""a \"q\" \$ \\ b""#) == #"a "q" $ \ b"#)
+        #expect(ClaudeHookSettings.unquote(#""a\nb""#) == #"a\nb"#)
+    }
+
+    @Test func oldEntriesUnderOtherEventsAreCleared() throws {
+        let text = #"{"hooks":{"Notification":[{"hooks":[{"type":"command","command":"'/A/singularity-hook'"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"theirs"},{"type":"command","command":"'/A/singularity-hook'"}]}]}}"#
+        let out = try install(text)
+        let hooks = try #require(try object(out)["hooks"] as? NSDictionary)
+        #expect(hooks["Notification"] == nil)
+        let end = try #require(hooks["SessionEnd"] as? [NSDictionary])
+        #expect((end[0]["hooks"] as? [NSDictionary])?.count == 1)
+        #expect(out.components(separatedBy: "singularity-hook").count == 4)
+        #expect(ClaudeHookSettings.status(settingsText: text, helper: "/A/singularity-hook", timeoutSeconds: 3600) == .notInstalled)
+    }
+
+    /// What really changes when the file is written out again (the claims in the source comment).
+    @Test func respelledValues() throws {
+        let text = #"{"big":18446744073709551616,"huge":123456789012345678901234567890.5,"pi":3.141592653589793,"e":1e3,"z":-0,"one":1.0,"s":"a\/b é","big2":1e100}"#
+        let out = try install(text)
+        #expect(out.contains("18446744073709551616"))
+        #expect(out.contains("123456789012345678901234567890.5"))
+        #expect(out.contains("\"e\" : 1000"))
+        #expect(out.contains("\"one\" : 1,") || out.contains("\"one\" : 1\n"))
+        #expect(out.contains("a/b é"))
+        #expect(out.contains("\"pi\" : 3.1415926535897931"))
+        #expect(out.contains("\"big2\" : 1e+100"))
+        #expect(out.contains("\"z\" : 0"))
     }
 
     @Test func fileLocation() {

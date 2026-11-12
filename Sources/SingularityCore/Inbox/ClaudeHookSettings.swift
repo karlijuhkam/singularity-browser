@@ -8,11 +8,13 @@ import Foundation
 ///   spacing may change, because the file is written out again, sorted and pretty-printed).
 /// - A file we don't fully understand is refused (`Unreadable`), never rewritten.
 ///
-/// How numbers survive: the text is first checked with `JSONText` (strict: no comments, no
+/// How values survive: the text is first checked with `JSONText` (strict: no comments, no
 /// trailing commas, no duplicate keys), then read with `JSONSerialization`, which keeps integers
-/// as exact 64-bit integers, `true`/`false` as booleans and doubles as doubles. Rewritten values:
-/// `1.0` and `1e3` come back as `1` and `1000` (same number, different spelling), and an integer
-/// beyond 64 bits becomes a double.
+/// of any size exactly, `true`/`false` as booleans and `null`. What changes when the file is
+/// written out again (all the same value, different spelling): key order (sorted) and spacing;
+/// some doubles get 17 significant digits (`3.141592653589793` becomes `3.1415926535897931`);
+/// exponents are written `e+100`, `1e3` becomes `1000`, `1.0` becomes `1`, `-0` becomes `0`;
+/// string escapes are normalised (`\/` becomes `/`, `\u00e9` becomes `é`).
 public enum ClaudeHookSettings {
     public enum Status: Equatable, Sendable {
         case notInstalled
@@ -41,35 +43,46 @@ public enum ClaudeHookSettings {
     // MARK: - Public operations
 
     /// `settingsText` nil = no file. Empty text counts as no file.
-    public static func status(settingsText: String?, helper: String) -> Status {
+    /// `.installed` means all three entries are exactly what `install` would write for this
+    /// helper and timeout (right matcher, right timeout, nothing of ours elsewhere). Ours with
+    /// this helper but not exactly right, or only some of the three: `.notInstalled` (install
+    /// repairs it). Ours pointing at another helper: `.otherCopy`.
+    public static func status(settingsText: String?, helper: String, timeoutSeconds: Int) -> Status {
         guard let root = try? load(settingsText) else { return .unreadable }
         let events = (root["hooks"] as? [String: Any]) ?? [:]
-        var present = Set<String>()
         for name in events.keys.sorted() {
             for hook in allHooks(in: events[name]) {
-                guard let path = ourPath(hook) else { continue }
-                if path != helper { return .otherCopy(path) }
-                present.insert(name)
+                if let path = ourPath(hook), path != helper { return .otherCopy(path) }
             }
         }
-        let all = [askEvent, permissionEvent, stopEvent]
-        return all.allSatisfy(present.contains) ? .installed : .notInstalled
+        let outsideThree = events.contains { name, value in
+            ![askEvent, permissionEvent, stopEvent].contains(name)
+                && allHooks(in: value).contains { ourPath($0) != nil }
+        }
+        if outsideThree { return .notInstalled }
+        let exact = wanted(timeoutSeconds).allSatisfy { item in
+            alreadyInPlace(events[item.event] as? [Any] ?? [],
+                           hook: makeHook(helper: helper, timeout: item.timeout), matcher: item.matcher)
+        }
+        return exact ? .installed : .notInstalled
+    }
+
+    /// The three entries: event, matcher, timeout.
+    private static func wanted(_ timeoutSeconds: Int) -> [(event: String, matcher: String?, timeout: Int)] {
+        [(askEvent, askMatcher, timeoutSeconds),
+         (permissionEvent, nil, timeoutSeconds),
+         (stopEvent, nil, stopTimeoutSeconds)]
     }
 
     /// Adds (or repoints) our three entries; everything else is kept.
     public static func install(settingsText: String?, helper: String, timeoutSeconds: Int) throws -> String {
         guard var root = try? load(settingsText) else { throw Unreadable() }
         var events = (root["hooks"] as? [String: Any]) ?? [:]
-        let wanted: [(event: String, matcher: String?, timeout: Int)] = [
-            (askEvent, askMatcher, timeoutSeconds),
-            (permissionEvent, nil, timeoutSeconds),
-            (stopEvent, nil, stopTimeoutSeconds),
-        ]
-        for item in wanted {
+        for item in wanted(timeoutSeconds) {
             let hook = makeHook(helper: helper, timeout: item.timeout)
             var groups = (events[item.event] as? [Any]) ?? []
             if alreadyInPlace(groups, hook: hook, matcher: item.matcher) { continue }
-            // Not exactly right: take all of ours out, then add one fresh group at the end.
+            // Otherwise: take all of ours out, then add one fresh group at the end.
             groups = removingOurs(from: groups).groups
             var group: [String: Any] = ["hooks": [hook]]
             if let matcher = item.matcher { group["matcher"] = matcher }
@@ -77,9 +90,9 @@ public enum ClaudeHookSettings {
             events[item.event] = groups
         }
         // Old entries of ours under other event names (not written by us, but harmless to clear).
-        for name in events.keys where ![askEvent, permissionEvent, stopEvent].contains(name) {
+        for name in Array(events.keys) where ![askEvent, permissionEvent, stopEvent].contains(name) {
             let cleaned = removingOurs(from: events[name] as? [Any] ?? [])
-            if cleaned.changed { events[name] = cleaned.groups }
+            if cleaned.changed { events[name] = cleaned.groups.isEmpty ? nil : cleaned.groups }
         }
         root["hooks"] = events
         return try write(root)
@@ -154,15 +167,27 @@ public enum ClaudeHookSettings {
     }
 
     /// The first word of a shell command with its quoting removed: the inverse of
-    /// `AgentConnect.shellQuote` (`'it'\''s'` gives `it's`). Stops at unquoted whitespace.
+    /// `AgentConnect.shellQuote` (`'it'\''s'` gives `it's`), and also hand-written double quotes
+    /// (inside them a backslash escapes only `"`, `\`, `$` and a backtick, as in a shell).
+    /// Stops at unquoted whitespace.
     static func unquote(_ command: String) -> String {
         var out = ""
-        var inQuote = false
-        var escaped = false
+        var quote: Character?          // the quote character we are inside, if any
+        var escaped = false            // the previous character was an unquoted backslash
+        var pendingBackslash = false   // inside double quotes: a backslash was just seen
         for ch in command {
-            if escaped { out.append(ch); escaped = false }
-            else if inQuote { if ch == "'" { inQuote = false } else { out.append(ch) } }
-            else if ch == "'" { inQuote = true }
+            if escaped { out.append(ch); escaped = false; continue }
+            if quote == "'" {
+                if ch == "'" { quote = nil } else { out.append(ch) }
+            } else if quote == "\"" {
+                if pendingBackslash {
+                    pendingBackslash = false
+                    if !"\"\\$`".contains(ch) { out.append("\\") }
+                    out.append(ch)
+                } else if ch == "\\" { pendingBackslash = true }
+                else if ch == "\"" { quote = nil }
+                else { out.append(ch) }
+            } else if ch == "'" || ch == "\"" { quote = ch }
             else if ch == "\\" { escaped = true }
             else if ch.isWhitespace { break }
             else { out.append(ch) }
