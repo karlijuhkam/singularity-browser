@@ -64,6 +64,35 @@ import Testing
         #expect(q(#"[{"question":"x"}]"#) == .ignored)
     }
 
+    @Test func questionAndOptionLimits() {
+        func event(questions: Int, options: Int) -> ClaudeHookEvent {
+            let opts = (0..<options).map { "{\"label\":\"o\($0)\"}" }.joined(separator: ",")
+            let qs = (0..<questions).map { "{\"question\":\"q\($0)\",\"options\":[\(opts)]}" }.joined(separator: ",")
+            return parse("{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[\(qs)]}}")
+        }
+        if case .question(let qs, _) = event(questions: 4, options: 8) {
+            #expect(qs.count == 4 && qs[0].options.count == 8)
+        } else { Issue.record("4 questions with 8 options should be accepted") }
+        #expect(event(questions: 5, options: 2) == .ignored)
+        #expect(event(questions: 1, options: 9) == .ignored)
+    }
+
+    @Test func permissionNeedsAnObjectInput() {
+        #expect(parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Bash"}"#) == .ignored)
+        #expect(parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":"ls"}"#) == .ignored)
+        #expect(parse(#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":null}"#) == .ignored)
+    }
+
+    @Test func wireLineEdges() {
+        let tab = UUID().uuidString
+        #expect(ClaudeHook.parseWireLine(Data("{\"tab\":\"\(tab)\",\"hook\":null}".utf8)) == nil)
+        // Exactly maxWireBytes is accepted (the check is `>`); one byte more is rejected.
+        let head = Data("{\"tab\":\"\(tab)\",\"hook\":\"".utf8), tail = Data("\"}".utf8)
+        func line(total: Int) -> Data { head + Data(repeating: 0x61, count: total - head.count - tail.count) + tail }
+        #expect(ClaudeHook.parseWireLine(line(total: ClaudeHook.maxWireBytes)) != nil)
+        #expect(ClaudeHook.parseWireLine(line(total: ClaudeHook.maxWireBytes + 1)) == nil)
+    }
+
     @Test func hostileInputDoesNotTrap() {
         let big = String(repeating: "a", count: 1_000_000)
         let deep = String(repeating: "[", count: 100_000) + String(repeating: "]", count: 100_000)

@@ -36,10 +36,11 @@ public enum ClaudeHook {
             return .question(questions: questions, toolInput: text)
         case "PermissionRequest":
             // AskUserQuestion also raises a PermissionRequest; its dialog is the question itself.
-            guard let tool = root["tool_name"] as? String, tool != askTool else { return .ignored }
+            // A missing or odd tool_input is ignored: the owner must never approve what they can't see.
+            guard let tool = root["tool_name"] as? String, tool != askTool,
+                  let input = root["tool_input"] as? [String: Any] else { return .ignored }
             let cleanTool = InboxText.clean(tool, limit: toolNameLimit)
             guard !cleanTool.isEmpty else { return .ignored }
-            let input = (root["tool_input"] as? [String: Any]) ?? [:]
             return .permission(tool: cleanTool, input: permissionText(tool: tool, input: input))
         case "Stop":
             let raw = root["last_assistant_message"] as? String
