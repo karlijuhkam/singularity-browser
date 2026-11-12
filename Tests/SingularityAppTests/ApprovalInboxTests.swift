@@ -30,6 +30,8 @@ extension AppTests {
             self.active = active
             center.now = { [unowned self] in Date().addingTimeInterval(self.skew) }
             center.appIsActive = { [unowned self] in self.active }
+            // Not the real `NSApp`: run alone, a test may come before anything made the app object.
+            center.windowIsKey = { false }
             center.onArrival = { [unowned self] in self.arrivals.append($0) }
             center.onChange = {}
             center.requestAttention = { [unowned self] in self.attention += 1 }
@@ -470,6 +472,45 @@ extension AppTests {
         // Showing an already open panel again does not move the lock.
         rig.passTheLockout()
         rig.center.showPanel(takingFocus: false)
+        rig.center.perform(.decideApproval(entry.id, .approved))
+        #expect(await answer.value.logValue == "approved")
+    }
+
+    /// Only a card added, removed or moved restarts the lock. An agent rewriting its waiting
+    /// message in place (as fast as it likes) does not, so it cannot keep the buttons locked.
+    @Test func textUpdatedInPlaceDoesNotRestartTheLock() async throws {
+        MainRunLoopGuard.start
+        let rig = Rig()
+        let space = askingSpace()
+        let terminalTab = UUID()
+        func blocked(_ message: String) -> TerminalSignal {
+            .status([StatusRecord(id: "", state: .blocked, kind: .attention, app: "claude-code", message: message)])
+        }
+        rig.center.terminalSignal(blocked("first"), tabID: terminalTab, spaceID: space.id, foregroundProgram: "claude")
+        let answer = rig.check(click, space, clickRequest())
+        let entry = try await rig.waitForEntry()
+        let visibleIDs = rig.center.inbox.visible.map(\.id)
+        #expect(visibleIDs.count == 2)
+        rig.passTheLockout()
+
+        // The waiting entry's text changes several times: same cards, same order, no lock.
+        for i in 0..<5 {
+            rig.center.terminalSignal(blocked("update \(i)"), tabID: terminalTab, spaceID: space.id, foregroundProgram: "claude")
+        }
+        #expect(rig.center.inbox.visible.map(\.id) == visibleIDs)
+        #expect(rig.center.inbox.visible.contains { $0.message == "update 4" })
+        #expect(rig.center.answersUnlockAt <= rig.center.now())
+
+        // A new card (another terminal) restarts it: a click now is ignored.
+        rig.center.terminalSignal(.bell, tabID: UUID(), spaceID: space.id, foregroundProgram: "claude")
+        #expect(rig.center.inbox.visible.count == 3)
+        #expect(rig.center.answersUnlockAt > rig.center.now())
+        rig.center.perform(.decideApproval(entry.id, .approved))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rig.waiting.map(\.id) == [entry.id])
+
+        // After it, the click counts.
+        rig.passTheLockout()
         rig.center.perform(.decideApproval(entry.id, .approved))
         #expect(await answer.value.logValue == "approved")
     }

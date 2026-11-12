@@ -48,14 +48,16 @@ final class InboxCenter {
     static let maxWaitingApprovalsPerSpace = 5
 
     /// Clicks on an approval's answer buttons (Allow, Allow on <site>, Deny) count only from this
-    /// moment on. Moved `answerLockout` into the future when the panel appears and whenever the
-    /// visible cards change: answering one card removes it and the next one moves up under the
-    /// mouse, so the second click of a double-click on Deny could otherwise land on the next
-    /// card's Allow; and a panel opening by itself could appear under a click meant for the window.
+    /// moment on. Moved `answerLockout` into the future when the panel appears and whenever a
+    /// card is added, removed or moved: answering one card removes it and the next one moves up
+    /// under the mouse, so the second click of a double-click on Deny could otherwise land on the
+    /// next card's Allow; and a panel opening by itself could appear under a click meant for the
+    /// window. A card whose text is updated in place does not move the lock: an agent rewriting
+    /// its status quickly must not be able to keep the buttons locked.
     @ObservationIgnored private(set) var answersUnlockAt: Date = .distantPast
     static let answerLockout: TimeInterval = 0.5
-    /// What the panel showed when `answersUnlockAt` was last moved.
-    @ObservationIgnored private var lastVisible: [InboxEntry] = []
+    /// The visible entries' ids, in order, when `answersUnlockAt` was last moved.
+    @ObservationIgnored private var lastVisibleIDs: [UUID] = []
 
     /// The rail's tray button (its AppKit view), so the panel can open beside it.
     @ObservationIgnored weak var railAnchor: NSView?
@@ -244,12 +246,13 @@ final class InboxCenter {
         answersUnlockAt = now().addingTimeInterval(Self.answerLockout)
     }
 
-    /// After any change of the list: lock the answer buttons when what the panel shows changed
-    /// (cards added, removed or changed), then tell the notifier (`onChange`).
+    /// After any change of the list: lock the answer buttons when the set or order of visible
+    /// cards changed (added, removed, moved; not a text updated in place), then tell the
+    /// notifier (`onChange`).
     private func listDidChange() {
-        let visible = inbox.visible
-        if visible != lastVisible {
-            lastVisible = visible
+        let ids = inbox.visible.map(\.id)
+        if ids != lastVisibleIDs {
+            lastVisibleIDs = ids
             lockAnswers()
         }
         onChange()
