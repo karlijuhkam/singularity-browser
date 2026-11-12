@@ -378,7 +378,7 @@ Made while writing, please check:
   and a link (`open -g -n -a <bundle> --env SINGULARITY_HOME=… <url>`, see CLAUDE.md): a link that
   starts the app arrives and its little window opens in front of the main window; a second link
   to the running copy gets a second window; nothing is written to the Space; the frontmost app
-  stays what it was.
+  stays what it was. With a temporary hook (not committed) that closed the main window and then
+  ran "Open in …": the main window came back, the app did not quit, and the page was a tab.
 - **Not checked, for the owner to try with the installed release:** the System Settings browser
-  list and the "change default browser" dialog, the look of the active window, "Open in …" after
-  the main window was closed, 1Password filling a login in a little window.
+  list and the "change default browser" dialog, the look of the active window, 1Password filling a login in a little window.
