@@ -86,6 +86,7 @@ final class InboxCenter {
         isPanelShown = false
         guard let tabID = entry.tabID else { return }
         state?.showTab(tabID, in: entry.spaceID)
+        // `showTab` already counts as going there; this clears the entry anyway when the tab is gone.
         if !Self.isApproval(entry) { wentToTerminal(tabID) }
     }
 

@@ -405,6 +405,15 @@ import Testing
         #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("2;3")) == nil)
         #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("")) == nil)
     }
+    @Test func osc9NumberedSubCommandsAreIgnored() {
+        // ConEmu-style sub-commands; some prompt themes send `9;9;<cwd>` at every prompt.
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("9;/Users/me/project")) == nil)
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("1;500")) == nil)
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("12;text")) == nil)
+        // Text that merely starts with a number is still a notification.
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("3 tests failed"))
+                == .notification(title: "", body: "3 tests failed"))
+    }
     @Test func otherCodesAndBadBytesAreIgnored() {
         #expect(TerminalNotificationPayload.signal(code: 0, payload: bytes("title")) == nil)
         #expect(TerminalNotificationPayload.signal(code: 9, payload: [0xFF, 0xFE, 0x41]) == nil)

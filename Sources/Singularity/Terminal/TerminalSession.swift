@@ -328,8 +328,13 @@ final class TerminalSession {
             terminalLog.notice("tab \(self.tabID, privacy: .public): foreground \(program ?? "<shell>", privacy: .public) (group \(group ?? -1), shell \(shellPID))")
             let backAtTheShell = foregroundProgram != nil && program == nil
             foregroundProgram = program
-            // The agent (or whatever ran) is gone: its inbox entry and working count go too.
-            if backAtTheShell { inboxSignal(.programExited) }
+            if backAtTheShell {
+                // The agent (or whatever ran) is gone: its inbox entry and working count go too.
+                inboxSignal(.programExited)
+                // SwiftTerm keeps a program's last status records (done, idle, error) after it has
+                // gone; the next record from another program would bring them back with it.
+                view.clearProgramStatus()
+            }
         }
 
         if let directory = ProcessInspector.currentDirectory(pid: shellPID) {
@@ -358,6 +363,9 @@ final class TerminalSession {
 
     /// The shell is gone: close the tab (a normal exit, if the setting says so) or say what happened.
     private func shellEnded(exitCode: Int32?) {
+        // Here, not in `processTerminated`: with herdr-core that only means the view let go
+        // (detached), and the agent may still be running.
+        inboxSignal(.programExited)
         if exitCode == 0, state?.settings.closeTerminalOnExit ?? true {
             // `exit` or Ctrl-D at the prompt: close the tab, like most terminals do.
             state?.closeTab(tabID, in: spaceID, confirmIfBusy: false)
@@ -407,7 +415,6 @@ extension TerminalSession: @MainActor LocalProcessTerminalViewDelegate {
         pollTimer?.invalidate()
         pollTimer = nil
         guard !isClosing else { return }
-        inboxSignal(.programExited)
 
         if let herdrPath {
             herdrAttachEnded(hc: herdrPath)
@@ -458,6 +465,9 @@ final class SingularityTerminalView: LocalProcessTerminalView {
     static func watchKeys() { _ = keyMonitor }
 
     private static let keyMonitor: Any? = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        // The monitor sees keys before the menus do: ⌘-shortcuts (⌘1…9, ⌘T, Show Inbox) are
+        // commands to the app, not typing in the terminal.
+        guard !event.modifierFlags.contains(.command) else { return event }
         let window = event.window
         // Local monitors run on the main thread.
         MainActor.assumeIsolated {

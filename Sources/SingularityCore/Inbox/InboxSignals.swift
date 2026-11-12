@@ -33,8 +33,10 @@ extension StatusRecord {
 /// Terminal notifications, from the raw bytes of an OSC sequence (what follows `ESC ] <code> ;`).
 public enum TerminalNotificationPayload {
     /// - OSC 777: `notify;<title>;<body>` (the body may contain `;`). Anything else is ignored.
-    /// - OSC 9: the payload is the text. `4;…` is a progress report, not a notification, and a
-    ///   payload of only digits and semicolons is some other numbered sub-command: both ignored.
+    /// - OSC 9: the payload is the text. A payload that starts with a number and `;` is a
+    ///   numbered sub-command, not a notification (`4;…` progress report, ConEmu's `9;<cwd>`,
+    ///   which some prompt themes send at every prompt), and so is one of only digits and
+    ///   semicolons: all ignored.
     /// Nil for other codes and for bytes that aren't UTF-8. The text is not cleaned here: the
     /// inbox cleans everything it keeps.
     public static func signal(code: Int, payload: [UInt8]) -> TerminalSignal? {
@@ -44,8 +46,14 @@ public enum TerminalNotificationPayload {
             guard parts.count >= 3, parts[0] == "notify" else { return nil }
             return .notification(title: parts[1], body: parts[2...].joined(separator: ";"))
         }
-        if text.hasPrefix("4;") || text.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ";") }) { return nil }
+        if isSubCommand(text) || text.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ";") }) { return nil }
         return .notification(title: "", body: text)
+    }
+
+    /// One or more ASCII digits, then `;`.
+    private static func isSubCommand(_ text: String) -> Bool {
+        let digits = text.prefix { $0.isASCII && $0.isNumber }
+        return !digits.isEmpty && text.dropFirst(digits.count).first == ";"
     }
 }
 
