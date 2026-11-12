@@ -9,13 +9,15 @@ If you want to add something that is not in the brief, write it to `IDEAS.md` un
 
 ## Explicitly out of scope for v1
 Do not build, scaffold, or leave TODOs for:
-sync of any kind · browser extensions (WebExtensions/WKWebExtension; Singularity plugins replace them) · built-in AI or chat UI (AI only inside plugins, round 2) · Windows/Linux/iOS · Peek/Little Arc-style windows · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
+sync of any kind · browser extensions (WebExtensions/WKWebExtension; Singularity plugins replace them) · built-in AI or chat UI (AI only inside plugins, round 2) · Windows/Linux/iOS · Peek windows for links clicked inside Singularity · bookmarks beyond pinned tabs and folders · history UI beyond what the command palette needs · reader mode · ad blocking · themes · API routes on the artifact server · databases · an entity store · calendar/email/notes integration · agent orchestration (Herdr already does that; we only host terminals).
 
 **Scope change (owner decision, after Phase 4):** tiling / split view is *in* v1, built before Phase 5: nested splits (any pane splits right or down), Arc-style split groups, created via context menu, drag and drop, keyboard and palette.
 
 **Scope change (owner decision, plugins round 1):** Singularity plugins (not a tab type) are in v1; see the spec (`docs/superpowers/specs/2026-11-09-plugins-design.md`).
 
 **Scope change (owner decision, 2026-11-10):** everything listed in `IDEAS.md` is approved to be built, except its sections "Decided against" and "New, not yet decided". `IDEAS.md` has the order and the rules (projects need an owner-approved design first; small items don't). Where an approved item overlaps the out-of-scope list above (e.g. the plugin storage API, download UI), the item in `IDEAS.md` wins; the rest of the list still holds.
+
+**Scope change (owner decision, 2026-11-12):** little windows are in: a link clicked in another app opens in its own throwaway window, from which it can be opened in a Space (`docs/superpowers/specs/2026-11-12-little-window-design.md`). With it, Singularity can be the default browser (release builds only). Not a tab type, and still out: Peek for links inside Singularity, a setting to skip the little window.
 
 ## Hard constraints
 - Swift + SwiftUI (AppKit where SwiftUI falls short). No Electron, no web-based app chrome.
@@ -40,7 +42,9 @@ Sources/
                      InspectionRules (console/network: Space switch × site switch), PageCapture (the in-memory store)
     Import/          ArcImport (reads Arc's StorableSidebar.json, builds Spaces)
     Updates/         UpdatePolicy (may this copy update itself? from its Info.plist keys, SINGULARITY_HOME and the bundle path)
-    Web/             LoadErrorPage, PageZoom, Downloads (file naming, status text)
+    Web/             LoadErrorPage, PageZoom, Downloads (file naming, status text), LittleWindow (LittleWindowRules:
+                     which links open one, address text, home Space, move or reload), DefaultBrowser (which copies claim
+                     links, the Settings row's status)
     Agent/           AgentToolName (<slug>.<tool> naming), UntrustedContent (wrapping page text for agents),
                      AgentPolicy (readOnly / ask / allowAll + the approval rules table), AgentLog (agent-log.jsonl),
                      AgentConnect (Connect rows: add/remove commands, reading the "singularity" entry from the
@@ -78,6 +82,9 @@ Sources/
                      AgentLoginShell: the checks and Connect/Update), AgentConnectRows (the rows, for Settings and the flow)
     Plugins/         PluginManager (scan, approve, run), PluginPrelude (page API + click guards), PluginScripts,
                      PluginPageBridge, PluginApprovalSheet; Settings → Plugins
+    LittleWindow/    LittleWindows (+ LittleWindow: open, close, open in a Space), LittleWindowChrome (the title bar: an
+                     NSToolbar with address, Space menu, Open button; the page view), LinkInbox (links wait for the app
+                     state), DefaultBrowser (Settings row; `DefaultBrowserSystem` so tests never ask macOS)
     Split/           SplitViews (recursive panes + draggable gaps), PaneContainerView (hosts a tab's view; drop
                      overlay during tab drags; click-to-focus monitor), PaneDragHandle (pane header drag source)
   singularity-mcp/   Stdio launcher agents start: relays bytes to ~/Singularity/.run/mcp.sock, starts the app if needed
@@ -90,7 +97,7 @@ LICENSE                 MIT
 Tests/SingularityCoreTests/   Swift Testing
 Tests/SingularityAppTests/    real AppKit/WebKit in off-screen windows: the web tab (error page, login sheet, find, zoom,
                               print), the agent approval sheet, the console/network collector against a fixture site,
-                              the Connect rows (fake shell), the welcome flow, the orb (against `Fixtures/` frames from
+                              the Connect rows (fake shell), the welcome flow, little windows (a fixture site), the orb (against `Fixtures/` frames from
                               `render_orb.py`). Every suite is nested in `AppTests` (serialized) and starts
                               `MainRunLoopGuard` first; see AppTests.swift. A real `AppState` works in tests: build it
                               with `TestAppState.make(root: TestAppState.makeRoot())` (a short `/private/tmp/sg-t-<8 hex>`
@@ -139,7 +146,17 @@ Key decisions:
   - **The launcher starts its own bundle.** `singularity-mcp` starts the app it lives in by path (not by bundle ID, which the daily and development copies share), and while an update installer is running it waits and retries the socket rather than start a copy that would collide on the instance lock.
   - **Sparkle's preferences are a second known exception to "everything under `~/Singularity/`".** It keeps its small state (`SULastCheckTime`, `SUSkippedVersion`, its window frame) in the app's macOS preferences, `~/Library/Preferences/dev.roosa.Singularity.plist`. Every copy shares it with the real copy (same bundle ID), so in a test copy never click "Skip This Version": it would make the real copy skip that version.
   - **Not done on purpose:** more update tracks (stable/beta, see `IDEAS.md`), delta updates, silent installs, building on GitHub.
-- **Settings window** (⌘,, SwiftUI `Settings` scene, `Sources/Singularity/Settings/`): General (search engine: `AppSettings.searchTemplate`, a URL with `%s`; "Check for updates automatically", the version and Check Now), Terminal (font, size, close on exit), Agents (all Spaces' agent switch + policy via `AppState.updateSpace`, approval timeout, "Connect agents": the Connect/Update rows for Claude Code and Codex with the commands to copy), Data & privacy (paths, per-Space clear history / site data / agent log). Stored in `~/Singularity/settings.json` (`AppSettings`, tolerant decoding); always change it through `AppState.updateSettings`.
+- **Little windows** (spec `docs/superpowers/specs/2026-11-12-little-window-design.md`). A web link from another app opens in its own small window (`AppState.openLink` → `LittleWindows.open`), one per link, never reused, with the logins and plugins of the Space that was selected then (its *home Space*). "Open in <Space>" (⌘O) moves the live page into the home Space as a tab without a reload, or loads the address again in another Space; closing leaves nothing. Things to keep:
+  - **One registry, no tab.** The page is a normal `WebTabController` in `WebViewRegistry` (`littleController`), under an id no `BrowserTab` has, with `isLittle` set. So plugin scripts and `tabID(for:)` cover it, and moving it into its Space is just `adoptLittlePage`: add a `BrowserTab` with that id, `joinSpace()`, `showTab`. The little window's `LittleWebHost` adds the web view once and never takes it back, so the pane can have it.
+  - **While `isLittle`:** no `webTabDidChange` (it would find no tab but still mark the Space dirty and rewrite `space.json`), no history entry, no favicon file; `createWebViewWith` loads in the same view (no pop-ups, so pop-up sign-in doesn't complete there); `window.close()` and a link that turns out to be a download (no page committed yet) close the window; `CaptureBridge` keeps nothing; no agent tool can reach it (tools go through a Space's tabs). `joinSpace()` records the visit and fetches the favicon that were skipped.
+  - **Downloads outlive their window:** `WKDownload` holds its delegate weakly, so a controller keeps itself alive in `WebTabController.downloading` until its download ends.
+  - **Menu.** While a little window is key (`little.keyWindow`, from its `NSWindowDelegate`), page commands go to `AppState.frontController`, ⌘W (`closeTabCommand`) closes the window and never a tab, tab/split/sidebar commands and Open Location are off, and commands that go somewhere in the main window call `showMainWindow` first. Agent approval sheets are pinned to the main window (`approvals.presentingWindow` in `AppState.init`).
+  - **Main window.** `MainView` reports its `NSWindow` (`MainWindowReader`) and stores `openWindow(id: "main")` in `AppState.openMainWindow`. "Open in …" shows the main window *before* closing the little one: if the main window was closed, the little window may be the last, and closing the last window quits the app.
+  - **Deleting a Space** closes its little windows first (`little.spaceWillBeDeleted`): their controllers are in no tab list, and WebKit won't remove a data store that is in use.
+  - **Receiving links.** `AppDelegate` installs its own handler for the "open URL" Apple event in `applicationWillFinishLaunching` (it replaces AppKit's, so SwiftUI never reacts to the link with the main scene) and keeps `application(_:open:)` as the fallback; both feed `LinkInbox`, which holds links until the app state is attached (a link that starts the app). Only http/https.
+  - **Only release bundles claim links.** Every bundle here has the same bundle id; if `build/`, test or scratch bundles declared http/https too, macOS could hand a link to a copy that isn't running, which exits on `InstanceLock` and the link is lost. So `Resources/Info.plist` has no `CFBundleURLTypes`; `release.sh` adds them in release mode only (`claim_web_links`, checked in `test-release.sh`). Settings → General → "Default browser" compares by bundle id (`DefaultBrowserRules`), names another copy that is the default, and offers "Make Default…" only in a bundle that claims links.
+  - **In tests and trials:** never send a link through macOS (`open https://…` goes to the owner's daily copy) and never click "Make Default…" (it changes the owner's Mac; tests use `FakeDefaultBrowserSystem`). Tests call `state.little.open` with `staysOffScreen = true`; `SG_LITTLE_SNAPSHOT=<file.png> swift test --filter LittleWindowTests/snapshot` writes a picture of a little window with its title bar.
+- **Settings window** (⌘,, SwiftUI `Settings` scene, `Sources/Singularity/Settings/`): General (search engine: `AppSettings.searchTemplate`, a URL with `%s`; "Default browser", see Little windows; "Check for updates automatically", the version and Check Now), Terminal (font, size, close on exit), Agents (all Spaces' agent switch + policy via `AppState.updateSpace`, approval timeout, "Connect agents": the Connect/Update rows for Claude Code and Codex with the commands to copy), Data & privacy (paths, per-Space clear history / site data / agent log). Stored in `~/Singularity/settings.json` (`AppSettings`, tolerant decoding); always change it through `AppState.updateSettings`.
 - **Web tab basics** (`WebTabController`): `developerExtrasEnabled` (set by key) gives right-click → Inspect Element; a failed load shows `LoadErrorPage` (Core) via `loadSimulatedRequest`, so the address stays the failed one and Reload retries it; HTTP Basic/Digest sites get a login dialog (`.forSession` credentials, never the keychain); find in page is our own `FindBar` over `webView.find` (WKWebView has no find bar on macOS); zoom uses `pageZoom` and the `PageZoom` ladder. Camera and microphone need the two usage strings in Info.plist *and* the two entitlements in `Singularity.entitlements`; WebKit then asks per site.
 - **Launch safety.** `InstanceLock` (Core): an `flock` on `<root>/.run/lock` taken in `SingularityApp.init` before `AppState` exists; a second copy on the same data folder activates the first and exits. `SpaceStore.load` skips a Space folder whose id is already loaded (a copied folder) and reports it; load errors are shown in an alert at launch (`AppDelegate.reportLoadErrors`), and unreadable files are never overwritten. Dialogs from pages (alert/confirm/prompt, HTTP login) are only shown for tabs that are on screen.
 - WKWebViews are created lazily (only when a tab is first shown) and kept alive across Space switches.

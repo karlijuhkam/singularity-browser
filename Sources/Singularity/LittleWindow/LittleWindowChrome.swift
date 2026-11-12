@@ -73,6 +73,8 @@ final class LittleWindowChrome: NSObject, NSToolbarDelegate {
         openButton.target = self
         openButton.action = #selector(openInSpace)
         openButton.toolTip = "⌘O"
+        // The window's main action: drawn in the accent colour, like a default button.
+        openButton.bezelColor = .controlAccentColor
 
         let toolbar = NSToolbar(identifier: "little-window")
         toolbar.delegate = self

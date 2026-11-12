@@ -255,6 +255,55 @@ extension AppTests {
         #expect(ofPersonal.chrome?.openButtonTitle == "Open in Personal")
     }
 
+    /// Not a check: with SG_LITTLE_SNAPSHOT=<file.png> it writes a picture of a little window
+    /// (title bar included), to look at the chrome without putting a window on screen.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SG_LITTLE_SNAPSHOT"] != nil))
+    func snapshot() async throws {
+        let setup = try setUp()
+        defer { setup.tearDown() }
+        let little = try #require(setup.state.little.open(setup.server.url.appending(path: "two")))
+        try await waitUntil("the page to load", limit: .seconds(15)) { little.controller.webView.title == "two" }
+        try await Task.sleep(for: .milliseconds(500))
+        let frame = try #require(little.window.contentView?.superview) // the window's frame view: title bar + content
+        let bitmap = try #require(frame.bitmapImageRepForCachingDisplay(in: frame.bounds))
+        frame.cacheDisplay(in: frame.bounds, to: bitmap)
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        try png.write(to: URL(fileURLWithPath: ProcessInfo.processInfo.environment["SG_LITTLE_SNAPSHOT"]!))
+    }
+
+    @Test func defaultBrowserRow() {
+        let fake = FakeDefaultBrowserSystem()
+        let claiming: [String: Any] = ["CFBundleURLTypes": [["CFBundleURLSchemes": ["http", "https"]]]]
+        let installed = URL(fileURLWithPath: "/Applications/Singularity.app")
+        let id = "dev.roosa.Singularity"
+
+        // Safari is the default: the installed release offers the button, and asks macOS once.
+        fake.current = ("/Applications/Safari.app", "com.apple.Safari")
+        let row = DefaultBrowser(system: fake, infoPlist: claiming, bundleURL: installed, bundleID: id)
+        #expect(row.status == .notDefault)
+        row.makeDefault()
+        #expect(fake.asked == [installed])
+        // The user said yes in the system dialog: the row follows.
+        fake.current = (installed.path, id)
+        fake.answer?(nil)
+        #expect(row.status == .isDefault)
+        row.makeDefault() // nothing to do now
+        #expect(fake.asked.count == 1)
+        // Changed back in System Settings: seen at the next look.
+        fake.current = ("/Applications/Safari.app", "com.apple.Safari")
+        row.refresh()
+        #expect(row.status == .notDefault)
+
+        // A development build never asks, whatever is the default.
+        let dev = DefaultBrowser(system: fake, infoPlist: [:], bundleURL: URL(fileURLWithPath: "/Users/me/dev/build/Singularity.app"), bundleID: id)
+        #expect(!dev.status.canMakeDefault)
+        dev.makeDefault()
+        #expect(fake.asked.count == 1)
+        fake.current = (installed.path, id)
+        dev.refresh()
+        #expect(dev.status == .otherCopyIsDefault(path: installed.path))
+    }
+
     @Test func linksWaitUntilTheAppIsReady() {
         let inbox = LinkInbox()
         var delivered: [String] = []
@@ -284,6 +333,20 @@ extension AppTests {
         #expect(delivered.map(\.absoluteString) == ["https://example.com/from-slack", "https://example.com/other"])
     }
 }
+}
+
+@MainActor
+private final class FakeDefaultBrowserSystem: DefaultBrowserSystem {
+    var current: (path: String, bundleID: String?)?
+    var asked: [URL] = []
+    var answer: (@MainActor (Error?) -> Void)?
+
+    func currentDefault() -> (path: String, bundleID: String?)? { current }
+
+    func makeDefault(bundleURL: URL, done: @escaping @MainActor (Error?) -> Void) {
+        asked.append(bundleURL)
+        answer = done
+    }
 }
 
 /// A navigation action with a request, for calling the "new window" delegate method directly.

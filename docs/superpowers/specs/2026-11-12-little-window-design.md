@@ -1,10 +1,7 @@
 # Little windows for links from other apps: design
 
-Date: 2026-11-12. Status: draft, waiting for the owner's approval.
-
-**When:** not before the updates project (`2026-11-12-updates-design.md`) is finished and the
-owner's daily copy runs from `/Applications` (owner decision, 2026-11-12: "let's wait for the
-installed copy and the update work to finish"). See "Which copy receives links".
+Date: 2026-11-12. Status: approved by the owner and built (2026-11-12, "let's build it now"), after
+the updates project was finished and the daily copy moved to `/Applications`.
 
 ## Why
 
@@ -360,3 +357,18 @@ Made while writing, please check:
 10. A link that is a download closes its (empty) little window once the download has started.
 11. Agent approval sheets always appear on the main browser window, never on a little window.
 12. The Settings row compares by bundle id and names the path when another copy is the default.
+
+## As built
+
+- **Receiving links:** the app delegate installs its own handler for the "open URL" Apple event
+  (replacing AppKit's), so SwiftUI is never involved and `handlesExternalEvents` was not needed.
+  `application(_:open:)` stays as the fallback.
+- **Title bar:** an `NSToolbar` (unified compact) with plain AppKit controls: a centred label, an
+  `NSPopUpButton`, an `NSButton`. ⌘O is the File menu's "Open in <Space>".
+- **Only `http`/`https` schemes are declared** by release bundles, no HTML document type. Whether
+  that is enough for System Settings' browser list can only be seen with an installed release:
+  the owner's check. If Singularity is missing from the list, add the document type in
+  `claim_web_links`.
+- **Not checked by a test, for the owner to try:** the look of the active window, a link that
+  starts the app, "Open in …" after the main window was closed, the macOS "change default browser"
+  dialog.

@@ -37,3 +37,21 @@ set_plist_version() {
     die "CFBundleShortVersionString or CFBundleVersion not found\n" unless $short == 1 && $build == 1;
   ' "$plist"
 }
+
+# claim_web_links <Info.plist>: declares the http and https URL schemes in a *bundle's* Info.plist,
+# which is what lets macOS offer the app as the default web browser and send it links.
+# Only release.sh calls this, and only for a real release: every bundle built from this repository
+# has the same bundle id, so if build/, test or scratch bundles claimed links too, macOS could hand
+# a link to a copy that isn't the running one, which exits (the data folder is in use) and the
+# link is lost. The checked-in Resources/Info.plist therefore has no CFBundleURLTypes.
+claim_web_links() {
+  local plist="$1" pb=/usr/libexec/PlistBuddy
+  "$pb" -c "Add :CFBundleURLTypes array" \
+        -c "Add :CFBundleURLTypes:0 dict" \
+        -c "Add :CFBundleURLTypes:0:CFBundleURLName string 'Web site URL'" \
+        -c "Add :CFBundleURLTypes:0:CFBundleTypeRole string Viewer" \
+        -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" \
+        -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string http" \
+        -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:1 string https" \
+        "$plist" >/dev/null
+}
