@@ -390,18 +390,31 @@ struct PluginProcessTests {
 
     @Test(.timeLimit(.minutes(1))) func stopKillsAPluginThatIgnoresSigterm() async throws {
         // Ignores SIGTERM, then blocks its only thread so it can't notice stdin closing either.
-        let ws = try makeWorkspace(background: """
+        // The test waits for the first reply (Bun is up, SIGTERM is ignored) and for the "blocking" line
+        // (the thread is stuck) before it stops the plugin. A fixed sleep here used to lose the race on
+        // a busy Mac: SIGTERM reached Bun before the script ran and ended it with status 15.
+        let ws = try makeWorkspace(background: #"""
             import { singularity } from "singularity";
+            import { writeSync } from "node:fs";
             process.on("SIGTERM", () => {});
-            singularity.onPageMessage(() => { while (true) {} });
-            """)
+            let seen = 0;
+            singularity.onPageMessage(() => {
+              if (seen++ === 0) return "ready";
+              writeSync(1, JSON.stringify({ kind: "log", level: "info", message: "blocking" }) + "\n");
+              while (true) {}
+            });
+            """#)
         defer { ws.remove() }
         let process = try makeProcess(ws)
         let recorder = Recorder()
         recorder.attach(process)
         try process.start()
-        process.send(message(1, .string("block")))
-        try await Task.sleep(for: .milliseconds(500))
+        process.send(message(1, .string("ready?")))
+        _ = try await recorder.reply(1)
+        process.send(message(2, .string("block")))
+        _ = try await waitFor("the plugin to block") {
+            recorder.logLines.contains { $0.message == "blocking" } ? true : nil
+        }
         let stopped = ContinuousClock.now
         process.stop()
         let status = try await waitFor("exit") { recorder.exitStatuses.first }

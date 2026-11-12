@@ -93,7 +93,7 @@ REPO="karlijuhkam/singularity-browser"
 FEED_URL="https://github.com/$REPO/releases/latest/download/appcast.xml"
 # The public half of the update key (Sparkle's generate_keys prints it). Installed copies accept only
 # updates signed with the matching private key, which stays in the owner's login keychain.
-PUBLIC_ED_KEY=""
+PUBLIC_ED_KEY="hO/9GxYmFDaekoMQ53IGitcliVB4Apw0pvARx60qYpk="
 # The only team that may sign a release (this Mac also holds another company's certificates).
 RELEASE_TEAM="T748B76PPL"
 TEAM_ID="${TEAM_ID:-$RELEASE_TEAM}"
