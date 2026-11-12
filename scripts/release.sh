@@ -122,6 +122,8 @@ echo "  architectures: $(lipo -archs "$APP/Contents/MacOS/Singularity")"
 
 # ---- sign ---------------------------------------------------------------------------------------
 echo "→ signing with: $IDENTITY_NAME ($IDENTITY)"
+# The self-updater's framework, copied and signed inside-out (before the bundle itself).
+"$ROOT/scripts/embed-sparkle.sh" "$APP" "$BIN_DIR" "$IDENTITY" --timestamp
 # Inner executables first, then the bundle. --timestamp is required for notarization.
 codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/singularity-mcp"
 # Bun's JavaScript engine needs JIT entitlements under the hardened runtime.

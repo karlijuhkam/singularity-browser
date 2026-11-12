@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	ONLY for ad-hoc signed bundles from scripts/build-app.sh (SIGN_IDENTITY "-"), which adds these
+	keys to Singularity.entitlements. Never used by release.sh.
+	Under the hardened runtime, the app may only load frameworks signed by its own team. An ad-hoc
+	signature has no team, so dyld refuses the embedded Sparkle.framework ("different Team IDs")
+	unless library validation is switched off.
+	-->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>
