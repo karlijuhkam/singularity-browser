@@ -44,6 +44,8 @@ final class TerminalSession {
     @ObservationIgnored private var herdrPath: String?
     /// The shell's process id as herdr-core reports it (the view's own child is `hc attach`).
     @ObservationIgnored private var herdrShellPID: pid_t?
+    /// Keeps SwiftTerm sending us OSC sequences (notifications for the inbox); see `didStartProcess`.
+    @ObservationIgnored private var oscObservation: TerminalOscObservation?
 
     /// - Parameter herdr: the installed `hc` to run the shell through, or nil for the built-in terminal.
     init(tabID: UUID, spaceID: UUID, spaceSlug: String, workingDirectory: String, font: NSFont, state: AppState?,
@@ -65,6 +67,18 @@ final class TerminalSession {
             guard let self, !self.isRunning else { return }
             self.state?.restartTerminal(self.tabID, in: self.spaceID)
         }
+        // The agent inbox: a bell may mean "waiting for you"; a click or a key in the terminal
+        // means the owner went to it.
+        view.onBell = { [weak self] in
+            guard let self else { return }
+            self.refresh() // a bell only counts with a program in front: know it now, not next poll
+            self.inboxSignal(.bell)
+        }
+        view.onUserInput = { [weak self] in
+            guard let self, !self.isClosing else { return }
+            self.state?.inbox.wentToTerminal(self.tabID)
+        }
+        SingularityTerminalView.watchKeys()
         start(in: workingDirectory)
     }
 
@@ -140,12 +154,30 @@ final class TerminalSession {
             }
         }
 
+        // Terminal notifications for the inbox: OSC 777 (`notify;<title>;<body>`) and OSC 9 (text).
+        // We observe rather than `registerOscHandler`: a registered handler replaces SwiftTerm's
+        // own, and SwiftTerm's OSC 9 handler is what reads `9;4` progress reports. The observer
+        // gets a copy of every OSC sequence on a private queue, after SwiftTerm handled it as
+        // usual; we keep only notifications and hop to the main actor with them.
+        if oscObservation == nil {
+            oscObservation = view.observeOscEvents { [weak self] event in
+                guard let signal = TerminalNotificationPayload.signal(code: event.code, payload: event.payload) else { return }
+                Task { @MainActor in self?.inboxSignal(signal) }
+            }
+        }
+
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             // Timers scheduled from the main thread fire on the main thread.
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
+    }
+
+    /// Hands a terminal signal to the inbox (not once the tab is closing: its entries are gone).
+    private func inboxSignal(_ signal: TerminalSignal) {
+        guard !isClosing else { return }
+        state?.inbox.terminalSignal(signal, tabID: tabID, spaceID: spaceID, foregroundProgram: foregroundProgram)
     }
 
     // MARK: - herdr-core
@@ -294,7 +326,10 @@ final class TerminalSession {
         let program = isShellInForeground ? nil : group.flatMap { ProcessInspector.programName(pid: $0) }
         if program != foregroundProgram {
             terminalLog.notice("tab \(self.tabID, privacy: .public): foreground \(program ?? "<shell>", privacy: .public) (group \(group ?? -1), shell \(shellPID))")
+            let backAtTheShell = foregroundProgram != nil && program == nil
             foregroundProgram = program
+            // The agent (or whatever ran) is gone: its inbox entry and working count go too.
+            if backAtTheShell { inboxSignal(.programExited) }
         }
 
         if let directory = ProcessInspector.currentDirectory(pid: shellPID) {
@@ -352,12 +387,27 @@ extension TerminalSession: @MainActor LocalProcessTerminalViewDelegate {
         refresh()
     }
 
+    /// A program reported its state (OSC 7501): all of the tab's current records, `[]` when none
+    /// are left. SwiftTerm has already decoded the base64 text and answered the program's
+    /// start-up probe (`ESC ] 7501 ; ?`), without which Claude Code sends no records at all.
+    func programStatusChanged(source: TerminalView, records: [TerminalProgramStatus]) {
+        // SwiftTerm tidies the records when the shell ends and tells us after `processTerminated`;
+        // leftovers ("done") of an ended shell must not make a new entry.
+        guard isRunning else { return }
+        let mapped = records.compactMap { record in
+            StatusRecord(terminalID: record.id, state: record.state.rawValue, kind: record.kind?.rawValue,
+                         app: record.effectiveApp ?? record.app, message: record.message)
+        }
+        inboxSignal(.status(mapped))
+    }
+
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         isRunning = false
         foregroundProgram = nil
         pollTimer?.invalidate()
         pollTimer = nil
         guard !isClosing else { return }
+        inboxSignal(.programExited)
 
         if let herdrPath {
             herdrAttachEnded(hc: herdrPath)
@@ -367,10 +417,54 @@ extension TerminalSession: @MainActor LocalProcessTerminalViewDelegate {
     }
 }
 
-/// SwiftTerm's view, with two additions: it follows light/dark mode, and after the shell has
-/// exited, Return starts a new one.
+/// SwiftTerm's view, with a few additions: it follows light/dark mode, after the shell has
+/// exited Return starts a new one, and it tells the session about bells and the owner's clicks
+/// and keys (for the agent inbox).
 final class SingularityTerminalView: LocalProcessTerminalView {
     var onReturnAfterExit: (() -> Void)?
+    /// The program rang the bell (BEL). Main actor; a burst of bells arrives as one call.
+    var onBell: (() -> Void)?
+    /// The owner clicked or typed in the terminal.
+    var onUserInput: (() -> Void)?
+    /// True while a bell is on its way to the main actor. A lock, because SwiftTerm rings the bell
+    /// from its I/O thread.
+    private nonisolated let bellPending = OSAllocatedUnfairLock(initialState: false)
+
+    /// SwiftTerm calls this on its I/O thread, for every BEL. Its own handling (sound or flash,
+    /// debounced) goes on as before; we add one hop to the main actor per burst of bells.
+    override nonisolated func bell(source: Terminal) {
+        super.bell(source: source)
+        let isFirst = bellPending.withLock { pending in
+            defer { pending = true }
+            return !pending
+        }
+        guard isFirst else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.bellPending.withLock { $0 = false }
+            self.onBell?()
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onUserInput?()
+        super.mouseDown(with: event)
+    }
+
+    /// Keys: SwiftTerm's `keyDown` is `public`, not `open`, so a subclass in another module can't
+    /// override it. Instead one app-wide "local monitor" (AppKit shows it every key press of this
+    /// app before the window delivers it) tells the terminal that has the keyboard focus. The
+    /// event itself goes on unchanged. Installed once, the first time a terminal is made.
+    static func watchKeys() { _ = keyMonitor }
+
+    private static let keyMonitor: Any? = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        let window = event.window
+        // Local monitors run on the main thread.
+        MainActor.assumeIsolated {
+            (window?.firstResponder as? SingularityTerminalView)?.onUserInput?()
+        }
+        return event
+    }
 
     /// Light/dark mode changed. SwiftTerm turns the system colours into fixed RGB values when
     /// they are set, so we set them again. `performAsCurrentDrawingAppearance` makes the dynamic

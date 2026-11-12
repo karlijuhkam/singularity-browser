@@ -19,6 +19,36 @@ public struct StatusRecord: Equatable, Sendable {
     }
 }
 
+extension StatusRecord {
+    /// A status record as SwiftTerm hands it over (OSC 7501), with its enums spelled as strings.
+    /// SwiftTerm has already decoded the base64 `msg`. Nil for a state we don't know; an unknown
+    /// `kind` is dropped (the entry then just says "waiting"). `kind` only counts when blocked.
+    public init?(terminalID id: String, state: String, kind: String?, app: String?, message: String?) {
+        guard let programState = ProgramState(rawValue: state) else { return nil }
+        let reason = programState == .blocked ? kind.flatMap(InboxWaitingReason.init(rawValue:)) : nil
+        self.init(id: id, state: programState, kind: reason, app: app, message: message)
+    }
+}
+
+/// Terminal notifications, from the raw bytes of an OSC sequence (what follows `ESC ] <code> ;`).
+public enum TerminalNotificationPayload {
+    /// - OSC 777: `notify;<title>;<body>` (the body may contain `;`). Anything else is ignored.
+    /// - OSC 9: the payload is the text. `4;…` is a progress report, not a notification, and a
+    ///   payload of only digits and semicolons is some other numbered sub-command: both ignored.
+    /// Nil for other codes and for bytes that aren't UTF-8. The text is not cleaned here: the
+    /// inbox cleans everything it keeps.
+    public static func signal(code: Int, payload: [UInt8]) -> TerminalSignal? {
+        guard code == 777 || code == 9, let text = String(bytes: payload, encoding: .utf8) else { return nil }
+        if code == 777 {
+            let parts = text.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 3, parts[0] == "notify" else { return nil }
+            return .notification(title: parts[1], body: parts[2...].joined(separator: ";"))
+        }
+        if text.hasPrefix("4;") || text.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ";") }) { return nil }
+        return .notification(title: "", body: text)
+    }
+}
+
 public enum TerminalSignal: Equatable, Sendable {
     case status([StatusRecord])           // all current records of the tab; [] = none left
     case notification(title: String, body: String)

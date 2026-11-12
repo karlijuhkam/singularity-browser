@@ -442,5 +442,8 @@ nothing. This section overrides anything above that it contradicts.
   before starting `claude` arrive in the hook; Claude Code adds `CLAUDE_CODE_SESSION_ID`
   (= `session_id`), `CLAUDE_PROJECT_DIR`, `CLAUDE_PID`.
 - Project-level hooks ran after the folder-trust prompt with no separate hooks prompt.
+- SwiftTerm 1.99.3 (read in its source, Task 3): `registerOscHandler(code: 9)` would replace its
+  own OSC 9 handling, which is what reads `9;4` progress reports, so the app reads OSC 9 and 777
+  through `observeOscEvents` (a copy of every OSC sequence, built-in handling untouched) instead.
 
 **The two numbers:** `hookTimeoutSeconds = 3600`, `holdLimitSeconds = 3300` (no cap found).

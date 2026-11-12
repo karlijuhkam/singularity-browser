@@ -63,6 +63,8 @@ final class AppState {
     let approvals = AgentApprovals()
     /// Downloads of this run, for the sidebar's Downloads list.
     let downloads = DownloadCenter()
+    /// The agent inbox: what agents in terminal tabs are waiting for.
+    let inbox = InboxCenter()
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
     /// Plugins' page scripts in each Space's web views.
@@ -148,6 +150,7 @@ final class AppState {
         }
         terminals.state = self
         artifacts.state = self
+        inbox.state = self
 
         approvals.timeoutSeconds = { [weak self] in self?.settings.agentApprovalTimeoutSeconds ?? 120 }
 
@@ -177,6 +180,11 @@ final class AppState {
 
     var selectedTab: BrowserTab? {
         selectedSpace?.selectedTab
+    }
+
+    /// The tab is on screen in the window: the selected tab of the selected Space, or in its split.
+    func isTabOnScreen(_ tabID: UUID) -> Bool {
+        selectedSpace?.visibleTabIDs.contains(tabID) ?? false
     }
 
     func space(_ id: UUID) -> Space? {
@@ -432,6 +440,16 @@ final class AppState {
         stateFileDirty = true
         scheduleSave()
         loadSelectedTab()
+        inboxNoteVisibleTabs()
+    }
+
+    /// The owner chose what is on screen (a tab, a split, a Space): for the inbox, he went to each
+    /// tab now showing. Called from `selectSpace` and `selectTab` (so `showTab` and `focusPane` too),
+    /// never on app activation: coming back to the app must leave the entries there to read.
+    private func inboxNoteVisibleTabs() {
+        for tabID in selectedSpace?.visibleTabIDs ?? [] {
+            inbox.wentToTerminal(tabID)
+        }
     }
 
     /// Deletes a Space: closes its web views, removes its website data (cookies etc.)
@@ -440,6 +458,7 @@ final class AppState {
         guard spaces.count > 1, let space = space(id) else { return }
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
+        for tab in space.tabs { inbox.tabClosed(tab.id) }
         artifacts.stop(id)
         plugins.spaceRemoved(id)
         knownArtifactPages[id] = nil
@@ -487,6 +506,7 @@ final class AppState {
         }
         mutateSpace(spaceID) { $0.selectedTabID = tabID }
         loadSelectedTab()
+        inboxNoteVisibleTabs()
     }
 
     /// Switches to the tab's Space (if needed) and selects the tab.
@@ -551,6 +571,7 @@ final class AppState {
         }
         web.removeControllers(for: [tabID])
         terminals.removeSessions(for: [tabID])
+        inbox.tabClosed(tabID)
         mutateSpace(spaceID) { $0.closeTab(tabID) }
         missingArtifactTabs.remove(tabID)
         if spaceID == selectedSpaceID { loadSelectedTab() }

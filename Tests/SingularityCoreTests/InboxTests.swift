@@ -380,3 +380,42 @@ import Testing
         #expect(inbox.remove(appr.id) == nil)
     }
 }
+
+/// What the app hands the inbox from SwiftTerm: OSC 777 / OSC 9 payloads and OSC 7501 record fields.
+@Suite struct TerminalSignalParsingTests {
+    private func bytes(_ s: String) -> [UInt8] { Array(s.utf8) }
+
+    @Test func osc777NotifyGivesTitleAndBody() {
+        #expect(TerminalNotificationPayload.signal(code: 777, payload: bytes("notify;Build;done; all green"))
+                == .notification(title: "Build", body: "done; all green"))
+        #expect(TerminalNotificationPayload.signal(code: 777, payload: bytes("notify;;hello"))
+                == .notification(title: "", body: "hello"))
+    }
+    @Test func osc777OtherThanNotifyIsIgnored() {
+        #expect(TerminalNotificationPayload.signal(code: 777, payload: bytes("notify;only-title")) == nil)
+        #expect(TerminalNotificationPayload.signal(code: 777, payload: bytes("precmd;x;y")) == nil)
+    }
+    @Test func osc9TextIsTheBody() {
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("Hermes: your turn"))
+                == .notification(title: "", body: "Hermes: your turn"))
+    }
+    @Test func osc9ProgressAndNumbersAreIgnored() {
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("4;1;50")) == nil)
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("4;Hermes")) == nil)
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("2;3")) == nil)
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: bytes("")) == nil)
+    }
+    @Test func otherCodesAndBadBytesAreIgnored() {
+        #expect(TerminalNotificationPayload.signal(code: 0, payload: bytes("title")) == nil)
+        #expect(TerminalNotificationPayload.signal(code: 9, payload: [0xFF, 0xFE, 0x41]) == nil)
+    }
+    @Test func statusRecordFromTerminalFields() {
+        #expect(StatusRecord(terminalID: "", state: "blocked", kind: "permission", app: "claude-code", message: "approve Bash")
+                == StatusRecord(id: "", state: .blocked, kind: .permission, app: "claude-code", message: "approve Bash"))
+        #expect(StatusRecord(terminalID: "sub/1", state: "done", kind: nil, app: nil, message: nil)
+                == StatusRecord(id: "sub/1", state: .done, kind: nil, app: nil, message: nil))
+        // An unknown kind is dropped (the entry then says "waiting"); an unknown state drops the record.
+        #expect(StatusRecord(terminalID: "", state: "blocked", kind: "dance", app: nil, message: nil)?.kind == nil)
+        #expect(StatusRecord(terminalID: "", state: "sleeping", kind: nil, app: nil, message: nil) == nil)
+    }
+}
