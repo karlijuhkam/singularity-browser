@@ -34,7 +34,7 @@ import Testing
         #expect(pre[0]["matcher"] as? String == "AskUserQuestion")
         let preHook = try #require((pre[0]["hooks"] as? [NSDictionary])?.first)
         #expect(preHook["type"] as? String == "command")
-        #expect(preHook["command"] as? String == "'\(helper)'")
+        #expect(preHook["command"] as? String == "'\(helper)' 2>/dev/null || cat >/dev/null")
         #expect(preHook["timeout"] as? Int == 3600)
         let perm = try #require(hooks["PermissionRequest"] as? [NSDictionary])
         #expect(perm[0]["matcher"] == nil)
@@ -132,7 +132,7 @@ import Testing
         let out = try install(text, "/B/singularity-hook")
         let stop = try #require(((try object(out)["hooks"] as? NSDictionary)?["Stop"]) as? [NSDictionary])
         let commands = stop.flatMap { ($0["hooks"] as? [NSDictionary]) ?? [] }.compactMap { $0["command"] as? String }
-        #expect(commands.sorted() == ["'/B/singularity-hook'", "theirs"])
+        #expect(commands.sorted() == ["'/B/singularity-hook' 2>/dev/null || cat >/dev/null", "theirs"])
         #expect(stop.contains { $0["note"] as? String == "keep" })
         let removed = try ClaudeHookSettings.remove(settingsText: out)
         let left = try #require(((try object(removed)["hooks"] as? NSDictionary)?["Stop"]) as? [NSDictionary])
@@ -187,6 +187,72 @@ import Testing
         let out = try install(nil, odd)
         #expect(ClaudeHookSettings.status(settingsText: out, helper: odd, timeoutSeconds: 3600) == .installed)
         #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 3600) == .otherCopy(odd))
+        // The exact command, quoted the way `AgentConnect.shellQuote` quotes.
+        let command = #"'/Users/o'\''neil/My Apps/Singularity.app/Contents/MacOS/singularity-hook' 2>/dev/null || cat >/dev/null"#
+        #expect(ClaudeHookSettings.command(helper: odd) == command)
+        let commands = try hookCommands(out)
+        #expect(commands == [command, command, command])
+        #expect(try install(out, odd) == out)
+        // Written the old way (bare quoted path): ours, not current.
+        let old = out.replacingOccurrences(of: Self.guardText, with: "")
+        #expect(old != out)
+        #expect(ClaudeHookSettings.status(settingsText: old, helper: odd, timeoutSeconds: 3600) == .notInstalled)
+        #expect(try install(old, odd) == out)
+    }
+
+    // MARK: The guarded command (a missing helper must stay invisible)
+
+    static let guardText = " 2>/dev/null || cat >/dev/null"
+
+    /// Every hook command in the text, events sorted by name.
+    func hookCommands(_ text: String) throws -> [String] {
+        let hooks = try #require(try object(text)["hooks"] as? NSDictionary)
+        return (hooks.allKeys as? [String] ?? []).sorted().flatMap { name in
+            ((hooks[name] as? [NSDictionary]) ?? []).flatMap { ($0["hooks"] as? [NSDictionary]) ?? [] }
+                .compactMap { $0["command"] as? String }
+        }
+    }
+
+    @Test func installWritesTheGuardedCommand() throws {
+        #expect(ClaudeHookSettings.command(helper: helper) == "'\(helper)' 2>/dev/null || cat >/dev/null")
+        let out = try install(others)
+        let ours = try hookCommands(out).filter { $0.contains("singularity-hook") }
+        #expect(ours == Array(repeating: ClaudeHookSettings.command(helper: helper), count: 3))
+        #expect(ClaudeHookSettings.status(settingsText: out, helper: helper, timeoutSeconds: 3600) == .installed)
+        // Byte for byte the same when installed again.
+        #expect(try install(out) == out)
+    }
+
+    /// A hook of ours written before the guard (the bare quoted path) is recognised as ours but is
+    /// not current: Install repairs it to one guarded entry per event.
+    @Test func oldBareCommandIsRepaired() throws {
+        let current = try install(others)
+        let old = current.replacingOccurrences(of: Self.guardText, with: "")
+        #expect(old != current)
+        #expect(try hookCommands(old).filter { $0.contains("singularity-hook") } == Array(repeating: "'\(helper)'", count: 3))
+        #expect(ClaudeHookSettings.status(settingsText: old, helper: helper, timeoutSeconds: 3600) == .notInstalled)
+        let repaired = try install(old)
+        #expect(repaired == current)
+        #expect(try hookCommands(repaired).filter { $0.contains("singularity-hook") }
+                == Array(repeating: ClaudeHookSettings.command(helper: helper), count: 3))
+        #expect(ClaudeHookSettings.status(settingsText: repaired, helper: helper, timeoutSeconds: 3600) == .installed)
+        // The old form pointing at another copy is still that other copy.
+        let elsewhere = old.replacingOccurrences(of: helper, with: "/Other/singularity-hook")
+        #expect(ClaudeHookSettings.status(settingsText: elsewhere, helper: helper, timeoutSeconds: 3600)
+                == .otherCopy("/Other/singularity-hook"))
+    }
+
+    @Test func removeTakesOutBothForms() throws {
+        let text = """
+        {"hooks":{
+          "Stop":[{"hooks":[{"type":"command","command":"'/A/singularity-hook'","timeout":10},{"type":"command","command":"theirs"}]}],
+          "PermissionRequest":[{"hooks":[{"type":"command","command":"'/B/singularity-hook' 2>/dev/null || cat >/dev/null","timeout":3600}]}],
+          "PreToolUse":[{"matcher":"AskUserQuestion","hooks":[{"type":"command","command":"'\(helper)' 2>/dev/null || cat >/dev/null","timeout":3600}]}]
+        }}
+        """
+        let removed = try ClaudeHookSettings.remove(settingsText: text)
+        #expect(!removed.contains("singularity-hook"))
+        #expect(try hookCommands(removed) == ["theirs"])
     }
 
     @Test func partialInstallIsNotInstalled() throws {

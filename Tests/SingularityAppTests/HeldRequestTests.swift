@@ -658,10 +658,11 @@ extension AppTests {
             try self.init(url, environment: environment, stdin: Data(stdin.utf8))
         }
 
-        init(_ url: URL, environment: [String: String], stdin: Data) throws {
+        init(_ url: URL, arguments: [String] = [], environment: [String: String], stdin: Data) throws {
             // A helper that stopped reading must show up as a failed write, not kill the tests.
             signal(SIGPIPE, SIG_IGN)
             process.executableURL = url
+            process.arguments = arguments
             process.environment = environment
             process.standardInput = input
             process.standardOutput = output
@@ -816,6 +817,28 @@ extension AppTests {
         for (name, environment) in cases {
             let result = try await HelperRun(helper, environment: environment, stdin: large).finish(limit: .seconds(5))
             #expect(result.status == 0 && result.stdout.isEmpty && result.stderr.isEmpty, "large, \(name)")
+        }
+    }
+
+    /// The command Install writes into Claude Code's settings, run the way Claude Code runs a hook
+    /// (`/bin/sh -c <command>`, hook JSON on stdin). With the helper missing (the bundle moved,
+    /// deleted, or being rebuilt or swapped by an update) it must stay as invisible as the helper
+    /// itself: exit 0, no output, all of stdin read (a large Write still arrives whole). With the
+    /// built helper there and no Singularity variables: the same. No environment at all, so not
+    /// even PATH: `sh` finds `cat` on its own default path.
+    @Test func installedCommandIsQuietWhenTheHelperIsMissing() async throws {
+        let helper = try requireHelper()
+        let folder = Self.shortFolder()
+        let missing = folder.appending(path: "Moved It's.app/Contents/MacOS/singularity-hook").path
+        #expect(!FileManager.default.fileExists(atPath: missing))
+        let large = Data(Self.permissionJSON(String(repeating: "x", count: 300_000)).utf8)
+        for (name, path) in [("missing helper", missing), ("built helper", helper.path)] {
+            let command = ClaudeHookSettings.command(helper: path)
+            let run = try HelperRun(URL(filePath: "/bin/sh"), arguments: ["-c", command], environment: [:], stdin: large)
+            let result = try await run.finish(limit: .seconds(5))
+            #expect(result.status == 0, "\(name)")
+            #expect(result.stdout.isEmpty, "\(name)")
+            #expect(result.stderr.isEmpty, "\(name): \(String(decoding: result.stderr, as: UTF8.self))")
         }
     }
 

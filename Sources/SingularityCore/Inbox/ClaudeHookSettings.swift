@@ -64,9 +64,10 @@ public enum ClaudeHookSettings {
 
     /// `settingsText` nil = no file. Empty text counts as no file.
     /// `.installed` means all three entries are exactly what `install` would write for this
-    /// helper and timeout (right matcher, right timeout, nothing of ours elsewhere). Ours with
-    /// this helper but not exactly right, or only some of the three: `.notInstalled` (install
-    /// repairs it). Ours pointing at another helper: `.otherCopy`.
+    /// helper and timeout (the guarded `command(helper:)`, right matcher, right timeout, nothing of
+    /// ours elsewhere). Ours with this helper but not exactly right (e.g. the bare quoted path
+    /// written before the guard), or only some of the three: `.notInstalled` (install repairs
+    /// it). Ours pointing at another helper, in either form: `.otherCopy`.
     public static func status(settingsText: String?, helper: String, timeoutSeconds: Int) -> Status {
         guard let root = try? load(settingsText) else { return .unreadable }
         let events = (root["hooks"] as? [String: Any]) ?? [:]
@@ -168,8 +169,20 @@ public enum ClaudeHookSettings {
 
     // MARK: - Our hooks
 
+    /// The shell command written into each hook: `'<helper>' 2>/dev/null || cat >/dev/null`.
+    /// Claude Code runs it with `sh -c` in every session, also outside Singularity. When the helper
+    /// cannot run (the app bundle was moved or deleted, or is being rebuilt or swapped by an
+    /// update), `sh` would print "No such file or directory" and exit 127, which Claude Code shows
+    /// as a hook error. The guard hides that message, and `cat` reads the rest of the hook input
+    /// (a large Write would otherwise fail on a closed pipe) and exits 0: no decision. The
+    /// helper's own stdout, the reply, goes through untouched. `ourPath` still finds the helper
+    /// as the first word.
+    public static func command(helper: String) -> String {
+        AgentConnect.shellQuote(helper) + " 2>/dev/null || cat >/dev/null"
+    }
+
     private static func makeHook(helper: String, timeout: Int) -> [String: Any] {
-        ["type": "command", "command": AgentConnect.shellQuote(helper), "timeout": timeout]
+        ["type": "command", "command": command(helper: helper), "timeout": timeout]
     }
 
     /// The hooks of every group of one event (the shape was checked in `load`).
@@ -178,8 +191,8 @@ public enum ClaudeHookSettings {
         return groups.flatMap { (($0 as? [String: Any])?["hooks"] as? [Any]) ?? [] }.compactMap { $0 as? [String: Any] }
     }
 
-    /// The helper path when this hook is one of ours: a command hook whose command, unquoted,
-    /// ends in `singularity-hook`.
+    /// The helper path when this hook is one of ours: a command hook whose command's first word,
+    /// unquoted, ends in `singularity-hook` (the guarded command and the older bare path alike).
     private static func ourPath(_ hook: [String: Any]) -> String? {
         guard hook["type"] as? String == "command", let command = hook["command"] as? String else { return nil }
         let path = unquote(command)
