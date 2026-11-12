@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Checked first: bash 3.2 exits with status 0 when `source` finds no file and an EXIT trap is set.
-for file in scripts/lib/version.sh scripts/appcast.sh scripts/release.sh; do
+for file in scripts/lib/version.sh scripts/lib/release-guard.sh scripts/appcast.sh scripts/release.sh; do
   [[ -f "$ROOT/$file" ]] || { echo "FAIL $file is missing"; exit 1; }
 done
 
@@ -96,7 +96,7 @@ expect "appcast: refuses empty notes" appcast_refuses "no text" \
 REPO="$TMP/repo"
 mkdir -p "$REPO/scripts/lib" "$REPO/Resources"
 cp "$ROOT/scripts/release.sh" "$ROOT/scripts/appcast.sh" "$ROOT/scripts/env.sh" "$REPO/scripts/"
-cp "$ROOT/scripts/lib/version.sh" "$REPO/scripts/lib/"
+cp "$ROOT"/scripts/lib/*.sh "$REPO/scripts/lib/"
 cp "$ROOT/Resources/Info.plist" "$REPO/Resources/"
 printf 'dist/\n' > "$REPO/.gitignore"
 CURRENT="$($PB -c 'Print CFBundleShortVersionString' "$REPO/Resources/Info.plist")"
@@ -144,6 +144,69 @@ expect     "release: … message names the file"       contains "$OUT" "stray-fi
 expect_not "release: … before building"              contains "$OUT" "building"
 expect     "release: … Info.plist unchanged"         plist_unchanged
 rm "$REPO/stray-file.txt"
+
+# A release is signed by team T748B76PPL only: another TEAM_ID, or SIGN_IDENTITY, is refused.
+# release_with <NAME=value>: as release 9.9.9, with that variable set.
+release_with() {
+  local status=0
+  OUT="$(cd "$REPO" && env "$1" RELEASE_CHECKS_ONLY=1 scripts/release.sh 9.9.9 2>&1)" || status=$?
+  return "$status"
+}
+expect_not "release: another TEAM_ID refused"        release_with TEAM_ID=XXXXXXXXXX
+expect     "release: … message names the team"       contains "$OUT" "team T748B76PPL only"
+expect     "release: … and the tree stays clean"     clean_tree
+expect_not "release: SIGN_IDENTITY refused"          release_with SIGN_IDENTITY=-
+expect     "release: … message names SIGN_IDENTITY"  contains "$OUT" "SIGN_IDENTITY is for"
+expect     "release: … and the tree stays clean"     clean_tree
+expect     "release: TEAM_ID=T748B76PPL accepted"    release_with TEAM_ID=T748B76PPL
+
+# The guard before the release commit: HEAD is where step 1 saw it, and the only change is the bump.
+if [[ -f "$ROOT/scripts/lib/release-guard.sh" ]]; then
+  source "$ROOT/scripts/lib/release-guard.sh"
+  START="$(git -C "$REPO" rev-parse HEAD)"
+  guard() { local status=0; OUT="$(cd "$REPO" && release_commit_guard "$START" 2>&1)" || status=$?; return "$status"; }
+  bump() { set_plist_version "$REPO/Resources/Info.plist" 9.9.9 2; }
+  reset_repo() { git -C "$REPO" reset -q --hard "$START"; git -C "$REPO" clean -qfd; }
+
+  bump
+  expect     "guard: only the bump passes"            guard
+  echo "# edited during the build" >> "$REPO/scripts/env.sh"
+  expect_not "guard: another edited file refused"     guard
+  expect     "guard: … message names it"              contains "$OUT" "scripts/env.sh"
+  reset_repo; bump
+  echo "new" > "$REPO/new-file.txt"
+  expect_not "guard: a new file refused"              guard
+  reset_repo
+  expect_not "guard: no bump refused"                 guard
+  git -C "$REPO" -c user.name=test -c user.email=test@invalid commit -q --allow-empty -m "made during the run"
+  bump
+  expect_not "guard: HEAD moved refused"              guard
+  expect     "guard: … message says HEAD moved"       contains "$OUT" "HEAD"
+  reset_repo
+else
+  bad "guard: scripts/lib/release-guard.sh exists"
+fi
+
+# Closing the terminal (SIGHUP) or SIGTERM after the version bump restores Info.plist.
+# RELEASE_TEST_HOLD_AFTER_BUMP=1 makes the script bump, then wait (10 s at most) instead of going on.
+# RELEASE_CHECKS_ONLY=1 is set too: a script without the hook stops at its local checks.
+for signal in TERM:143 HUP:129; do
+  expected_status="${signal#*:}"; signal="${signal%:*}"
+  ( cd "$REPO" && RELEASE_CHECKS_ONLY=1 RELEASE_TEST_HOLD_AFTER_BUMP=1 exec scripts/release.sh 9.9.9 ) \
+    >"$TMP/hold.log" 2>&1 &
+  pid=$!
+  for _ in $(seq 50); do
+    grep -q "holding" "$TMP/hold.log" 2>/dev/null && break
+    sleep 0.1
+  done
+  expect "signal $signal: the script bumped and held" grep -q "holding" "$TMP/hold.log"
+  kill -"$signal" "$pid" 2>/dev/null || true
+  status=0; wait "$pid" || status=$?
+  expect "signal $signal: exits with $expected_status"            [ "$status" -eq "$expected_status" ]
+  expect "signal $signal: Info.plist restored"          plist_unchanged
+  expect "signal $signal: tree clean"                   clean_tree
+  expect "signal $signal: says nothing was published"   grep -q "Nothing was pushed or published" "$TMP/hold.log"
+done
 
 # --scratch needs its three variables; checked before anything is built.
 expect_not "release: --scratch without its variables refused" release 9.9.9 --scratch "$TMP/scratch"

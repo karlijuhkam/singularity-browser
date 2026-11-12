@@ -41,8 +41,9 @@
 # GitHub, the keychain's update key or notarization, and Resources/Info.plist stays as it is.
 #
 # Environment:
-#   TEAM_ID         Apple Developer team that signs Singularity (default: T748B76PPL, Karli Juhkam).
-#                   Only that team's certificates are used.
+#   TEAM_ID         Apple Developer team whose certificates sign (default: T748B76PPL, Karli Juhkam).
+#                   Only that team's certificates are used. Another team only for --skip-notarize and
+#                   --scratch: a release is always signed by T748B76PPL.
 #   SIGN_IDENTITY   explicit codesign identity, for --skip-notarize and --scratch only ("-" is ad-hoc).
 #                   Default: the team's "Developer ID Application", then its "Apple Development"
 #                   (--scratch: its "Apple Development"). A release always uses the team's certificates.
@@ -53,6 +54,10 @@
 #                   branch, uncommitted changes, the version is higher, the tag is free locally; with
 #                   --scratch: its variables). Nothing reaches the network, gh, the keychain or a
 #                   build. scripts/test-release.sh uses it.
+#   RELEASE_TEST_HOLD_AFTER_BUMP=1
+#                   for scripts/test-release.sh only: after the local checks, bump Resources/Info.plist
+#                   as step 3 does, then wait up to 10 s for the test to stop the script with a signal
+#                   (the exit trap must put Info.plist back). Never builds or reaches the network.
 #
 # One-time setup for notarization: create a "Developer ID Application" certificate at
 # developer.apple.com → Certificates, IDs & Profiles → "+", download it and double-click to install.
@@ -60,6 +65,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/lib/version.sh"
+source "$ROOT/scripts/lib/release-guard.sh"
 
 # Baked into every installed copy for good: changing these strands the copies already out there.
 REPO="karlijuhkam/singularity-browser"
@@ -67,6 +73,9 @@ FEED_URL="https://github.com/$REPO/releases/latest/download/appcast.xml"
 # The public half of the update key (Sparkle's generate_keys prints it). Installed copies accept only
 # updates signed with the matching private key, which stays in the owner's login keychain.
 PUBLIC_ED_KEY=""
+# The only team that may sign a release (this Mac also holds another company's certificates).
+RELEASE_TEAM="T748B76PPL"
+TEAM_ID="${TEAM_ID:-$RELEASE_TEAM}"
 
 NOTARY_PROFILE="${NOTARY_PROFILE:-singularity-notary}"
 DIST="$ROOT/dist"
@@ -114,6 +123,44 @@ else
 fi
 [[ -z "$NOTES_FILE" || -r "$NOTES_FILE" ]] || fail "cannot read the notes file $NOTES_FILE."
 
+# ---- what happens on failure --------------------------------------------------------------------
+# Success is a flag set right before each intended exit, not read from $?: bash 3.2 (macOS's
+# /bin/bash) runs the EXIT trap with $? = 0 when the script is ended by a signal such as SIGHUP
+# (the terminal was closed). The signal traps also give such an ending the usual non-zero status.
+STEP=1
+SUCCEEDED=0        # 1 right before every successful exit
+RESTORE_PLIST=0    # 1 between the version bump (step 3) and the release commit (step 7)
+COMMITTED=0        # 1 once the "Release <version>" commit exists
+STAMPED_APP=""     # a release's dist/Singularity.app (it carries the live feed URL and key)
+TEMP_DIR="$(mktemp -d /private/tmp/sg-release-XXXX)"
+on_exit() {
+  rm -rf "$TEMP_DIR"
+  (( SUCCEEDED )) && return 0
+  if [[ -n "$STAMPED_APP" ]]; then
+    rm -rf "$STAMPED_APP"   # no stamped app may stay behind from a release that did not finish
+  fi
+  if (( RESTORE_PLIST )); then
+    git checkout -- Resources/Info.plist && echo "Resources/Info.plist is restored." >&2
+  fi
+  [[ "$MODE" == release ]] || return 0
+  if (( ! COMMITTED )); then
+    echo "The release stopped at step $STEP. Nothing was pushed or published." >&2
+  else
+    echo "The release stopped at step $STEP. Repeat by hand from there:" >&2
+    if (( STEP <= 7 )); then echo "  7. git push origin main" >&2; fi
+    if (( STEP <= 8 )); then
+      echo "  8. (if a draft v$VERSION exists: gh release delete v$VERSION --repo $REPO --yes)" >&2
+      echo "     gh release create v$VERSION --repo $REPO --draft --target $(git rev-parse HEAD) --title \"Singularity $VERSION\" --notes-file dist/release-notes.md dist/Singularity-$VERSION.zip dist/appcast.xml" >&2
+      echo "     gh release edit v$VERSION --repo $REPO --draft=false --latest" >&2
+    fi
+    echo "  9. git fetch --tags" >&2
+  fi
+}
+trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # ---- checks that need nothing but this folder ---------------------------------------------------
 CURRENT_VERSION="$($PB -c 'Print CFBundleShortVersionString' "$PLIST")"
 CURRENT_BUILD="$($PB -c 'Print CFBundleVersion' "$PLIST")"
@@ -128,6 +175,9 @@ $CHANGES"
     || fail "$VERSION is not higher than the current version $CURRENT_VERSION (Resources/Info.plist)."
   [[ "$CURRENT_BUILD" =~ ^[0-9]+$ ]] || fail "CFBundleVersion in Resources/Info.plist is not a whole number: $CURRENT_BUILD"
   ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null || fail "the tag v$VERSION already exists."
+  [[ "$TEAM_ID" == "$RELEASE_TEAM" ]] || fail "a release is signed by team $RELEASE_TEAM only (TEAM_ID is $TEAM_ID)."
+  [[ -z "${SIGN_IDENTITY:-}" ]] || fail "SIGN_IDENTITY is for --skip-notarize and --scratch; a release is signed with team $RELEASE_TEAM's certificates."
+  START_HEAD="$(git rev-parse HEAD)"   # the release commit must sit right on top of this (step 7)
 elif [[ "$MODE" == scratch ]]; then
   for name in SCRATCH_FEED_URL SCRATCH_PUBLIC_KEY SCRATCH_KEY_FILE; do
     [[ -n "${!name:-}" ]] || fail "--scratch needs SCRATCH_FEED_URL, SCRATCH_PUBLIC_KEY and SCRATCH_KEY_FILE ($name is not set).
@@ -135,8 +185,23 @@ elif [[ "$MODE" == scratch ]]; then
   done
   [[ -r "$SCRATCH_KEY_FILE" ]] || fail "cannot read SCRATCH_KEY_FILE ($SCRATCH_KEY_FILE)."
 fi
+
+# Step 3's version bump; also called by the test hook below.
+bump_version() {
+  BUILD=$((CURRENT_BUILD + 1))
+  RESTORE_PLIST=1
+  set_plist_version "$PLIST" "$VERSION" "$BUILD"
+}
+
+if [[ "${RELEASE_TEST_HOLD_AFTER_BUMP:-}" == 1 && "$MODE" == release ]]; then
+  bump_version
+  echo "holding after the bump (RELEASE_TEST_HOLD_AFTER_BUMP=1)"
+  for _ in $(seq 100); do sleep 0.1; done
+  fail "RELEASE_TEST_HOLD_AFTER_BUMP: no signal came within 10 s."
+fi
 if [[ "${RELEASE_CHECKS_ONLY:-}" == 1 ]]; then
   echo "✓ local checks passed; stopping here (RELEASE_CHECKS_ONLY=1)"
+  SUCCEEDED=1
   exit 0
 fi
 
@@ -177,8 +242,6 @@ fi
 # also holds certificates of another company's team, which must never sign Singularity.
 # Identities are picked by SHA-1 fingerprint, not by name: a keychain can hold several
 # certificates with the same name, and then codesign refuses an ambiguous name.
-TEAM_ID="${TEAM_ID:-T748B76PPL}"
-
 # Prints "fingerprint<TAB>team<TAB>name" for every valid code-signing identity.
 identities() {
   security find-identity -v -p codesigning | awk '$2 ~ /^[0-9A-F]{40}$/ { print $2 }' | while read -r hash; do
@@ -201,7 +264,6 @@ NOTARIZE=0        # 1: notarize and staple (a release with a Developer ID and a 
 NOT_NOTARIZED=0   # 1: a release signed for development only; said in the terminal and in the notes
 FOUND=""
 if [[ "$MODE" == release ]]; then
-  [[ -z "${SIGN_IDENTITY:-}" ]] || fail "SIGN_IDENTITY is for --skip-notarize and --scratch; a release is signed with team $TEAM_ID's certificates."
   FOUND="$(identity_in_team 'Developer ID Application')"
   if [[ -n "$FOUND" ]] && xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
     NOTARIZE=1
@@ -239,34 +301,6 @@ if [[ "$MODE" == release ]]; then
   fi
 fi
 
-# ---- what happens on failure --------------------------------------------------------------------
-STEP=1
-RESTORE_PLIST=0    # 1 between the version bump (step 3) and the release commit (step 7)
-COMMITTED=0        # 1 once the "Release <version>" commit exists
-TEMP_DIR="$(mktemp -d /private/tmp/sg-release-XXXX)"
-on_exit() {
-  local status=$?
-  rm -rf "$TEMP_DIR"
-  (( status == 0 )) && return
-  if (( RESTORE_PLIST )); then
-    git checkout -- Resources/Info.plist && echo "Resources/Info.plist is restored." >&2
-  fi
-  [[ "$MODE" == release ]] || return "$status"
-  if (( ! COMMITTED )); then
-    echo "The release stopped at step $STEP. Nothing was pushed or published." >&2
-  else
-    echo "The release stopped at step $STEP. Repeat by hand from there:" >&2
-    (( STEP <= 7 )) && echo "  7. git push origin main" >&2
-    if (( STEP <= 8 )); then
-      echo "  8. (if a draft v$VERSION exists: gh release delete v$VERSION --repo $REPO --yes)" >&2
-      echo "     gh release create v$VERSION --repo $REPO --draft --target $(git rev-parse HEAD) --title \"Singularity $VERSION\" --notes-file dist/release-notes.md dist/Singularity-$VERSION.zip dist/appcast.xml" >&2
-      echo "     gh release edit v$VERSION --repo $REPO --draft=false --latest" >&2
-    fi
-    echo "  9. git fetch --tags" >&2
-  fi
-}
-trap on_exit EXIT
-
 # ---- step 2: tests ------------------------------------------------------------------------------
 if [[ "$MODE" == release ]]; then
   STEP=2; echo "→ step 2: scripts/test.sh"
@@ -277,10 +311,8 @@ fi
 BUILD="$CURRENT_BUILD"
 if [[ "$MODE" == release ]]; then
   STEP=3
-  BUILD=$((CURRENT_BUILD + 1))
+  bump_version
   echo "→ step 3: version $VERSION, build $BUILD"
-  RESTORE_PLIST=1
-  set_plist_version "$PLIST" "$VERSION" "$BUILD"
 elif [[ "$MODE" == scratch ]]; then
   BUILD="$VERSION"
 fi
@@ -313,6 +345,7 @@ fi
 BIN_DIR="$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)"
 
 echo "→ assembling $APP"
+if [[ "$MODE" == release ]]; then STAMPED_APP="$APP"; fi   # removed again if the release fails
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN_DIR/Singularity" "$BIN_DIR/singularity-mcp" "$APP/Contents/MacOS/"
@@ -380,6 +413,7 @@ codesign --verify --deep --strict --verbose=1 "$APP"
 if [[ "$MODE" == skip-notarize ]]; then
   ditto -c -k --keepParent "$APP" "$ZIP"
   echo "✓ $ZIP (signed, NOT notarized: Gatekeeper will warn on other Macs)"
+  SUCCEEDED=1
   exit 0
 fi
 
@@ -419,6 +453,7 @@ LENGTH="$(sed -n 's/.*length="\([0-9]*\)".*/\1/p' <<<"$SIGNED")"
 [[ -n "$ED_SIGNATURE" && -n "$LENGTH" ]] || fail "could not read sign_update's output: $SIGNED"
 if [[ "$MODE" == release ]]; then
   rm -rf "$APP"   # the zip is the release; no second stamped copy of the app stays around
+  STAMPED_APP=""
 fi
 
 # ---- step 6: release notes and appcast.xml ------------------------------------------------------
@@ -460,6 +495,7 @@ if [[ "$MODE" == scratch ]]; then
   echo "✓ $APP (version $VERSION, scratch)"
   echo "✓ $ZIP"
   echo "✓ $APPCAST"
+  SUCCEEDED=1
   exit 0
 fi
 
@@ -470,7 +506,10 @@ sed -e '/^[[:space:]]*$/d' -e 's/^/- /' "$NOTES" >"$RELEASE_NOTES"
 # ---- step 7: commit and push --------------------------------------------------------------------
 STEP=7
 echo "→ step 7: commit \"Release $VERSION\" and push main"
-git commit -q -am "Release $VERSION"
+# Nothing may have changed since step 1 but the bump (scripts/lib/release-guard.sh), and only
+# Info.plist goes into the commit. A failure here still restores Info.plist.
+release_commit_guard "$START_HEAD" || fail "no release commit made."
+git commit -q -m "Release $VERSION" -- Resources/Info.plist
 RESTORE_PLIST=0
 COMMITTED=1
 git push origin main
@@ -490,3 +529,4 @@ echo "✓ Singularity $VERSION (build $BUILD) is out: https://github.com/$REPO/r
 if (( NOT_NOTARIZED )); then
   echo "  Not notarized: works on the developer's Mac; Gatekeeper stops it elsewhere."
 fi
+SUCCEEDED=1
