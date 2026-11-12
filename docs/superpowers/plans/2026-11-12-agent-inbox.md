@@ -602,7 +602,7 @@ extension InboxCenter {
 
 ### Task 9: Core — the settings.json edit
 
-**Before this task:** rebase `inbox` onto `main` once the `onboarding` branch has been merged there (it brings `AgentConnect`, `AgentConnector`, `AgentConnectRows`). If it has not been merged yet, stop here and tell the owner; Tasks 0–8 are complete and usable with hooks installed by hand.
+**Before this task:** check that the branch you work on contains the onboarding work (`AgentConnect`, `AgentConnector`, `AgentConnectRows`). It was merged into `main` on 2026-11-12 and this plan was rebased onto it, so it should. If those files are missing, stop here and tell the owner; Tasks 0–8 are complete and usable with hooks installed by hand.
 
 **Files:**
 - Create: `Sources/SingularityCore/Inbox/ClaudeHookSettings.swift`
@@ -665,7 +665,7 @@ public enum ClaudeHookSettings {
 ### Task 10: Settings → Agents, and the docs
 
 **Files:**
-- Modify: `Sources/Singularity/Agent/AgentConnectRows.swift` (or `SettingsView.swift`, wherever the Claude Code row lives after the rebase), `Sources/Singularity/Agent/AgentConnector.swift` (or a small new `Sources/Singularity/Inbox/HookInstaller.swift` if that file is about `mcp add` only), `CLAUDE.md`, `IDEAS.md` (nothing to remove; no entry was added), the spec (status line → "built on …", plus an "As built" section for anything that ended up different)
+- Modify: `Sources/Singularity/Agent/AgentConnectRows.swift` (or `SettingsView.swift`, wherever the Claude Code row lives after the rebase), `Sources/Singularity/Agent/AgentConnector.swift` (or a small new `Sources/Singularity/Inbox/HookInstaller.swift` if that file is about `mcp add` only), `CLAUDE.md`, `IDEAS.md` (remove the "Agent inbox" entry under "Approved: projects"), the spec (status line → "built on …", plus an "As built" section for anything that ended up different)
 
 **Interfaces:**
 - Consumes: `ClaudeHookSettings`, `AgentConnect.isTranslocated`, the helper path next to the running binary (`Bundle.main.executableURL` sibling `singularity-hook`; missing in the bare binary → row says "needs the app bundle").
