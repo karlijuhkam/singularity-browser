@@ -80,14 +80,19 @@ public struct TabFacts: Equatable, Sendable {
 
 public enum InboxRules {
     /// One record speaks for the tab: the most urgent state wins
-    /// (blocked > error > done > working > idle); ties go to the record with the shorter id.
+    /// (blocked > error > working > done > idle); ties go to the record with the shorter id.
+    /// Working outranks done because a program may keep several records: Claude Code has records
+    /// for its subagents and tasks, and one that finished while the main turn goes on must not
+    /// make the tab look done (a false done card and banner, held requests released, and no
+    /// banner at the real end). The cost: a tab whose child record keeps saying `working` after
+    /// the turn ended stays "working" until that record goes.
     public static func summarise(_ records: [StatusRecord]) -> StatusRecord? {
         func rank(_ s: ProgramState) -> Int {
             switch s {
             case .blocked: 4
             case .error: 3
-            case .done: 2
-            case .working: 1
+            case .working: 2
+            case .done: 1
             case .idle: 0
             }
         }

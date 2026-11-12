@@ -22,6 +22,34 @@ import Testing
         #expect(InboxRules.summarise(r)?.state == .blocked)
         #expect(InboxRules.summarise([]) == nil)
     }
+    /// blocked > error > working > done > idle. Working outranks done: Claude Code keeps records
+    /// for subagents and tasks, and a finished child must not make a busy tab look done.
+    @Test func summariseRanksWorkingAboveDone() {
+        func top(_ states: [ProgramState]) -> ProgramState? {
+            InboxRules.summarise(states.enumerated().map {
+                StatusRecord(id: $0.offset == 0 ? "" : "sub/\($0.offset)", state: $0.element, kind: nil, app: nil, message: nil)
+            })?.state
+        }
+        #expect(top([.working, .done]) == .working)
+        #expect(top([.done, .working]) == .working)
+        #expect(top([.done, .idle]) == .done)
+        #expect(top([.blocked, .working]) == .blocked)
+        #expect(top([.working, .error]) == .error)
+        #expect(top([.error, .blocked]) == .blocked)
+        #expect(top([.idle, .working, .done]) == .working)
+    }
+    /// The tab's main record still working while a subagent's record says done: the tab is working.
+    @Test func finishedSubagentDoesNotEndTheTurn() {
+        var inbox = Inbox()
+        let tab = UUID()
+        let facts = TabFacts(tabID: tab, spaceID: UUID(), foregroundProgram: "claude", isLookedAt: false)
+        let records = [StatusRecord(id: "", state: .working, kind: nil, app: "claude", message: nil),
+                       StatusRecord(id: "task/1", state: .done, kind: nil, app: "claude", message: "Subtask done")]
+        let change = inbox.apply(.status(records), tab: facts, agent: "Claude Code", now: Date())
+        #expect(change == .changed)
+        #expect(inbox.entries.isEmpty)
+        #expect(inbox.workingTabs == [tab])
+    }
     @Test func summariseTieGoesToShorterId() {
         let r = [StatusRecord(id: "sub/1", state: .done, kind: nil, app: nil, message: nil),
                  StatusRecord(id: "a", state: .done, kind: nil, app: nil, message: nil)]
