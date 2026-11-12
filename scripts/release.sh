@@ -575,6 +575,9 @@ else
   ${EDITOR:-vi} "$NOTES"
   sed -i '' '/^#/d' "$NOTES"
 fi
+# One note per line, without a bullet: each line becomes a list item below. A notes file written
+# as a Markdown list would otherwise come out with a dash inside every item (0.3.0 did).
+sed -i '' -E 's/^[[:space:]]*[-*][[:space:]]+//' "$NOTES"
 grep -q '[^[:space:]]' "$NOTES" || fail "the release notes are empty; release cancelled."
 if (( NOT_NOTARIZED )); then
   { echo "Not notarized: works on the developer's Mac; Gatekeeper stops it elsewhere."; cat "$NOTES"; } >"$NOTES.new"
