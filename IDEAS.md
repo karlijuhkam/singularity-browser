@@ -13,6 +13,7 @@ Things that came up while building but were not in the v1 brief.
 ## Approved: projects
 
 - **Claude Chat plugin (top priority).** Owner decision 2026-11-11. A ready-made plugin that gives a Claude chat inside Singularity through the Agent SDK, on the user's own Claude subscription; this is the "AI only inside plugins, round 2" from `CLAUDE.md`. Needs its own design. Open questions for the owner: where a plugin shows a chat (plugins cannot own a panel or tab today), and how it reaches Claude (plugin backgrounds have no network; running the user's installed `claude` as a declared command would keep the login with Claude Code, so Singularity holds no key or token). It appears in the welcome flow's plugin list once it ships inside the app.
+- **Projects in a Space.** Owner decision 2026-11-11, design approved: `docs/superpowers/specs/2026-11-11-projects-design.md`. A Space lists projects (name + folder); a new terminal starts in one, chosen from a picker or taken from the sidebar folder it is opened in; folders double as task groups. Not built: parked, the owner starts it from another session, after onboarding has landed. Next step is the implementation plan.
 
 ## Approved, but blocked outside the project
 
