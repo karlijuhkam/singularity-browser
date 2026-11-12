@@ -48,6 +48,10 @@ final class LittleWindowChrome: NSObject, NSToolbarDelegate {
     private let spaceMenu = NSPopUpButton(frame: .zero, pullsDown: false)
     private let openButton = NSButton(title: "Open", target: nil, action: nil)
 
+    /// What the Space menu was last built from; it is only rebuilt when this changes (rebuilding
+    /// on every title change would make an open menu flicker).
+    private var menuSignature = ""
+
     private static let addressItem = NSToolbarItem.Identifier("address")
     private static let spaceItem = NSToolbarItem.Identifier("space")
     private static let openItem = NSToolbarItem.Identifier("open")
@@ -106,6 +110,15 @@ final class LittleWindowChrome: NSObject, NSToolbarDelegate {
         little.window.title = controller.pageTitle.isEmpty ? address.stringValue : controller.pageTitle
 
         let chosen = state.space(little.chosenSpaceID) ?? state.space(little.homeSpaceID)
+        let signature = state.spaces.map { "\($0.id)|\($0.name)|\($0.colorHex)" }.joined(separator: "\n")
+        openButton.title = "Open in \(chosen?.name ?? "Space")"
+        guard signature != menuSignature else {
+            if let index = spaceMenu.itemArray.firstIndex(where: { $0.representedObject as? UUID == chosen?.id }) {
+                spaceMenu.selectItem(at: index)
+            }
+            return
+        }
+        menuSignature = signature
         spaceMenu.removeAllItems()
         for space in state.spaces {
             let item = NSMenuItem(title: space.name, action: nil, keyEquivalent: "")
@@ -116,7 +129,6 @@ final class LittleWindowChrome: NSObject, NSToolbarDelegate {
             spaceMenu.menu?.addItem(item)
             if space.id == chosen?.id { spaceMenu.select(item) }
         }
-        openButton.title = "Open in \(chosen?.name ?? "Space")"
     }
 
     /// The Space's colour as a small filled circle, as in the Space rail.

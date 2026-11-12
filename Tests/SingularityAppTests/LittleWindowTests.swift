@@ -220,15 +220,72 @@ extension AppTests {
         // Not key: the commands still belong to the main window's tab.
         #expect(state.frontController === state.web.existingController(tabID))
         // Key (what `windowDidBecomeKey` reports; the test window never really takes the keyboard).
-        state.little.setKey(little, isKey: true)
-        #expect(state.little.keyWindow === little)
+        state.little.setFront(little, isFront: true)
+        #expect(state.little.frontWindow === little)
         #expect(state.frontController === little.controller)
 
         state.closeTabCommand() // ⌘W
         #expect(state.little.windows.isEmpty)
-        #expect(state.little.keyWindow == nil)
+        #expect(state.little.frontWindow == nil)
         #expect(state.space(setup.work)?.tab(tabID) != nil, "⌘W on a little window closed a tab")
         #expect(state.frontController === state.web.existingController(tabID))
+    }
+
+    @Test func aSheetOnTheWindowKeepsTheCloseCommandFromTheTabBehind() async throws {
+        let setup = try setUp()
+        defer { setup.tearDown() }
+        let state = setup.state
+        state.openInNewTab(setup.server.url)
+        let tabID = try #require(state.space(setup.work)?.selectedTabID)
+        let little = try #require(state.little.open(setup.server.url.appending(path: "two")))
+        // With a sheet open (a page's alert, a login dialog) the window is still the main window:
+        // that is what AppKit reports, and what "in front" follows.
+        little.windowDidBecomeMain(Notification(name: NSWindow.didBecomeMainNotification))
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        little.window.beginSheet(sheet, completionHandler: { _ in }) // the plain form, not the async one
+        try await waitUntil("the sheet") { little.window.attachedSheet === sheet }
+
+        state.closeTabCommand() // ⌘W: neither the window nor the tab behind it
+        #expect(state.little.windows.count == 1)
+        #expect(state.space(setup.work)?.tab(tabID) != nil)
+        #expect(state.frontController === little.controller)
+
+        little.window.endSheet(sheet)
+        try await waitUntil("the sheet to go") { little.window.attachedSheet == nil }
+        state.closeTabCommand()
+        #expect(state.little.windows.isEmpty)
+        #expect(state.space(setup.work)?.tab(tabID) != nil)
+    }
+
+    /// The window and its content hold each other; closing must break that, or every closed
+    /// little window's page would live (and play) on until the app quits.
+    @Test func aClosedWindowIsFreedWithItsPage() async throws {
+        let setup = try setUp()
+        defer { setup.tearDown() }
+        let state = setup.state
+        weak var closedPage: WKWebView?
+        weak var closedWindow: LittleWindow?
+        weak var movedWindow: LittleWindow?
+        do {
+            let closed = try #require(state.little.open(setup.server.url))
+            let moved = try #require(state.little.open(setup.server.url.appending(path: "two")))
+            (closedPage, closedWindow, movedWindow) = (closed.controller.webView, closed, moved)
+            try await waitUntil("the pages to load", limit: .seconds(15)) {
+                closed.controller.webView.title == "home" && moved.controller.webView.title == "two"
+            }
+            state.little.close(closed)
+            state.little.openInSpace(moved)
+        }
+        try await waitUntil("the closed window and its page to be freed", limit: .seconds(10)) {
+            closedPage == nil && closedWindow == nil && movedWindow == nil
+        }
+        // The moved page lives on as the tab, and is freed with it.
+        let tab = try #require(state.space(setup.work)?.tabs.first)
+        weak var movedPage = state.web.existingController(tab.id)?.webView
+        #expect(movedPage != nil)
+        state.closeTab(tab.id, in: setup.work)
+        try await waitUntil("the tab's page to be freed", limit: .seconds(10)) { movedPage == nil }
     }
 
     @Test func deletingASpaceClosesItsLittleWindows() async throws {

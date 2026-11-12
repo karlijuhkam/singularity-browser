@@ -64,6 +64,9 @@ final class DownloadCenter {
         guard let download = running.removeValue(forKey: id) else { return }
         let destination = items.first { $0.id == id }?.destination
         update(id) { $0.phase = .cancelled }
+        // WebKit tells the download's delegate nothing about a cancel; the page's controller
+        // stays alive for its download until told that it is over.
+        WebTabController.downloadEnded(download)
         download.cancel { _ in
             // Half a file is of no use to anyone. The name was free when we picked it, so this
             // can only remove what this download wrote.

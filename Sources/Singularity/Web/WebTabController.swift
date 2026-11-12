@@ -116,7 +116,8 @@ final class WebTabController: NSObject {
         isLittle = false
         onLittleClose = nil
         titleOrURLChanged()
-        guard failedAddress == nil, let url = webView.url else { return }
+        // A page that is still loading is recorded when it finishes (`didFinish`), as in any tab.
+        guard failedAddress == nil, !webView.isLoading, let url = webView.url else { return }
         state?.recordVisit(spaceID: spaceID, url: url, title: webView.title ?? "")
         Task { await fetchFavicon() }
     }
@@ -288,7 +289,7 @@ final class WebTabController: NSObject {
         // The error page's title is not the page's name: keep the saved one (pinned tabs offline).
         let showingError = failedURL != nil || errorNavigation != nil
         let title = showingError ? nil : webView.title.flatMap { $0.isEmpty ? nil : $0 }
-        if let title { pageTitle = title }
+        if !showingError { pageTitle = title ?? "" } // an untitled page (a PDF, an image) has none
         if let url = webView.url { pageURL = url }
         // A little window's page is no tab: telling the Space would find nothing to update and
         // still mark it changed, rewriting space.json for a page that should leave no trace.
@@ -385,6 +386,12 @@ extension WebTabController: WKNavigationDelegate {
 
     /// Controllers with a running download, by download (see `downloadStarted`).
     private static var downloading: [ObjectIdentifier: WebTabController] = [:]
+
+    /// A download is over, however it ended. `DownloadCenter` calls this for a cancelled one,
+    /// which WebKit reports to neither delegate method.
+    static func downloadEnded(_ download: WKDownload) {
+        downloading[ObjectIdentifier(download)] = nil
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // The error page finishing is not a visit: keep it out of history.
@@ -494,7 +501,9 @@ extension WebTabController: WKUIDelegate {
         // same window. (A sign-in that needs a pop-up talking back to its opener won't complete
         // here; open the page in a Space for that.)
         if isLittle {
-            if navigationAction.request.url != nil { webView.load(navigationAction.request) }
+            // Only real addresses: `window.open('')` and about:blank pop-ups (filled in by script
+            // afterwards) would replace the page with an empty one.
+            if let url = navigationAction.request.url, LittleWindowRules.accepts(url) { webView.load(navigationAction.request) }
             return nil
         }
         return state?.openPopup(from: tabID, spaceID: spaceID, configuration: configuration, url: navigationAction.request.url)

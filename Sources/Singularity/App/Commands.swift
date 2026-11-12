@@ -9,7 +9,7 @@ import SwiftUI
 /// Commands that leave the flow on purpose and go somewhere (New Tab, New Terminal, the palette,
 /// Open Location, picking a Space, New Space) keep working: they close the flow themselves.
 ///
-/// While a little window has the keyboard (`state.little.keyWindow`), the page commands act on its
+/// While a little window has the keyboard (`state.little.frontWindow`), the page commands act on its
 /// page, ⌘W closes it and ⌘O opens it in the chosen Space; commands for the main window's tab,
 /// sidebar or layout are off. Commands that go somewhere in the main window bring it forward.
 struct SingularityCommands: Commands {
@@ -37,7 +37,7 @@ struct SingularityCommands: Commands {
                 .keyboardShortcut("l")
                 .disabled(littleInFront)
             // A little window: its page becomes a tab of the Space chosen in its title bar.
-            Button(openInSpaceTitle) { if let key = state.little.keyWindow { state.little.openInSpace(key) } }
+            Button(openInSpaceTitle) { if let key = state.little.frontWindow { state.little.openInSpace(key) } }
                 .keyboardShortcut("o")
                 .disabled(!littleInFront)
             Divider()
@@ -153,10 +153,10 @@ struct SingularityCommands: Commands {
     private var covered: Bool { state.welcomeCoversWindow }
 
     /// A little window has the keyboard (see the type's comment).
-    private var littleInFront: Bool { state.little.keyWindow != nil }
+    private var littleInFront: Bool { state.little.frontWindow != nil }
 
     private var openInSpaceTitle: String {
-        guard let key = state.little.keyWindow,
+        guard let key = state.little.frontWindow,
               let space = state.space(key.chosenSpaceID) ?? state.space(key.homeSpaceID) else { return "Open in Space" }
         return "Open in \(space.name)"
     }

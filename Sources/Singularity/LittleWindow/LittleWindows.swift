@@ -36,17 +36,30 @@ final class LittleWindow: NSObject, Identifiable, NSWindowDelegate {
         window.delegate = self
     }
 
-    // NSWindowDelegate. The red button and ⌘W both end here.
+    // NSWindowDelegate. The red button ends here.
     func windowWillClose(_ notification: Notification) {
-        owner?.close(self)
+        owner?.close(self, windowIsClosing: true)
     }
 
-    func windowDidBecomeKey(_ notification: Notification) {
-        owner?.setKey(self, isKey: true)
+    // "Main", not "key": while a sheet is open on the window (a page's alert, a login dialog, the
+    // print sheet) the sheet is the key window, but this window is still the main one, and ⌘W
+    // must still not reach a tab of the browser window behind it.
+    func windowDidBecomeMain(_ notification: Notification) {
+        owner?.setFront(self, isFront: true)
     }
 
-    func windowDidResignKey(_ notification: Notification) {
-        owner?.setKey(self, isKey: false)
+    func windowDidResignMain(_ notification: Notification) {
+        owner?.setFront(self, isFront: false)
+    }
+
+    /// Lets go of everything the window holds once it is closed or its page has moved to a tab.
+    /// The window's content view holds this object (through `LittlePageView`), and this object
+    /// holds the window: without this the pair, the title bar and the page would never be freed.
+    func dismantle() {
+        window.delegate = nil
+        window.contentView = nil
+        window.toolbar = nil
+        chrome = nil
     }
 }
 
@@ -56,17 +69,17 @@ final class LittleWindow: NSObject, Identifiable, NSWindowDelegate {
 final class LittleWindows {
     @ObservationIgnored weak var state: AppState?
     private(set) var windows: [LittleWindow] = []
-    /// The little window that has the keyboard, if one does. The menu commands (⌘W, ⌘O, Reload,
-    /// Find, …) act on it instead of the main window's tab while it is set.
-    private(set) var keyWindowID: UUID?
+    /// The little window that is in front (the app's main window), if one is. The menu commands
+    /// (⌘W, ⌘O, Reload, Find, …) act on it instead of the browser window's tab while it is set.
+    private(set) var frontWindowID: UUID?
     /// Tests: windows are placed far off screen and never take the keyboard.
     @ObservationIgnored var staysOffScreen = false
     /// How many windows were opened so far; each new one is shifted a little from the last.
     @ObservationIgnored private var opened = 0
 
-    var keyWindow: LittleWindow? {
-        guard let keyWindowID else { return nil }
-        return windows.first { $0.id == keyWindowID }
+    var frontWindow: LittleWindow? {
+        guard let frontWindowID else { return nil }
+        return windows.first { $0.id == frontWindowID }
     }
 
     /// Opens a link in a new little window. Returns nil for anything that is not a web link.
@@ -97,13 +110,22 @@ final class LittleWindows {
     }
 
     /// Throws the page away: nothing is kept, nothing asks.
-    func close(_ little: LittleWindow) {
+    /// - Parameter windowIsClosing: the user closed the window (red button), so AppKit is already
+    ///   taking it off screen.
+    func close(_ little: LittleWindow, windowIsClosing: Bool = false) {
         guard let index = windows.firstIndex(where: { $0 === little }) else { return }
         windows.remove(at: index)
-        if keyWindowID == little.id { keyWindowID = nil }
-        little.window.delegate = nil
-        little.window.close()
+        if frontWindowID == little.id { frontWindowID = nil }
+        retire(little, windowIsClosing: windowIsClosing)
         state?.web.removeControllers(for: [little.id])
+    }
+
+    /// Takes the window off screen and frees it. When we do it ourselves it is `orderOut`, not
+    /// `close()`: closing the last window quits the app, and "Open in …" may run while the browser
+    /// window is only just being opened again.
+    private func retire(_ little: LittleWindow, windowIsClosing: Bool) {
+        if !windowIsClosing { little.window.orderOut(nil) }
+        little.dismantle()
     }
 
     /// "Open in <Space>": the home Space gets the live page as a tab; any other Space loads the
@@ -123,11 +145,10 @@ final class LittleWindows {
             // Give up the window but keep the page: the registry still holds the controller, and
             // the main window's pane takes the web view when the new tab is shown.
             windows.removeAll { $0 === little }
-            if keyWindowID == little.id { keyWindowID = nil }
-            little.window.delegate = nil
+            if frontWindowID == little.id { frontWindowID = nil }
             little.controller.webView.removeFromSuperview()
+            retire(little, windowIsClosing: false)
             state.adoptLittlePage(little.controller, fallbackURL: little.firstURL)
-            little.window.close()
         case .reload(let url):
             close(little)
             state.userSelectSpace(chosen)
@@ -142,11 +163,11 @@ final class LittleWindows {
         for little in windows where little.chosenSpaceID == spaceID { little.chosenSpaceID = little.homeSpaceID }
     }
 
-    func setKey(_ little: LittleWindow, isKey: Bool) {
-        if isKey {
-            keyWindowID = little.id
-        } else if keyWindowID == little.id {
-            keyWindowID = nil
+    func setFront(_ little: LittleWindow, isFront: Bool) {
+        if isFront {
+            frontWindowID = little.id
+        } else if frontWindowID == little.id {
+            frontWindowID = nil
         }
     }
 

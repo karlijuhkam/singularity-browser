@@ -67,7 +67,11 @@ final class AppState {
     let little = LittleWindows()
     /// The browser window (set by `MainView`). Kept so it can be brought forward, and so sheets
     /// that belong to it don't land on a little window.
-    @ObservationIgnored weak var mainWindow: NSWindow?
+    @ObservationIgnored weak var mainWindow: NSWindow? {
+        didSet { if mainWindow != nil { mainWindowWasShown = true } }
+    }
+    /// False only during launch, until the browser window exists.
+    @ObservationIgnored private var mainWindowWasShown = false
     /// Opens the browser window again after it was closed (SwiftUI's `openWindow`; set by `MainView`).
     @ObservationIgnored var openMainWindow: (() -> Void)?
     /// Installed plugins: approvals, background processes, Settings → Plugins.
@@ -327,8 +331,9 @@ final class AppState {
     /// plugin's approval sheet away together with step 4.
     func closeTabCommand() {
         // A little window in front: ⌘W closes it, never a tab of the main window behind it.
-        if let key = little.keyWindow {
-            little.close(key)
+        if let front = little.frontWindow {
+            // Not while a sheet is open on it (a page's dialog, a login, printing): answer that first.
+            if front.window.attachedSheet == nil { little.close(front) }
         } else if welcomeCoversWindow {
             if !welcomeSheetIsOpen { closeWelcome() }
         } else {
@@ -542,7 +547,16 @@ final class AppState {
 
     /// A link from another app: it opens in its own little window (see `LittleWindows`).
     func openLink(_ url: URL) {
-        little.open(url)
+        // A link that started the app arrives while the browser window is still being put on
+        // screen; opened right away, the little window would end up behind it. So wait until the
+        // browser window is there (it reports itself through `MainView`), at most a second.
+        guard !mainWindowWasShown, !little.staysOffScreen else { little.open(url); return }
+        Task { @MainActor in
+            for _ in 0..<20 where mainWindow?.isVisible != true {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            little.open(url)
+        }
     }
 
     /// Brings the browser window forward, opening it again if it was closed.
@@ -573,7 +587,7 @@ final class AppState {
     /// window's when one has the keyboard, otherwise the selected tab's (nil while the welcome
     /// flow hides it).
     var frontController: WebTabController? {
-        if let key = little.keyWindow { return key.controller }
+        if let front = little.frontWindow { return front.controller }
         guard !welcomeCoversWindow else { return nil }
         return selectedTab.flatMap { web.existingController($0.id) }
     }
