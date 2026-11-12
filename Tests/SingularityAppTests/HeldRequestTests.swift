@@ -283,6 +283,49 @@ extension AppTests {
         #expect(f.held.count == 2)
     }
 
+    /// Claude Code's `blocked` status record and its PermissionRequest hook arrive together. Hook
+    /// first: the status record's level-1 entry is hidden behind the held one, so it is not
+    /// announced (one banner per request).
+    @Test func heldFirstThenBlockedAnnouncesOnce() throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        f.arrive(Self.permissionJSON())
+        let held = try #require(f.held.first)
+        f.center.terminalSignal(.status([StatusRecord(id: "", state: .blocked, kind: .permission, app: "claude-code",
+                                                      message: "Claude needs your permission")]),
+                                tabID: f.tab.id, spaceID: f.two.id, foregroundProgram: "claude")
+        #expect(f.center.inbox.entries.count == 2)
+        #expect(f.center.inbox.visible.map(\.id) == [held.id])
+        #expect(f.recorder.arrivals.map(\.id) == [held.id])
+    }
+
+    /// Status record first: its level-1 entry is announced, then the held one (two different
+    /// entries; that order cannot be helped). The level-1 banner is withdrawn at once, because
+    /// the notifier is synced with the visible entries, and the held one's banner stays.
+    @Test func blockedFirstThenHeldWithdrawsTheHiddenBanner() async throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        let backend = InboxNotifierTests.FakeBackend()
+        let notifier = InboxNotifier(onOpen: {}, backend: backend)
+        f.center.onArrival = { entry in
+            f.recorder.arrivals.append(entry)
+            notifier.post(entry, spaceName: "two")
+        }
+        f.center.onChange = { notifier.sync(with: f.center.inbox.visible) }
+
+        f.center.terminalSignal(.status([StatusRecord(id: "", state: .blocked, kind: .permission, app: "claude-code",
+                                                      message: "Claude needs your permission")]),
+                                tabID: f.tab.id, spaceID: f.two.id, foregroundProgram: "claude")
+        let levelOne = try #require(f.center.inbox.visible.first)
+        f.arrive(Self.permissionJSON())
+        let held = try #require(f.held.first)
+        await notifier.settle()
+        #expect(f.recorder.arrivals.map(\.id) == [levelOne.id, held.id])
+        #expect(backend.posted.map(\.id) == [levelOne.id.uuidString, held.id.uuidString])
+        #expect(backend.removed == [levelOne.id.uuidString])
+        #expect(backend.delivered == [held.id.uuidString])
+    }
+
     /// The owner cannot see everything Allow would approve: Allow is refused even when called
     /// directly (not only hidden on the card), the request keeps waiting, and Deny still works.
     @Test func incompletePermissionCanOnlyBeDenied() throws {

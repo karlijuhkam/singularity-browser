@@ -121,7 +121,12 @@ final class InboxCenter {
 
         if listChanged { logChange(Self.name(of: signal), tabID: tabID) }
         if listChanged { listDidChange() }
-        if case .added(let entry) = change { onArrival(entry) }
+        // Only an entry the owner can see is announced. One hidden behind a held request of the
+        // same tab (Claude Code's `blocked` record arriving just after its PermissionRequest
+        // hook) would be a second banner for the same thing.
+        if case .added(let entry) = change, inbox.visible.contains(where: { $0.id == entry.id }) {
+            onArrival(entry)
+        }
         releaseHeld(released)
     }
 

@@ -20,8 +20,15 @@ extension AppTests {
 
         func setDelegate(_ delegate: UNUserNotificationCenterDelegate) { delegateSet = true }
         func requestAuthorisation() async -> Bool { authorisationRequests += 1; return allow }
-        func post(id: String, title: String, body: String) async { posted.append((id, title, body)) }
-        func removeDelivered(ids: [String]) { removed += ids }
+        /// As macOS does: a posted notification is delivered (a repeat replaces it) until removed.
+        func post(id: String, title: String, body: String) async {
+            posted.append((id, title, body))
+            if !delivered.contains(id) { delivered.append(id) }
+        }
+        func removeDelivered(ids: [String]) {
+            removed += ids
+            delivered.removeAll { ids.contains($0) }
+        }
         func deliveredIDs() async -> [String] { delivered }
         func setBadge(_ label: String?) { badges.append(label) }
     }
