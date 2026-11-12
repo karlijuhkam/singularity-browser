@@ -65,6 +65,8 @@ final class AppState {
     let downloads = DownloadCenter()
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
+    /// Self-updating (Sparkle), only in a copy that may update itself (`UpdatePolicy`).
+    let updates: AppUpdates
     /// Plugins' page scripts in each Space's web views.
     @ObservationIgnored let pluginScripts: PluginScripts
     /// Preferences from the Settings window (`~/Singularity/settings.json`). Change via `updateSettings`.
@@ -97,7 +99,9 @@ final class AppState {
 
     /// `discardFolder`: what `deleteSpace` does with the Space's folder. The app keeps the default
     /// (the Trash); tests remove it inside their temporary folder instead (`TestAppState`).
-    init(paths: Paths, discardFolder: @escaping SpaceStore.DiscardFolder = SpaceStore.moveToTrash) {
+    /// `updateAvailability`: whether this copy updates itself; Sparkle starts only for `.available`.
+    init(paths: Paths, discardFolder: @escaping SpaceStore.DiscardFolder = SpaceStore.moveToTrash,
+         updateAvailability: UpdateAvailability = AppUpdates.currentAvailability()) {
         self.paths = paths
         self.store = SpaceStore(paths: paths, discardFolder: discardFolder)
         self.web = WebViewRegistry()
@@ -116,7 +120,9 @@ final class AppState {
             runtime: bundle.appending(path: "Contents/Helpers/bun"),
             hostFolder: bundle.appending(path: "Contents/Resources/plugin-host", directoryHint: .isDirectory))
 
-        settings = store.loadSettings()
+        let loadedSettings = store.loadSettings()
+        settings = loadedSettings
+        self.updates = AppUpdates(availability: updateAvailability, checksAutomatically: loadedSettings.checksForUpdates)
         let loaded = store.load()
         spaces = loaded.spaces
         loadErrors = loaded.errors
@@ -1153,6 +1159,9 @@ final class AppState {
         scheduleSave()
         if settings.terminalFontName != before.terminalFontName || settings.terminalFontSize != before.terminalFontSize {
             terminals.applyFont(terminalFont)
+        }
+        if settings.checksForUpdates != before.checksForUpdates {
+            updates.setChecksAutomatically(settings.checksForUpdates)
         }
     }
 

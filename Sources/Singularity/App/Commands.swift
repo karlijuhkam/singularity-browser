@@ -12,8 +12,11 @@ struct SingularityCommands: Commands {
     let state: AppState
 
     var body: some Commands {
-        // Singularity → Welcome to Singularity… (under "About Singularity"): the welcome flow again.
+        // Under "About Singularity": Check for Updates… (off while Sparkle is busy, and in copies that
+        // don't update themselves) and Welcome to Singularity… (the welcome flow again).
         CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { state.updates.checkNow() }
+                .disabled(!state.updates.canCheck)
             Button("Welcome to Singularity…") { state.showWelcome() }
         }
 

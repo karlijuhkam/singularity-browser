@@ -65,6 +65,16 @@
 	<string>A program in a terminal tab, or a download, wants to use your Downloads folder.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>A website or a program in a terminal tab wants to reach devices on your local network.</string>
+	<!-- Sparkle (self-updating). SUFeedURL and SUPublicEDKey are not here: release.sh stamps them
+	     into release builds only, so every other build has no updater. Automatic checks are on by
+	     default, so Sparkle never asks "check automatically?" itself (Settings → General has the
+	     switch); it checks hourly, and it never installs without asking. -->
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>3600</integer>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Let web pages load plain http:// sites, like any browser. Applies to WKWebView content only. -->
