@@ -42,6 +42,22 @@ final class InboxCenter {
     }
     @ObservationIgnored private var waitingApprovals: [UUID: WaitingApproval] = [:]
 
+    /// A Claude Code hook call held open until the owner answers it in the inbox (a question or a
+    /// permission request, see `hookArrived`). Kept by entry id until it gets its one reply.
+    private struct HeldRequest {
+        let connection: any HookReplying
+        /// The question's original `tool_input` as JSON text, which `ClaudeHook.answerReply` reads
+        /// again (the entry holds only cleaned text). Nil for a permission request.
+        let toolInput: String?
+        var timer: Task<Void, Never>?
+    }
+    @ObservationIgnored private var heldRequests: [UUID: HeldRequest] = [:]
+
+    /// How long a request is held before it goes back to the terminal (its entry stays as a plain
+    /// waiting entry). Safely below the hook's own `timeout` of 3600 s: when that runs out first,
+    /// Claude Code kills the helper and the owner's answer would be lost. Tests shorten it.
+    @ObservationIgnored var holdLimit: Duration = .seconds(3300)
+
     /// At most this many approvals wait at once per Space; one more is denied at once. The sheet
     /// showed one at a time, so a page calling `prompt()` in a loop could not flood anything;
     /// this keeps that true for entries, timers, notifications and Dock bounces.
@@ -230,11 +246,29 @@ final class InboxCenter {
     /// while the answer buttons are locked (`answersUnlockAt`). `decideApproval` itself does not
     /// look at the lock.
     func answerFromCard(_ id: UUID, _ outcome: AgentApprovals.Outcome) {
-        guard now() >= answersUnlockAt else {
-            logChange("approval click ignored: the cards just moved", tabID: nil)
-            return
-        }
+        guard answerClickCounts() else { return }
         decideApproval(id, outcome)
+    }
+
+    /// An option or Send on a question card (through `perform`); under the same lock.
+    func answerQuestionFromCard(_ id: UUID, answers: [String: [String]]) {
+        guard answerClickCounts() else { return }
+        answerQuestion(id, answers: answers)
+    }
+
+    /// Allow or Deny on a permission card (through `perform`); under the same lock.
+    func decidePermissionFromCard(_ id: UUID, allow: Bool) {
+        guard answerClickCounts() else { return }
+        decidePermission(id, allow: allow)
+    }
+
+    /// Whether an answer click counts now (see `answersUnlockAt`).
+    private func answerClickCounts() -> Bool {
+        guard now() >= answersUnlockAt else {
+            logChange("answer click ignored: the cards just moved", tabID: nil)
+            return false
+        }
+        return true
     }
 
     /// The panel came on screen: lock the answer buttons for a moment (see `answersUnlockAt`).
@@ -324,6 +358,134 @@ final class InboxCenter {
         return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
     }
 
+    // MARK: Claude Code's questions and permission requests (held hook calls)
+
+    /// A hook call from `singularity-hook`, relayed by the hook socket. Decides at once, or holds
+    /// it as an entry until the owner answers. Every call gets exactly one reply on `connection`:
+    /// - a tab we don't know, a hook that isn't ours, or the AskUserQuestion permission stage
+    ///   (its dialog is the question itself): "no decision" at once;
+    /// - Stop: "no decision" at once (it never waits), and its text becomes the done entry's;
+    /// - a question or permission request while the owner looks at that terminal: "no decision"
+    ///   at once, so Claude Code shows its own prompt there;
+    /// - otherwise held: answered in the inbox, or handed back to the terminal ("no decision") by
+    ///   any of the ways listed at `finishHeld`.
+    func hookArrived(tabID: UUID, hookInput: Data, connection: any HookReplying) {
+        guard let spaceID = state?.spaces.first(where: { $0.tab(tabID) != nil })?.id else {
+            connection.reply(ClaudeHook.noDecision)
+            return
+        }
+        switch ClaudeHook.parse(hookInput) {
+        case .ignored:
+            connection.reply(ClaudeHook.noDecision)
+        case .stop(let lastMessage):
+            connection.reply(ClaudeHook.noDecision)
+            turnEnded(tabID: tabID, lastMessage: lastMessage)
+        case .question(let questions, let toolInput):
+            hold(.question(questions), toolInput: toolInput, tabID: tabID, spaceID: spaceID, connection: connection)
+        case .permission(let tool, let input):
+            hold(.permission(tool: tool, input: input), toolInput: nil, tabID: tabID, spaceID: spaceID,
+                 connection: connection)
+        }
+    }
+
+    /// The owner's answer to a held question: cleaned question text → cleaned labels, as the card
+    /// shows them. `ClaudeHook.answerReply` maps them back to Claude Code's original strings; when
+    /// nothing matches it gives "no decision", and the question goes back to the terminal.
+    func answerQuestion(_ id: UUID, answers: [String: [String]]) {
+        guard let toolInput = heldRequests[id]?.toolInput else { return }
+        finishHeld(id, reply: ClaudeHook.answerReply(toolInput: toolInput, answers: answers), why: "question answered")
+    }
+
+    /// Allow (this once) or Deny for a held permission request.
+    func decidePermission(_ id: UUID, allow: Bool) {
+        guard heldRequests[id] != nil,
+              case .permission = inbox.entries.first(where: { $0.id == id })?.kind else { return }
+        finishHeld(id, reply: ClaudeHook.permissionReply(allow: allow), why: allow ? "permission allowed" : "permission denied")
+    }
+
+    /// The app is quitting: every held request goes back to its terminal. (Were this missed,
+    /// the helper would still get an empty reply when the app's end closes the connection.)
+    func handBackAllHeld() {
+        for id in Array(heldRequests.keys) {
+            finishHeld(id, reply: ClaudeHook.noDecision, why: "app quitting")
+        }
+    }
+
+    private func hold(_ kind: InboxKind, toolInput: String?, tabID: UUID, spaceID: UUID, connection: any HookReplying) {
+        let program = state?.terminals.existingSession(tabID)?.foregroundProgram
+        let tab = facts(tabID: tabID, spaceID: spaceID, foregroundProgram: program)
+        let agent = InboxRules.agentName(statusApp: "claude-code", foregroundProgram: program)
+        guard let entry = inbox.hold(kind, tab: tab, agent: agent, now: now()) else {
+            // The owner is looking at the terminal: its own prompt appears there at once.
+            connection.reply(ClaudeHook.noDecision)
+            return
+        }
+        heldRequests[entry.id] = HeldRequest(connection: connection, toolInput: toolInput)
+        startHoldTimer(entry.id)
+        // Set after the record exists: if the helper is already gone, this calls back at once.
+        let id = entry.id
+        connection.onClosedByPeer = { [weak self] in
+            Task { @MainActor in self?.finishHeld(id, reply: nil, why: "hook went away") }
+        }
+        logChange(toolInput == nil ? "permission held" : "question held", tabID: tabID)
+        listDidChange()
+        onArrival(entry)
+    }
+
+    /// Stop: the agent's turn ended. Its last message becomes the done entry's text; held
+    /// requests of the tab can no longer be answered and go back ("no decision").
+    private func turnEnded(tabID: UUID, lastMessage: String?) {
+        var updated = inbox
+        var released: [InboxEntry]
+        if let lastMessage {
+            updated.noteLastMessage(lastMessage, tabID: tabID)
+            released = updated.takeReleased()
+        } else {
+            // No text: leave the done entry's text alone, release the held requests all the same.
+            released = updated.entries.filter { $0.tabID == tabID && $0.isHeld }
+            for entry in released { updated.remove(entry.id) }
+        }
+        if store(updated) {
+            logChange("stop", tabID: tabID)
+            listDidChange()
+        }
+        releaseHeld(released)
+    }
+
+    /// The hold limit: hand the request back to the terminal and keep a plain waiting entry.
+    private func startHoldTimer(_ id: UUID) {
+        let limit = holdLimit
+        heldRequests[id]?.timer = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: limit)
+            } catch {
+                return   // cancelled: ended some other way
+            }
+            guard let self, self.heldRequests[id] != nil else { return }
+            // Reply first: `demote` gives the entry a new id, which no connection belongs to.
+            self.finishHeld(id, reply: ClaudeHook.noDecision, why: "hold limit", removeEntry: false)
+            self.inbox.demote(id)
+            self.listDidChange()
+        }
+    }
+
+    /// The one place a held request ends. Its record is taken out first, so whatever comes later
+    /// for the same id finds nothing and does nothing: one reply per request, as for approvals.
+    /// Ends: answered (`answerQuestion`), decided (`decidePermission`), handed back by the owner
+    /// going to the terminal, the tab closing (also when its Space is deleted), the tab's status
+    /// or a Stop releasing it, dismissal (`releaseHeld`), the hold limit, the app quitting
+    /// (`handBackAllHeld`), and the helper going away (`reply` nil: nobody to answer).
+    /// - Parameter removeEntry: false when the caller has already removed or will replace it.
+    private func finishHeld(_ id: UUID, reply: Data?, why: String, removeEntry: Bool = true) {
+        guard let held = heldRequests.removeValue(forKey: id) else { return }
+        held.timer?.cancel()
+        held.connection.onClosedByPeer = nil
+        let removed = removeEntry ? inbox.remove(id) : nil
+        if removed != nil { listDidChange() }
+        logChange(why, tabID: removed?.tabID)
+        if let reply { held.connection.reply(reply) }
+    }
+
     /// Tests only: replaces the whole list (built with Core's `Inbox` methods) without announcing
     /// anything.
     func replaceInboxForTesting(_ inbox: Inbox) {
@@ -334,11 +496,14 @@ final class InboxCenter {
 
     /// Entries that left the inbox while an agent (or a page) still waits for an answer: held hook
     /// requests and browser approvals. An approval that left without an answer (tab closed,
-    /// dismissed) is denied. Nothing is held yet; Task 8 replies "no decision" to each held
-    /// request here.
+    /// dismissed) is denied; a held request goes back to the terminal ("no decision").
     private func releaseHeld(_ entries: [InboxEntry]) {
-        for entry in entries where Self.isApproval(entry) {
-            finishApproval(entry.id, .denied)
+        for entry in entries {
+            if Self.isApproval(entry) {
+                finishApproval(entry.id, .denied)
+            } else if entry.isHeld {
+                finishHeld(entry.id, reply: ClaudeHook.noDecision, why: "handed back to the terminal")
+            }
         }
     }
 

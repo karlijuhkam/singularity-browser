@@ -40,6 +40,10 @@ final class TerminalSession {
     @ObservationIgnored private var lastDirectory: String?
     /// The Space's slug, exported to the shell as SINGULARITY_SPACE.
     private let spaceSlug: String
+    /// The app's hook socket, exported as SINGULARITY_HOOK_SOCKET (with the tab's id as
+    /// SINGULARITY_TAB) for Claude Code's `singularity-hook`. A test copy started with
+    /// SINGULARITY_HOME has its own, so its terminals talk to it and not to the owner's copy.
+    private let hookSocketPath: String
     /// The path of `hc` when this tab runs through herdr-core; nil for the built-in terminal.
     @ObservationIgnored private var herdrPath: String?
     /// The shell's process id as herdr-core reports it (the view's own child is `hc attach`).
@@ -53,6 +57,7 @@ final class TerminalSession {
         self.tabID = tabID
         self.spaceID = spaceID
         self.spaceSlug = spaceSlug
+        self.hookSocketPath = (state?.paths ?? Paths.standard).hookSocket.path
         self.state = state
         self.herdrPath = herdr
         self.view = SingularityTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
@@ -133,7 +138,7 @@ final class TerminalSession {
         view.startProcess(
             executable: shell,
             args: [],
-            environment: Self.environment(shell: shell, spaceSlug: spaceSlug),
+            environment: environment(shell: shell),
             execName: "-" + (shell as NSString).lastPathComponent,
             currentDirectory: directory
         )
@@ -186,10 +191,11 @@ final class TerminalSession {
     /// one, then runs `hc attach` in the view. Any surprise falls back to the built-in terminal.
     private func startThroughHerdr(hc: String, shell: String, directory: String) {
         let name = HerdrCore.terminalName(tabID: tabID)
-        let slug = spaceSlug
+        let run = HerdrCore.runArguments(name: name, directory: directory, spaceSlug: spaceSlug, tabID: tabID,
+                                         hookSocket: hookSocketPath, shell: shell)
         isRunning = true // "starting": the tab isn't offered a new shell meanwhile
         Task { [weak self] in
-            let outcome = await Self.prepareHerdrTerminal(hc: hc, name: name, directory: directory, spaceSlug: slug, shell: shell)
+            let outcome = await Self.prepareHerdrTerminal(hc: hc, name: name, runArguments: run)
             guard let self, !self.isClosing else { return }
             switch outcome {
             case .success(let terminal):
@@ -197,7 +203,7 @@ final class TerminalSession {
                 self.view.startProcess(
                     executable: hc,
                     args: HerdrCore.attachArguments(name: name),
-                    environment: Self.environment(shell: shell, spaceSlug: slug),
+                    environment: self.environment(shell: shell),
                     execName: nil,
                     currentDirectory: directory
                 )
@@ -220,8 +226,8 @@ final class TerminalSession {
     }
 
     /// The tab's live herdr terminal: the one from before, or a new one.
-    private nonisolated static func prepareHerdrTerminal(hc path: String, name: String, directory: String, spaceSlug: String,
-                                                         shell: String) async -> Result<HerdrCore.Terminal, HerdrProblem> {
+    private nonisolated static func prepareHerdrTerminal(hc path: String, name: String,
+                                                         runArguments: [String]) async -> Result<HerdrCore.Terminal, HerdrProblem> {
         func get() async -> HerdrCore.Lookup {
             let result = await hc(path, ["get", name, "--json"])
             if result.timedOut { return .unreadable("hc didn't answer") }
@@ -235,7 +241,7 @@ final class TerminalSession {
             lookup = .missing
         }
         if lookup == .missing {
-            let run = await hc(path, HerdrCore.runArguments(name: name, directory: directory, spaceSlug: spaceSlug, shell: shell))
+            let run = await hc(path, runArguments)
             guard run.status == 0, !run.timedOut else {
                 let said = HerdrCore.errorMessage(run.stdout) ?? HerdrCore.errorMessage(run.stderr)
                 return .failure(HerdrProblem(message: said ?? (run.timedOut ? "hc run didn't answer" : "hc run failed")))
@@ -290,7 +296,7 @@ final class TerminalSession {
     }
 
     /// The app's own environment (which carries SSH_AUTH_SOCK, TMPDIR, …) plus terminal settings.
-    private static func environment(shell: String, spaceSlug: String) -> [String] {
+    private func environment(shell: String) -> [String] {
         var environment = ProcessInfo.processInfo.environment
         for key in ["__CFBundleIdentifier", "XPC_SERVICE_NAME", "XPC_FLAGS", "TERM_SESSION_ID"] {
             environment.removeValue(forKey: key)
@@ -303,6 +309,10 @@ final class TerminalSession {
         // Tells agents running in this terminal which Space they are in, i.e. which
         // "<slug>.<tool>" MCP tools act on the browser around them.
         environment["SINGULARITY_SPACE"] = spaceSlug
+        // For Claude Code's hook (`singularity-hook`): which tab asks, and where the app listens.
+        // Without them the hook does nothing (Claude Code in any other terminal).
+        environment["SINGULARITY_TAB"] = tabID.uuidString
+        environment["SINGULARITY_HOOK_SOCKET"] = hookSocketPath
         if environment["LANG"] == nil { environment["LANG"] = "en_US.UTF-8" }
         return environment.map { "\($0.key)=\($0.value)" }
     }

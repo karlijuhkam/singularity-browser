@@ -87,8 +87,9 @@ private struct InboxAnchor: NSViewRepresentable {
 
 // MARK: - The list
 
-/// What a button on a card asks for. `InboxCenter.perform` carries it out; later tasks add the
-/// answers to questions and permissions.
+/// What a button on a card asks for. `InboxCenter.perform` carries it out. The answers (approval,
+/// question, permission) count only once the cards have been still for a moment
+/// (`InboxCenter.answersUnlockAt`).
 enum InboxCardAction {
     case goTo(InboxEntry)
     case dismiss(UUID)
@@ -96,6 +97,10 @@ enum InboxCardAction {
     case decideApproval(UUID, AgentApprovals.Outcome)
     /// Shows the tab, restarts the clock, answers nothing.
     case showApprovalTab(UUID)
+    /// A held question's answers: cleaned question text → cleaned labels, as the card shows them.
+    case answerQuestion(UUID, [String: [String]])
+    /// Allow (this once) or Deny for a held permission request.
+    case decidePermission(UUID, allow: Bool)
 }
 
 /// The panel's header: "Inbox" and how many more agents are working.
@@ -216,7 +221,7 @@ private struct InboxCard: View {
         switch entry.kind {
         case .waiting: InboxWaitingBody(message: entry.message)
         case .done: InboxDoneBody(message: entry.message)
-        case .question(let questions): InboxQuestionBody(questions: questions)
+        case .question(let questions): InboxQuestionBody(entry: entry, questions: questions, onAction: onAction)
         case .permission(let tool, let input): InboxPermissionBody(tool: tool, input: input)
         case .approval(let approval): InboxApprovalBody(approval: approval)
         }
@@ -248,22 +253,134 @@ private struct InboxDoneBody: View {
     }
 }
 
-/// Task 6 adds the answer buttons.
-private struct InboxQuestionBody: View {
+/// What the owner has picked on a question card so far, and what the card's buttons do.
+/// - Exactly one single-choice question: an option answers at once (`answersAtOnce`).
+/// - Otherwise options toggle (a single-choice question is a radio group) and Send answers, once
+///   every question has a choice (`isComplete`).
+struct InboxQuestionPicks: Equatable {
     let questions: [InboxQuestion]
+    /// Picked labels by question index (two questions may read the same once cleaned).
+    private var picked: [Int: Set<String>] = [:]
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(questions.enumerated()), id: \.offset) { _, question in
-                Text(verbatim: InboxText.clean(question.question, limit: InboxText.messageLimit))
-                    .font(.system(size: 12))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+    init(questions: [InboxQuestion]) {
+        self.questions = questions
+    }
+
+    var answersAtOnce: Bool {
+        questions.count == 1 && !questions[0].multiSelect
+    }
+
+    func isPicked(_ question: Int, _ label: String) -> Bool {
+        picked[question]?.contains(label) ?? false
+    }
+
+    mutating func toggle(_ question: Int, _ label: String) {
+        guard questions.indices.contains(question), questions[question].options.contains(label) else { return }
+        var labels = picked[question] ?? []
+        if labels.contains(label) {
+            labels.remove(label)
+        } else if questions[question].multiSelect {
+            labels.insert(label)
+        } else {
+            labels = [label]
         }
+        picked[question] = labels
+    }
+
+    var isComplete: Bool {
+        questions.indices.allSatisfy { !(picked[$0] ?? []).isEmpty }
+    }
+
+    /// Question text → picked labels in the options' order (what `InboxCenter.answerQuestion` takes).
+    var answers: [String: [String]] {
+        var result: [String: [String]] = [:]
+        for (index, question) in questions.enumerated() {
+            let labels = question.options.filter { isPicked(index, $0) }
+            if !labels.isEmpty { result[question.question] = labels }
+        }
+        return result
+    }
+
+    /// The action of an option button on a card that answers at once; nil when the card does not.
+    static func answerAtOnce(entry: InboxEntry, question index: Int, label: String) -> InboxCardAction? {
+        guard case .question(let questions) = entry.kind, InboxQuestionPicks(questions: questions).answersAtOnce,
+              questions.indices.contains(index), questions[index].options.contains(label) else { return nil }
+        return .answerQuestion(entry.id, [questions[index].question: [label]])
     }
 }
 
-/// Task 8 adds Allow and Deny.
+/// Claude Code's question: each question (with its short header), its options as buttons, and
+/// "Other…", which goes to the terminal where the question then appears (to type an answer of
+/// one's own). With several questions or multiple choice, options toggle and "Send" answers.
+private struct InboxQuestionBody: View {
+    let entry: InboxEntry
+    let questions: [InboxQuestion]
+    let onAction: (InboxCardAction) -> Void
+    @State private var picks: InboxQuestionPicks
+
+    init(entry: InboxEntry, questions: [InboxQuestion], onAction: @escaping (InboxCardAction) -> Void) {
+        self.entry = entry
+        self.questions = questions
+        self.onAction = onAction
+        _picks = State(initialValue: InboxQuestionPicks(questions: questions))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+                VStack(alignment: .leading, spacing: 4) {
+                    if let header = question.header {
+                        Text(verbatim: InboxText.clean(header, limit: 80))
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(verbatim: InboxText.clean(question.question, limit: InboxText.messageLimit))
+                        .font(.system(size: 12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(question.options, id: \.self) { label in
+                        option(label, question: index, multiSelect: question.multiSelect)
+                    }
+                }
+            }
+            HStack(spacing: 6) {
+                if !picks.answersAtOnce {
+                    Button("Send") { onAction(.answerQuestion(entry.id, picks.answers)) }
+                        .disabled(!picks.isComplete)
+                }
+                Button("Other…") { onAction(.goTo(entry)) }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func option(_ label: String, question index: Int, multiSelect: Bool) -> some View {
+        let picked = picks.isPicked(index, label)
+        return Button {
+            if let action = InboxQuestionPicks.answerAtOnce(entry: entry, question: index, label: label) {
+                onAction(action)
+            } else {
+                picks.toggle(index, label)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                if !picks.answersAtOnce {
+                    Image(systemName: multiSelect ? (picked ? "checkmark.square.fill" : "square")
+                                                  : (picked ? "largecircle.fill.circle" : "circle"))
+                        .accessibilityHidden(true)
+                }
+                Text(verbatim: InboxText.clean(label, limit: InboxText.messageLimit))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .controlSize(.small)
+        .accessibilityAddTraits(picked ? .isSelected : [])
+    }
+}
+
+/// Claude Code wants to use a tool: which one, and its input (for Bash the command) in a small
+/// scrolling monospaced box. Allow and Deny are in `InboxCardButtons`.
 private struct InboxPermissionBody: View {
     let tool: String
     let input: String
@@ -274,8 +391,18 @@ private struct InboxPermissionBody: View {
             Text(verbatim: "Wants to use \(InboxText.clean(tool, limit: 80))")
                 .font(.system(size: 12))
                 .fixedSize(horizontal: false, vertical: true)
-            if !text.isEmpty { InboxBlockText(text: text) }
+            if !text.isEmpty { InboxBlockText(text: text, maxHeight: 90) }
         }
+    }
+}
+
+/// Allow and Deny for a held permission request. Neither is a default button: the owner decides
+/// about his own machine with a deliberate click.
+enum InboxPermissionButtons {
+    static func choices(for entry: InboxEntry) -> [InboxApprovalButtons.Choice] {
+        guard case .permission = entry.kind else { return [] }
+        return [InboxApprovalButtons.Choice(title: "Allow", action: .decidePermission(entry.id, allow: true)),
+                InboxApprovalButtons.Choice(title: "Deny", action: .decidePermission(entry.id, allow: false))]
     }
 }
 
@@ -363,10 +490,15 @@ private struct InboxCardButtons: View {
             InboxApprovalButtons(entry: entry, onAction: onAction)
         } else {
             let isDone = entry.kind == .done
-            if isDone || entry.tabID != nil {
+            let permission = InboxPermissionButtons.choices(for: entry)
+            if isDone || entry.tabID != nil || !permission.isEmpty {
                 HStack(spacing: 6) {
                     if isDone {
                         Button("Dismiss") { onAction(.dismiss(entry.id)) }
+                            .controlSize(.small)
+                    }
+                    ForEach(Array(permission.enumerated()), id: \.offset) { _, choice in
+                        Button(choice.title) { onAction(choice.action) }
                             .controlSize(.small)
                     }
                     Spacer(minLength: 0)

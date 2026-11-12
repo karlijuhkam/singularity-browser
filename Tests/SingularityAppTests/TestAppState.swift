@@ -26,6 +26,7 @@ enum TestAppState {
     static func shutDown(_ state: AppState) {
         state.flushSaves()
         state.mcp?.stop()
+        state.hookSocket?.stop()
         state.plugins.terminateAll()
         state.artifacts.stopAll()
     }

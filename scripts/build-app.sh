@@ -28,6 +28,7 @@ echo "→ Xcode: ${DEVELOPER_DIR:-$(xcode-select -p)}"
 echo "→ swift build ($CONFIG)"
 swift build -c "$CONFIG" --product Singularity
 swift build -c "$CONFIG" --product singularity-mcp
+swift build -c "$CONFIG" --product singularity-hook
 BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
 
 echo "→ assembling $APP"
@@ -36,6 +37,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN_DIR/Singularity" "$APP/Contents/MacOS/Singularity"
 # The MCP launcher agents start (see README). It lives next to the app's own binary.
 cp "$BIN_DIR/singularity-mcp" "$APP/Contents/MacOS/singularity-mcp"
+# The command Claude Code runs as a hook (questions and permission requests for the inbox).
+cp "$BIN_DIR/singularity-hook" "$APP/Contents/MacOS/singularity-hook"
 # The Bun runtime that plugins run on (fetched by scripts/fetch-bun.sh).
 cp "$ROOT/Vendor/bun/bun" "$APP/Contents/Helpers/bun"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
@@ -66,6 +69,7 @@ done
 echo "→ codesign (identity: $SIGN_IDENTITY)"
 # Helper executables inside the bundle must be signed before the bundle itself.
 codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/singularity-mcp"
+codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/singularity-hook"
 # Bun's JavaScript engine needs JIT entitlements under the hardened runtime.
 codesign --force --options runtime --entitlements "$ROOT/Resources/Bun.entitlements" \
   --sign "$SIGN_IDENTITY" "$APP/Contents/Helpers/bun"

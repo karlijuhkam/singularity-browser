@@ -116,10 +116,15 @@ import Testing
         let name = HerdrCore.terminalName(tabID: tab)
         #expect(name == "sg-6916bfb3aa44440083e86735")
         #expect(name.count <= 32 && name.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" })
-        let run = HerdrCore.runArguments(name: name, directory: "/tmp/x y", spaceSlug: "work", shell: "/bin/zsh")
+        let run = HerdrCore.runArguments(name: name, directory: "/tmp/x y", spaceSlug: "work", tabID: tab,
+                                         hookSocket: "/Users/x/Singularity/.run/hook.sock", shell: "/bin/zsh")
         #expect(run.prefix(3) == ["run", "--bg", "--json"])
         #expect(run.contains("--no-parent"))
-        #expect(run.suffix(5) == ["--", "/usr/bin/env", "SINGULARITY_SPACE=work", "/bin/zsh", "-l"])
+        // herdr-core starts the shell with its own environment: the Space, the tab id and the hook
+        // socket travel through /usr/bin/env (the Claude Code hook helper reads the last two).
+        #expect(run.suffix(7) == ["--", "/usr/bin/env", "SINGULARITY_SPACE=work",
+                                  "SINGULARITY_TAB=6916BFB3-AA44-4400-83E8-6735FE2E2030",
+                                  "SINGULARITY_HOOK_SOCKET=/Users/x/Singularity/.run/hook.sock", "/bin/zsh", "-l"])
         #expect(run[run.firstIndex(of: "--cwd")! + 1] == "/tmp/x y")
         #expect(HerdrCore.attachArguments(name: name).prefix(2) == ["attach", name])
         #expect(HerdrCore.parseVersion("hc 0.1.19\n") == "0.1.19")

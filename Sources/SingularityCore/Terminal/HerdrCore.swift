@@ -54,13 +54,16 @@ public enum HerdrCore {
     /// Arguments for `hc run`: a login shell in `directory`, labelled as Singularity's.
     ///
     /// herdr-core starts programs with its own environment, not the caller's, so the Space's
-    /// name travels through `/usr/bin/env` (agents in the terminal read SINGULARITY_SPACE to
-    /// know which browser tools are theirs). `--no-parent`: when Singularity itself was started
+    /// name, the tab's id and the hook socket's path travel through `/usr/bin/env` (agents in the
+    /// terminal read SINGULARITY_SPACE to know which browser tools are theirs; Claude Code's
+    /// `singularity-hook` reads the other two). `--no-parent`: when Singularity itself was started
     /// from a herdr terminal, the tab must not become that terminal's child and end with it.
-    public static func runArguments(name: String, directory: String, spaceSlug: String, shell: String) -> [String] {
+    public static func runArguments(name: String, directory: String, spaceSlug: String, tabID: UUID,
+                                    hookSocket: String, shell: String) -> [String] {
         ["run", "--bg", "--json", "--no-parent", "--no-notify", "--name", name, "--cwd", directory,
          "--label", "app=singularity", "--label", "space=" + spaceSlug,
-         "--", "/usr/bin/env", "SINGULARITY_SPACE=" + spaceSlug, shell, "-l"]
+         "--", "/usr/bin/env", "SINGULARITY_SPACE=" + spaceSlug, "SINGULARITY_TAB=" + tabID.uuidString,
+         "SINGULARITY_HOOK_SOCKET=" + hookSocket, shell, "-l"]
     }
 
     /// Arguments for `hc attach`, with some scrollback so a re-opened tab isn't a bare screen.

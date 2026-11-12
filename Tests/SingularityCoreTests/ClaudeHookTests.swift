@@ -167,6 +167,20 @@ import Testing
         #expect(dict(parsed.hookInput)["a"] as? String == "x\ny")
     }
 
+    /// The exact bytes of a wire line. `singularity-hook` builds the same line with its own copy of
+    /// this code (it does not link SingularityCore): if this test has to change, change
+    /// `Sources/singularity-hook/main.swift` too. The app test `HeldRequestTests` also compares
+    /// the real helper's line with `wireLine`.
+    @Test func wireLineFormatIsPinned() {
+        let hook = Data(#"{"b": [1, 2.5, true, null], "a": "x/y \"q\" é", "c": {"z": 1, "y": "line\nbreak"}}"#.utf8)
+        let line = ClaudeHook.wireLine(tabID: "6916BFB3-AA44-4400-83E8-6735FE2E2030", hookInput: hook)
+        let expected = #"{"hook":{"a":"x/y \"q\" é","b":[1,2.5,true,null],"c":{"y":"line\nbreak","z":1}},"tab":"6916BFB3-AA44-4400-83E8-6735FE2E2030"}"#
+        #expect(String(decoding: line, as: UTF8.self) == expected + "\n")
+        // Not JSON: the hook is sent as {} (the app then ignores it).
+        #expect(String(decoding: ClaudeHook.wireLine(tabID: "t", hookInput: Data("nope".utf8)), as: UTF8.self)
+                == #"{"hook":{},"tab":"t"}"# + "\n")
+    }
+
     @Test func parseWireLineRejectsBadLines() {
         #expect(ClaudeHook.parseWireLine(Data(#"{"tab":"nope","hook":{}}"#.utf8)) == nil)
         #expect(ClaudeHook.parseWireLine(Data("{\"tab\":\"\(UUID().uuidString)\"}".utf8)) == nil)

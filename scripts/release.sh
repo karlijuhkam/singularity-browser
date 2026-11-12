@@ -85,7 +85,8 @@ fi
 echo "→ building release (universal)"
 ARCH_FLAGS=(--arch arm64 --arch x86_64)
 if ! swift build -c release "${ARCH_FLAGS[@]}" --product Singularity >/dev/null \
-   || ! swift build -c release "${ARCH_FLAGS[@]}" --product singularity-mcp >/dev/null; then
+   || ! swift build -c release "${ARCH_FLAGS[@]}" --product singularity-mcp >/dev/null \
+   || ! swift build -c release "${ARCH_FLAGS[@]}" --product singularity-hook >/dev/null; then
   if (( ! SKIP_NOTARIZE )); then
     fail "the universal (Apple Silicon + Intel) build failed; a release must run on both."
   fi
@@ -93,13 +94,14 @@ if ! swift build -c release "${ARCH_FLAGS[@]}" --product Singularity >/dev/null 
   ARCH_FLAGS=(--arch arm64)
   swift build -c release "${ARCH_FLAGS[@]}" --product Singularity
   swift build -c release "${ARCH_FLAGS[@]}" --product singularity-mcp
+  swift build -c release "${ARCH_FLAGS[@]}" --product singularity-hook
 fi
 BIN_DIR="$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)"
 
 echo "→ assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
-cp "$BIN_DIR/Singularity" "$BIN_DIR/singularity-mcp" "$APP/Contents/MacOS/"
+cp "$BIN_DIR/Singularity" "$BIN_DIR/singularity-mcp" "$BIN_DIR/singularity-hook" "$APP/Contents/MacOS/"
 cp "$ROOT/Vendor/bun/bun" "$APP/Contents/Helpers/bun"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
@@ -124,6 +126,7 @@ echo "  architectures: $(lipo -archs "$APP/Contents/MacOS/Singularity")"
 echo "→ signing with: $IDENTITY_NAME ($IDENTITY)"
 # Inner executables first, then the bundle. --timestamp is required for notarization.
 codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/singularity-mcp"
+codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/singularity-hook"
 # Bun's JavaScript engine needs JIT entitlements under the hardened runtime.
 codesign --force --options runtime --timestamp --entitlements "$ROOT/Resources/Bun.entitlements" \
   --sign "$IDENTITY" "$APP/Contents/Helpers/bun"

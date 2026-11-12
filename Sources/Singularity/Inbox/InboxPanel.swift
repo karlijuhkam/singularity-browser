@@ -24,6 +24,8 @@ extension InboxCenter {
         case .dismiss(let id): dismiss(id)
         case .decideApproval(let id, let outcome): answerFromCard(id, outcome)
         case .showApprovalTab(let id): showApprovalTab(id)
+        case .answerQuestion(let id, let answers): answerQuestionFromCard(id, answers: answers)
+        case .decidePermission(let id, let allow): decidePermissionFromCard(id, allow: allow)
         }
     }
 }

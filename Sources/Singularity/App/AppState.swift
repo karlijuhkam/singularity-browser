@@ -80,6 +80,9 @@ final class AppState {
     private(set) var agentLogs: [UUID: [AgentLogEntry]] = [:]
     /// The MCP server agents connect to (set at the end of init, since it needs `self`).
     @ObservationIgnored private(set) var mcp: MCPHub?
+    /// The socket Claude Code's hook (`singularity-hook`) talks to: questions and permission
+    /// requests for the inbox.
+    @ObservationIgnored private(set) var hookSocket: HookSocket?
 
     @ObservationIgnored let paths: Paths
     @ObservationIgnored private let store: SpaceStore
@@ -178,13 +181,30 @@ final class AppState {
         mcp.start(socketPath: paths.mcpSocket.path)
         self.mcp = mcp
 
+        // Claude Code's hook: each connection's request goes to the inbox on the main actor.
+        let hookSocketPath = paths.hookSocket.path
+        let hookSocket = HookSocket(path: hookSocketPath) { [weak self] tabID, hookInput, connection in
+            Task { @MainActor in
+                guard let self else { return connection.reply(ClaudeHook.noDecision) }
+                self.inbox.hookArrived(tabID: tabID, hookInput: hookInput, connection: connection)
+            }
+        }
+        do {
+            try hookSocket.start()
+            self.hookSocket = hookSocket
+        } catch {
+            terminalLog.error("Could not open the hook socket at \(hookSocketPath, privacy: .public): \(error)")
+        }
+
         plugins.start()
 
-        // When the app quits: deny waiting approvals, write pending changes, hang up all shells,
-        // kill plugin processes.
+        // When the app quits: deny waiting approvals, hand held hook requests back to their
+        // terminals, write pending changes, hang up all shells, kill plugin processes.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.inbox.denyAllApprovals()
+                self?.inbox.handBackAllHeld()
+                self?.hookSocket?.stop()
                 self?.flushSaves()
                 self?.artifacts.stopAll()
                 self?.terminals.tearDownAll()

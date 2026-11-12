@@ -12,6 +12,9 @@ let package = Package(
         .executable(name: "Singularity", targets: ["Singularity"]),
         // The stdio command agents start; it relays to the running app over a Unix socket.
         .executable(name: "singularity-mcp", targets: ["singularity-mcp"]),
+        // The command Claude Code runs as a hook; relays questions and permission requests to the
+        // app's inbox over a Unix socket.
+        .executable(name: "singularity-hook", targets: ["singularity-hook"]),
     ],
     dependencies: [
         // Terminal emulator for terminal tabs. Pinned to the 1.99 line (v1.20 pulls in a benchmark
@@ -40,6 +43,10 @@ let package = Package(
 
         // No dependencies on purpose: it only copies bytes between stdio and the app's socket.
         .executableTarget(name: "singularity-mcp"),
+
+        // No dependencies on purpose, like singularity-mcp: it runs in every Claude Code session and
+        // must start quickly. It keeps its own copy of the wire format (tests pin it to Core's).
+        .executableTarget(name: "singularity-hook"),
 
         .testTarget(
             name: "SingularityCoreTests",

@@ -6,6 +6,7 @@ import Foundation
 ///     ├─ state.json                 Space order + selected Space
 ///     ├─ settings.json              preferences from the Settings window
 ///     ├─ .run/mcp.sock              socket for agents (singularity-mcp), while the app runs
+///     ├─ .run/hook.sock             socket for Claude Code's hook (singularity-hook), while the app runs
 ///     ├─ plugins/<id>/              one folder per plugin (plugin.json, sources)
 ///     ├─ plugins-data/<id>/         a plugin's own data folder
 ///     ├─ plugins-state.json         plugin approvals and per-Space switches
@@ -39,6 +40,9 @@ public struct Paths: Sendable {
     public var settingsFile: URL { root.appending(path: "settings.json") }
     /// The Unix socket `singularity-mcp` connects to (folder 0700, socket 0600).
     public var mcpSocket: URL { root.appending(path: ".run/mcp.sock") }
+    /// The Unix socket `singularity-hook` connects to (same rules as `mcpSocket`). Terminal tabs
+    /// export its path as SINGULARITY_HOOK_SOCKET, so a test copy's terminals reach that copy.
+    public var hookSocket: URL { root.appending(path: ".run/hook.sock") }
     /// Installed plugins, one folder per plugin id.
     public var pluginsDirectory: URL { root.appending(path: "plugins", directoryHint: .isDirectory) }
     /// Plugin approvals and per-Space switches.
