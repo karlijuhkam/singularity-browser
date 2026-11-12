@@ -1,9 +1,10 @@
 # First-run onboarding and the live orb: design
 
-Status: **built on 2026-11-11.** The owner said "build it, I'll review in the end"
-(2026-11-11). What the owner decided is under "Decided by the owner"; everything under
-"Designer's calls" was chosen by the designer, was built without the owner confirming it one by
-one, and is still open to that final review (call 3, the slug, in particular). Where the build
+Status: **built on 2026-11-11; the owner tried it on a fresh data folder on 2026-11-12 and said
+"everything looks ok".** That was a hands-on pass over the whole flow, not a sign-off of each
+item in "Not checked by hand" one by one. What the owner decided is under "Decided by the
+owner"; everything under "Designer's calls" was chosen by the designer and built without the
+owner confirming it one by one; the owner raised no objection after trying it. Where the build
 differs from this design, what nobody could check by hand, and the small known issues are under
 "As built" at the end.
 
