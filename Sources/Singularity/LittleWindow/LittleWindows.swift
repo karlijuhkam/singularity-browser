@@ -52,6 +52,14 @@ final class LittleWindow: NSObject, Identifiable, NSWindowDelegate {
         owner?.setFront(self, isFront: false)
     }
 
+    /// The smallest a little window can be dragged to. Enforced here because the toolbar and the
+    /// SwiftUI content view both overwrite the window's own `minSize` / `contentMinSize`.
+    static let minimumSize = NSSize(width: 480, height: 340)
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        NSSize(width: max(frameSize.width, Self.minimumSize.width), height: max(frameSize.height, Self.minimumSize.height))
+    }
+
     /// Lets go of everything the window holds once it is closed or its page has moved to a tab.
     /// The window's content view holds this object (through `LittlePageView`), and this object
     /// holds the window: without this the pair, the title bar and the page would never be freed.
@@ -97,7 +105,13 @@ final class LittleWindows {
             if let little { self?.close(little) }
         }
         little.chrome = LittleWindowChrome(little: little, state: state)
-        window.contentView = NSHostingView(rootView: LittlePageView(little: little))
+        let page = NSHostingView(rootView: LittlePageView(little: little))
+        // The window's size is ours to decide, not the SwiftUI content's.
+        page.sizingOptions = []
+        window.contentView = page
+        // Size and place it last: adding the toolbar made the window taller.
+        window.setFrame(frame(forWindowNumber: opened), display: false)
+        opened += 1
         windows.append(little)
 
         if staysOffScreen {
@@ -181,13 +195,10 @@ final class LittleWindows {
                               backing: .buffered, defer: false)
         // We keep the object (in `LittleWindow`); AppKit must not free it when it closes.
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 480, height: 320)
         // The title is the page's title (Mission Control, the Window menu); the title bar itself
         // shows the address and the controls instead (`LittleWindowChrome`).
         window.titleVisibility = .hidden
         window.tabbingMode = .disallowed
-        window.setFrame(frame(forWindowNumber: opened), display: false)
-        opened += 1
         return window
     }
 

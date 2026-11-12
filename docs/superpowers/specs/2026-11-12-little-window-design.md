@@ -374,6 +374,11 @@ Made while writing, please check:
   schemes alone; Arc, Chrome, Safari and Zen on this Mac all also declare HTML document types and
   `NSUserActivityTypeBrowsingWeb`, which proves nothing either way. Declaring the document type
   would also make Singularity an "Open With" choice for .html files, which this design leaves out.
-- **Not checked by a test, for the owner to try:** the look of the active window, a link that
-  starts the app, "Open in …" after the main window was closed, the macOS "change default browser"
-  dialog.
+- **Tried with a trial bundle (2026-11-12),** started in the background with its own data folder
+  and a link (`open -g -n -a <bundle> --env SINGULARITY_HOME=… <url>`, see CLAUDE.md): a link that
+  starts the app arrives and its little window opens in front of the main window; a second link
+  to the running copy gets a second window; nothing is written to the Space; the frontmost app
+  stays what it was.
+- **Not checked, for the owner to try with the installed release:** the System Settings browser
+  list and the "change default browser" dialog, the look of the active window, "Open in …" after
+  the main window was closed, 1Password filling a login in a little window.

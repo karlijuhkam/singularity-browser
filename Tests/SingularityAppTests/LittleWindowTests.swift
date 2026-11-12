@@ -99,7 +99,9 @@ extension AppTests {
         #expect(setup.state.little.windows.count == 2)
         #expect(first.window !== second.window)
         #expect(first.controller.webView !== second.controller.webView)
-        #expect(first.window.frame.size == second.window.frame.size)
+        #expect(first.window.frame.size == NSSize(width: 1000, height: 700)) // title bar included
+        #expect(second.window.frame.size == first.window.frame.size)
+        #expect(first.windowWillResize(first.window, to: NSSize(width: 100, height: 900)) == NSSize(width: 480, height: 900))
         // Anything that is not a web link opens nothing.
         #expect(setup.state.little.open(URL(string: "file:///etc/hosts")!) == nil)
         #expect(setup.state.little.windows.count == 2)
