@@ -98,6 +98,7 @@ public enum AgentConnect {
 
     /// Combines the facts into what the row shows. An existing entry is reported even when the
     /// program wasn't found (it may just not be on the login shell's PATH).
+    ///
     /// A copy with its own data folder (a development copy) never offers to change the agents' setup:
     /// that setup belongs to the owner's real copy, so this check comes first.
     public static func status(installed: Bool, registered: String?, launcher: String,

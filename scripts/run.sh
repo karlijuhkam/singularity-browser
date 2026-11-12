@@ -22,6 +22,7 @@ pids="$(dev_pids)"
 if [ -n "$pids" ]; then
   echo "→ quitting the running development copy (answer its prompt if a terminal is busy)"
   # SIGTERM to those pids only: AppleScript's `tell application id` would reach the daily copy too.
+  # The app turns SIGTERM into a normal quit (same as Cmd+Q), so its prompt and saves still run.
   kill -TERM $pids 2>/dev/null || true
   # Wait for the old process to exit before launching the new build; launching while it is
   # still shutting down fails with LaunchServices error -600.
