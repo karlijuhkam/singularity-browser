@@ -88,6 +88,10 @@ struct SingularityCommands: Commands {
         }
 
         CommandGroup(before: .toolbar) {
+            // Opened by the owner, so the panel takes the keyboard (Tab moves through its buttons).
+            Button("Show Inbox") { state.inbox.showPanel(takingFocus: true) }
+                .keyboardShortcut("i", modifiers: [.control, .command])
+            Divider()
             Button("Split with Previous Tab") { state.splitWithPrevious() }
                 .keyboardShortcut("\\")
                 .disabled(covered || state.selectedTab == nil)

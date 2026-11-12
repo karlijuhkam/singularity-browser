@@ -8,8 +8,11 @@ struct SpaceRail: View {
 
     var body: some View {
         VStack(spacing: 10) {
+            InboxRailButton()
+
             ForEach(state.spaces) { space in
-                SpaceDot(space: space, isSelected: space.id == state.selectedSpaceID)
+                SpaceDot(space: space, isSelected: space.id == state.selectedSpaceID,
+                         waiting: state.inbox.inbox.count(spaceID: space.id))
                     .onTapGesture { state.userSelectSpace(space.id) }
                     .contextMenu {
                         Button("Edit Space…") { state.showSpaceEditor(spaceID: space.id) }
@@ -49,6 +52,8 @@ struct SpaceRail: View {
 private struct SpaceDot: View {
     let space: Space
     let isSelected: Bool
+    /// The Space's inbox entries.
+    let waiting: Int
 
     var body: some View {
         let colour = Color(hex: space.colorHex)
@@ -59,6 +64,11 @@ private struct SpaceDot: View {
             .background(colour, in: Circle())
             .padding(3)
             .overlay(Circle().strokeBorder(isSelected ? colour : .clear, lineWidth: 2))
+            .overlay(alignment: .topTrailing) {
+                InboxCountBadge(count: waiting)
+                    .offset(x: 2, y: -1)
+                    .allowsHitTesting(false)
+            }
             .contentShape(Circle())
             .help(space.name)
     }

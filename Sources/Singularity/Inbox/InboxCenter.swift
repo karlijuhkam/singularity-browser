@@ -15,6 +15,7 @@ import SingularityCore
 @Observable
 final class InboxCenter {
     private(set) var inbox = Inbox()
+    /// Whether the inbox panel is on screen. Change it through `showPanel` / `closePanel`.
     var isPanelShown = false
 
     @ObservationIgnored weak var state: AppState?
@@ -26,6 +27,17 @@ final class InboxCenter {
     @ObservationIgnored var onArrival: (InboxEntry) -> Void = { _ in }
     /// Called whenever the list changed (Task 5: withdraw notifications, Dock badge).
     @ObservationIgnored var onChange: () -> Void = {}
+
+    /// The rail's tray button (its AppKit view), so the panel can open beside it.
+    @ObservationIgnored weak var railAnchor: NSView?
+    @ObservationIgnored private var panelStorage: InboxPanelController?
+    /// The panel, made the first time it is needed. Tests set its window through this.
+    var panelController: InboxPanelController {
+        if let existing = panelStorage { return existing }
+        let controller = InboxPanelController(center: self)
+        panelStorage = controller
+        return controller
+    }
 
     // MARK: Signals
 
@@ -83,7 +95,7 @@ final class InboxCenter {
     /// "Go to terminal" / "Show Tab" on a card: shows the tab and closes the panel. For anything
     /// but an approval this also counts as going to the terminal.
     func goTo(_ entry: InboxEntry) {
-        isPanelShown = false
+        closePanel()
         guard let tabID = entry.tabID else { return }
         state?.showTab(tabID, in: entry.spaceID)
         // `showTab` already counts as going there; this clears the entry anyway when the tab is gone.
@@ -95,6 +107,12 @@ final class InboxCenter {
         logChange("dismissed", tabID: removed.tabID)
         onChange()
         if removed.isHeld || Self.isApproval(removed) { releaseHeld([removed]) }
+    }
+
+    /// Tests only: replaces the whole list (built with Core's `Inbox` methods) without announcing
+    /// anything.
+    func replaceInboxForTesting(_ inbox: Inbox) {
+        self.inbox = inbox
     }
 
     // MARK: Helpers

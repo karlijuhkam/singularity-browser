@@ -160,6 +160,7 @@ enum PaletteResults {
             })
         }
         items.append(command("new-terminal", "New Terminal", "terminal") { state.openTerminal() })
+        items.append(command("show-inbox", "Show Inbox", "tray") { state.inbox.showPanel(takingFocus: true) })
         if let tab = space.selectedTab {
             if tab.folderID == nil {
                 items.append(command("pin", tab.isPinned ? "Unpin Current Tab" : "Pin Current Tab", "pin") {
