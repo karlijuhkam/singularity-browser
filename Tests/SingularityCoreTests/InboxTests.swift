@@ -183,6 +183,12 @@ import Testing
         _ = other.apply(.notification(title: "Title", body: "  "), tab: facts(), agent: "A", now: now)
         #expect(other.visible[0].message == "Title")
     }
+    @Test func notificationMessageUsesTheMessageLimit() {
+        var inbox = Inbox()
+        _ = inbox.apply(.notification(title: "T", body: String(repeating: "x", count: 1000)), tab: facts(), agent: "A", now: now)
+        #expect(inbox.visible[0].message?.count == InboxText.messageLimit)
+        #expect(inbox.visible[0].message?.hasSuffix("…") == true)
+    }
     @Test func notificationWhileLookedAtMakesNothing() {
         var inbox = Inbox()
         #expect(inbox.apply(.notification(title: "T", body: "B"), tab: facts(looked: true), agent: "A", now: now) == .none)

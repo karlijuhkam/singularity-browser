@@ -74,8 +74,9 @@ public struct Inbox: Equatable, Sendable {
 
         case .notification(let title, let body):
             if speaksStatus.contains(tab.tabID) { return .none }
-            let bodyText = InboxText.clean(body, limit: InboxText.notificationLimit)
-            let titleText = InboxText.clean(title, limit: InboxText.notificationLimit)
+            // Entry messages share one limit; the shorter macOS notification body is the caller's job.
+            let bodyText = InboxText.clean(body, limit: InboxText.messageLimit)
+            let titleText = InboxText.clean(title, limit: InboxText.messageLimit)
             let message = !bodyText.isEmpty ? bodyText : (!titleText.isEmpty ? titleText : nil)
             return raise(.waiting(.attention), message: message, tab: tab, agent: agent, now: now)
 
