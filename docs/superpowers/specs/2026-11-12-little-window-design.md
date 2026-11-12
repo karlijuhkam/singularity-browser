@@ -369,6 +369,11 @@ Made while writing, please check:
   that is enough for System Settings' browser list can only be seen with an installed release:
   the owner's check. If Singularity is missing from the list, add the document type in
   `claim_web_links`.
+  Looked into on 2026-11-12, without a firm answer: Apple documents the requirement only for iOS
+  (the http and https schemes); link-picker apps built on Electron and Tauri register with the two
+  schemes alone; Arc, Chrome, Safari and Zen on this Mac all also declare HTML document types and
+  `NSUserActivityTypeBrowsingWeb`, which proves nothing either way. Declaring the document type
+  would also make Singularity an "Open With" choice for .html files, which this design leaves out.
 - **Not checked by a test, for the owner to try:** the look of the active window, a link that
   starts the app, "Open in …" after the main window was closed, the macOS "change default browser"
   dialog.
