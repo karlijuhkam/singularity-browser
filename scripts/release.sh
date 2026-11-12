@@ -33,9 +33,11 @@
 #   9. Fetch the new tag; print the release's address.
 #
 # --scratch <dir> builds a bundle for testing updates offline, with a throwaway key and a local feed.
-# It needs SCRATCH_FEED_URL (where the test's appcast.xml will be served, e.g. file:///…/appcast.xml;
-# the zip is expected next to it), SCRATCH_PUBLIC_KEY and SCRATCH_KEY_FILE (a throwaway key pair:
-# scripts/make-scratch-key.sh). It writes <dir>/Singularity.app, <dir>/Singularity-<version>.zip and
+# It needs SCRATCH_PUBLIC_KEY and SCRATCH_KEY_FILE (a throwaway key pair: scripts/make-scratch-key.sh)
+# and SCRATCH_FEED_URL (where the test's appcast.xml will be served; the zip is expected next to it).
+# Sparkle accepts only http or https there, never file://: serve the folder on 127.0.0.1, e.g.
+# `python3 -m http.server 8765 --bind 127.0.0.1 --directory <dir>` and SCRATCH_FEED_URL=http://127.0.0.1:8765/appcast.xml
+# (the app's Info.plist already allows local-network http). It writes <dir>/Singularity.app, <dir>/Singularity-<version>.zip and
 # <dir>/appcast.xml. The version goes into the bundle only (CFBundleVersion = the version too, which
 # Sparkle compares part by part), and the bundle is marked SGUpdateTestBundle. Nothing touches git,
 # GitHub, the keychain's update key or notarization, and Resources/Info.plist stays as it is.

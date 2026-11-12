@@ -11,7 +11,8 @@
 # Uses Apple's CryptoKit through the Swift interpreter, so it needs nothing beyond the developer tools.
 # Then:
 #   SCRATCH_KEY_FILE=<dir>/key SCRATCH_PUBLIC_KEY="$(cat <dir>/key.pub)" \
-#   SCRATCH_FEED_URL=file:///…/appcast.xml scripts/release.sh 0.1.1 --scratch /private/tmp/…
+#   SCRATCH_FEED_URL=http://127.0.0.1:8765/appcast.xml scripts/release.sh 0.1.1 --scratch /private/tmp/…
+# (Sparkle refuses file:// feeds; serve the folder with `python3 -m http.server 8765 --bind 127.0.0.1`.)
 
 set -euo pipefail
 [[ $# -eq 1 ]] || { echo "usage: $0 <dir>" >&2; exit 2; }
