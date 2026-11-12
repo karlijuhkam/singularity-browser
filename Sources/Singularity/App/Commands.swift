@@ -23,6 +23,10 @@ struct SingularityCommands: Commands {
                 .keyboardShortcut("t")
             Button("New Terminal") { state.openTerminal() }
                 .keyboardShortcut("t", modifiers: [.command, .option])
+            // Shows the project picker even inside a folder that has a project. In a Space
+            // without projects there is nothing to pick, and it opens a terminal like New Terminal.
+            Button("New Terminal in…") { state.openTerminalChoosingProject() }
+                .keyboardShortcut("t", modifiers: [.command, .option, .shift])
             Button("Command Palette") { state.showPalette(.newTab) }
                 .keyboardShortcut("k")
             Button("Open Location…") { state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent) }

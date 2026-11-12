@@ -65,6 +65,7 @@ struct CommandPaletteView: View {
         case .newTab: "Search tabs, history, commands, or enter a URL"
         case .navigateCurrent: state.selectedTab?.url?.absoluteString ?? "Enter a URL"
         case .splitWith: "Choose a tab, or enter a URL, to show beside this one"
+        case .newTerminalIn: "New terminal in…"
         }
     }
 

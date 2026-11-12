@@ -30,6 +30,11 @@ enum PaletteResults {
         guard let space = state.selectedSpace else { return [] }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // The "New terminal in" picker lists only the Space's projects: no tabs, no URLs.
+        if case .newTerminalIn(let folderID, let adoptForFolder) = mode {
+            return projectItems(space, matching: trimmed, state: state, folderID: folderID, adoptForFolder: adoptForFolder)
+        }
+
         // "Split with…": only things that can go into a pane (other tabs, a new terminal, a URL).
         var splitTarget: UUID?
         if case .splitWith(_, let beside) = mode { splitTarget = beside }
@@ -99,6 +104,7 @@ enum PaletteResults {
             case .newTab: state.openInNewTab(url)
             case .navigateCurrent: state.navigateSelectedTab(to: url)
             case .splitWith(let edge, let beside): state.openInSplit(url, edge: edge, beside: beside)
+            case .newTerminalIn: break // this mode has no URL rows
             }
         case .selectTab(let id):
             if case .splitWith(let edge, let beside) = mode {
@@ -109,6 +115,29 @@ enum PaletteResults {
         case .run(let action):
             action()
         }
+    }
+
+    /// The picker's rows, in Core's order (last used first, the Space's folder last). Typing
+    /// filters them with the same fuzzy threshold as the rest of the palette, best match first.
+    private static func projectItems(_ space: Space, matching query: String, state: AppState,
+                                     folderID: UUID?, adoptForFolder: Bool) -> [PaletteItem] {
+        let items = space.projectChoices.map { choice in
+            PaletteItem(id: "project-\(choice.id)", title: choice.name, subtitle: choice.path,
+                        hint: choice.projectID != nil && choice.projectID == space.lastProjectID ? "Last used" : "",
+                        icon: .symbol(choice.projectID == nil ? "house" : "folder"),
+                        action: .run {
+                            state.startTerminal(choice: choice.projectID, inFolder: folderID, adoptForFolder: adoptForFolder)
+                        })
+        }
+        guard !query.isEmpty else { return items }
+        let threshold = query.count * 200 - 100
+        return items
+            .compactMap { item -> (PaletteItem, Int)? in
+                guard let score = FuzzyMatcher.bestScore(query, in: [item.title, item.subtitle]), score >= threshold else { return nil }
+                return (item, score)
+            }
+            .sorted { $0.1 > $1.1 }
+            .map(\.0)
     }
 
     private static func tabItems(_ space: Space) -> [PaletteItem] {
@@ -160,6 +189,9 @@ enum PaletteResults {
             })
         }
         items.append(command("new-terminal", "New Terminal", "terminal") { state.openTerminal() })
+        if !space.projects.isEmpty {
+            items.append(command("new-terminal-in", "New Terminal in…", "terminal") { state.openTerminalChoosingProject() })
+        }
         if let tab = space.selectedTab {
             if tab.folderID == nil {
                 items.append(command("pin", tab.isPinned ? "Unpin Current Tab" : "Pin Current Tab", "pin") {
