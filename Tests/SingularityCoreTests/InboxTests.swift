@@ -428,3 +428,40 @@ import Testing
         #expect(StatusRecord(terminalID: "", state: "sleeping", kind: nil, app: nil, message: nil) == nil)
     }
 }
+
+@Suite struct InboxNotificationTextTests {
+    private func entry(_ kind: InboxKind, agent: String = "Claude Code", message: String? = nil) -> InboxEntry {
+        InboxEntry(kind: kind, spaceID: UUID(), tabID: UUID(), agent: agent, message: message, arrived: Date())
+    }
+
+    @Test func notificationText() {
+        let question = entry(.question([InboxQuestion(question: "Which database?")]))
+        let made = InboxNotificationText.make(question, spaceName: "Work")
+        #expect(made.title == "Claude Code · Work")
+        #expect(made.body == "Which database?")
+        #expect(InboxNotificationText.make(entry(.done), spaceName: "Work").body == "Finished")
+    }
+
+    @Test func bodyByKind() {
+        #expect(InboxNotificationText.make(entry(.permission(tool: "Bash", input: "ls")), spaceName: "W").body == "Wants to use Bash")
+        let approval = InboxApproval(actor: "Claude", action: "click Buy", detail: "d")
+        #expect(InboxNotificationText.make(entry(.approval(approval)), spaceName: "W").body == "Wants to click Buy")
+        #expect(InboxNotificationText.make(entry(.waiting(.attention)), spaceName: "W").body == "Waiting for you")
+        #expect(InboxNotificationText.make(entry(.waiting(.attention), message: "Tests failed"), spaceName: "W").body == "Tests failed")
+        #expect(InboxNotificationText.make(entry(.done, message: "All green"), spaceName: "W").body == "All green")
+    }
+
+    @Test func untrustedTextIsCleanedAndLimited() {
+        let long = String(repeating: "a", count: 500)
+        let made = InboxNotificationText.make(entry(.done, agent: "Ev\u{202E}il", message: "x\u{0007}y " + long), spaceName: "Sp\u{200B}ace")
+        #expect(made.body.count == InboxText.notificationLimit)
+        #expect(!made.body.contains("\u{0007}"))
+        #expect(made.title == "Evil · Space")
+        let longAgent = InboxNotificationText.make(entry(.done, agent: long), spaceName: "W")
+        #expect(longAgent.title.count == 80 + 3 + 1)
+    }
+
+    @Test func noSpaceNameLeavesOnlyTheAgent() {
+        #expect(InboxNotificationText.make(entry(.done), spaceName: "").title == "Claude Code")
+    }
+}

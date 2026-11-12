@@ -121,3 +121,30 @@ public enum InboxRules {
         return nil
     }
 }
+
+/// What a macOS notification for an inbox entry says. Everything in an entry came from an agent
+/// or a page, so the title parts and the body are cleaned here, not by the caller.
+public enum InboxNotificationText {
+    static let titlePartLimit = 80
+
+    /// Title "<agent> · <Space name>" (just the agent when there is no Space name). Body by kind:
+    /// question → the first question; permission → "Wants to use <tool>"; approval → "Wants to
+    /// <action>"; waiting → the message or "Waiting for you"; done → the message or "Finished".
+    public static func make(_ entry: InboxEntry, spaceName: String) -> (title: String, body: String) {
+        let agent = InboxText.clean(entry.agent, limit: titlePartLimit)
+        let space = InboxText.clean(spaceName, limit: titlePartLimit)
+        let title = space.isEmpty ? agent : "\(agent) · \(space)"
+
+        let raw: String
+        switch entry.kind {
+        case .question(let questions): raw = questions.first?.question ?? ""
+        case .permission(let tool, _): raw = "Wants to use \(tool)"
+        case .approval(let approval): raw = "Wants to \(approval.action)"
+        case .waiting: raw = entry.message ?? "Waiting for you"
+        case .done: raw = entry.message ?? "Finished"
+        }
+        var body = InboxText.clean(raw, limit: InboxText.notificationLimit)
+        if body.isEmpty { body = entry.isHeld ? "Waiting for you" : "Finished" }
+        return (title, body)
+    }
+}

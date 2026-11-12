@@ -65,6 +65,8 @@ final class AppState {
     let downloads = DownloadCenter()
     /// The agent inbox: what agents in terminal tabs are waiting for.
     let inbox = InboxCenter()
+    /// macOS notifications and the Dock badge for the inbox (wired in `init`).
+    @ObservationIgnored private(set) var inboxNotifier: InboxNotifier?
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
     /// Plugins' page scripts in each Space's web views.
@@ -151,6 +153,18 @@ final class AppState {
         terminals.state = self
         artifacts.state = self
         inbox.state = self
+        // The notifier sets itself as the notification centre's delegate here, in init, so a click
+        // on a banner that launched the app is delivered. It does nothing without a bundle id.
+        let notifier = InboxNotifier(onOpen: { [weak self] in self?.inbox.showPanel(takingFocus: true) })
+        inboxNotifier = notifier
+        inbox.onArrival = { [weak self] entry in
+            let spaceName = self?.space(entry.spaceID)?.name ?? ""
+            notifier.post(entry, spaceName: spaceName)
+        }
+        inbox.onChange = { [weak self] in
+            guard let self else { return }
+            notifier.sync(with: inbox.inbox.visible)
+        }
 
         approvals.timeoutSeconds = { [weak self] in self?.settings.agentApprovalTimeoutSeconds ?? 120 }
 
