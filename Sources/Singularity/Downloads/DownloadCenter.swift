@@ -25,9 +25,11 @@ final class DownloadCenter {
     @ObservationIgnored private var running: [UUID: WKDownload] = [:]
     @ObservationIgnored private var poller: Task<Void, Never>?
 
+    /// Where downloads are saved: ~/Downloads. Tests point it at their own folder.
+    @ObservationIgnored var folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+
     /// Called when WebKit asks where to save. Picks a free name in ~/Downloads and lists the download.
     func begin(_ download: WKDownload, suggestedFilename: String, expectedBytes: Int64) -> URL {
-        let folder = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         let destination = DownloadNaming.destination(suggestedFilename: suggestedFilename, folder: folder) {
             FileManager.default.fileExists(atPath: $0.path)
         }

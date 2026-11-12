@@ -40,6 +40,24 @@ final class WebViewRegistry {
         return controller
     }
 
+    /// A little window's page (a link from another app). It is built exactly like a tab's page,
+    /// with the Space's logins and plugin scripts, and lives in this registry under an id that no
+    /// tab in the Space has. Opening it in the Space later just adds a tab with that id.
+    func littleController(id: UUID, url: URL, in space: Space) -> WebTabController {
+        let configuration = Self.configuration(for: space)
+        pluginScripts?.attach(configuration.userContentController, spaceID: space.id)
+        let controller = WebTabController(tabID: id, spaceID: space.id, configuration: configuration, state: state)
+        controller.makeLittle()
+        controllers[id] = controller
+        controller.load(url)
+        return controller
+    }
+
+    /// The pages of a Space that are in little windows.
+    func littleControllers(in spaceID: UUID) -> [WebTabController] {
+        controllers.values.filter { $0.spaceID == spaceID && $0.isLittle }
+    }
+
     /// Artifact tabs: same Space data store, plus the `window.singularity` bridge.
     func artifactController(for tab: BrowserTab, in space: Space, host: ArtifactHost, request: URLRequest) -> WebTabController {
         if let existing = controllers[tab.id] { return existing }

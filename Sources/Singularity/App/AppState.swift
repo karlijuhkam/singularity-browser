@@ -63,6 +63,13 @@ final class AppState {
     let approvals = AgentApprovals()
     /// Downloads of this run, for the sidebar's Downloads list.
     let downloads = DownloadCenter()
+    /// Little windows: links from other apps, each in its own throwaway window.
+    let little = LittleWindows()
+    /// The browser window (set by `MainView`). Kept so it can be brought forward, and so sheets
+    /// that belong to it don't land on a little window.
+    @ObservationIgnored weak var mainWindow: NSWindow?
+    /// Opens the browser window again after it was closed (SwiftUI's `openWindow`; set by `MainView`).
+    @ObservationIgnored var openMainWindow: (() -> Void)?
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
     /// Self-updating (Sparkle), only in a copy that may update itself (`UpdatePolicy`).
@@ -139,6 +146,15 @@ final class AppState {
         }
 
         web.state = self
+        little.state = self
+        // Agents' approval sheets belong to the browser window, also while a little window is in front.
+        approvals.presentingWindow = { [weak self] in
+            if let window = self?.mainWindow, window.isVisible { return window }
+            let littleWindows = self?.little.windows.map(\.window) ?? []
+            return NSApp.windows.first { window in
+                window.isVisible && window.canBecomeMain && !littleWindows.contains { $0 === window }
+            }
+        }
         web.pluginScripts = pluginScripts
         pluginScripts.tabID = { [weak web] webView in web?.tabID(for: webView) }
         plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
@@ -310,7 +326,10 @@ final class AppState {
     /// us then, and closing the flow would leave the Arc import over the sidebar, or take a
     /// plugin's approval sheet away together with step 4.
     func closeTabCommand() {
-        if welcomeCoversWindow {
+        // A little window in front: ⌘W closes it, never a tab of the main window behind it.
+        if let key = little.keyWindow {
+            little.close(key)
+        } else if welcomeCoversWindow {
             if !welcomeSheetIsOpen { closeWelcome() }
         } else {
             closeSelectedTab()
@@ -444,6 +463,9 @@ final class AppState {
     /// and moves its folder to the Trash. The last remaining Space cannot be deleted.
     func deleteSpace(_ id: UUID) {
         guard spaces.count > 1, let space = space(id) else { return }
+        // Its little windows first: their pages are in no tab list, and the Space's WebKit data
+        // store (removed below) can't be deleted while a web view still uses it.
+        little.spaceWillBeDeleted(id)
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
         artifacts.stop(id)
@@ -514,6 +536,46 @@ final class AppState {
             $0.selectedTabID = tab.id
         }
         loadSelectedTab()
+    }
+
+    // MARK: - Little windows
+
+    /// A link from another app: it opens in its own little window (see `LittleWindows`).
+    func openLink(_ url: URL) {
+        little.open(url)
+    }
+
+    /// Brings the browser window forward, opening it again if it was closed.
+    func showMainWindow() {
+        if let mainWindow, mainWindow.isVisible {
+            mainWindow.makeKeyAndOrderFront(nil)
+        } else if let openMainWindow {
+            openMainWindow()
+        } else {
+            mainWindow?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// "Open in <home Space>" in a little window: the live page becomes a tab of its Space. The
+    /// controller is already in the registry under `tabID`, so adding a tab with that id is all
+    /// it takes; the pane then shows the same web view, with everything on the page as it was.
+    func adoptLittlePage(_ controller: WebTabController, fallbackURL: URL) {
+        let spaceID = controller.spaceID
+        guard space(spaceID) != nil else { return }
+        let url = controller.failedAddress ?? controller.webView.url ?? fallbackURL
+        let tab = BrowserTab(id: controller.tabID, kind: .web(url: url), title: controller.pageTitle)
+        mutateSpace(spaceID) { $0.append(tab) }
+        controller.joinSpace()
+        showTab(tab.id, in: spaceID)
+    }
+
+    /// The page the menu's page commands (Find, Reload, Back, Zoom, Print, …) act on: the little
+    /// window's when one has the keyboard, otherwise the selected tab's (nil while the welcome
+    /// flow hides it).
+    var frontController: WebTabController? {
+        if let key = little.keyWindow { return key.controller }
+        guard !welcomeCoversWindow else { return nil }
+        return selectedTab.flatMap { web.existingController($0.id) }
     }
 
     /// Opens a URL in a background tab right after `sourceTabID` (Cmd+click on a link).

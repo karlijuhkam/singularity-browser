@@ -7,6 +7,7 @@ import SwiftUI
 struct MainView: View {
     @Environment(AppState.self) private var state
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         @Bindable var state = state
@@ -38,6 +39,8 @@ struct MainView: View {
                 CommandPaletteView(mode: mode)
             }
         }
+        // Tells AppState which NSWindow the browser window is (little windows bring it forward).
+        .background(MainWindowReader { [state] window in state.mainWindow = window })
         // Let the sidebar run up under the (invisible) title bar, next to the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
         .sheet(item: $state.spaceEditor) { request in
@@ -51,6 +54,9 @@ struct MainView: View {
         }
         .onAppear {
             state.openSettingsWindow = { [openSettings] in openSettings() }
+            // "main" is the id of the browser window's scene (SingularityApp). Opening it shows
+            // the window again after it was closed, or brings it forward.
+            state.openMainWindow = { [openWindow] in openWindow(id: "main") }
             state.loadSelectedTab()
             // Clicking inside a pane (a web page or terminal) focuses it.
             PaneContainerView.installFocusMonitor { [state] tabID in state.focusPane(tabID) }
@@ -101,4 +107,23 @@ private struct VisualEffectBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+/// Finds the NSWindow this SwiftUI view is shown in. SwiftUI has no API for that, so an invisible
+/// AppKit view reports its `window` once it has been put into one.
+private struct MainWindowReader: NSViewRepresentable {
+    let found: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        // The view has no window yet while it is being made; ask one run-loop turn later.
+        DispatchQueue.main.async { [weak view] in
+            if let window = view?.window { found(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        if let window = view.window { found(window) }
+    }
 }
