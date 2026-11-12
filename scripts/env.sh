@@ -9,6 +9,7 @@
 #   1. DEVELOPER_DIR, if you set it yourself (nothing else is checked).
 #   2. XCODE_APP=/path/to/Xcode.app, if you set it; otherwise the owner's external-drive copy,
 #      /Volumes/Zealot/Xcode.app.
+#      If that folder is missing, the lookup falls through to 3 and 4.
 #   3. /Applications/Xcode.app, so a normal install works without setting anything.
 #   4. The system's selected Xcode, if that is a full Xcode (not the Command Line Tools).
 XCODE_APP="${XCODE_APP:-/Volumes/Zealot/Xcode.app}"
