@@ -22,15 +22,23 @@ extension AppTests {
         var arrivals: [InboxEntry] = []
         var attention = 0
         var active: Bool
+        /// Added to the real time the inbox sees, so a test can step past the answer lockout.
+        var skew: TimeInterval = 0
 
         init(center: InboxCenter = InboxCenter(), active: Bool = false) {
             self.center = center
             self.active = active
+            center.now = { [unowned self] in Date().addingTimeInterval(self.skew) }
             center.appIsActive = { [unowned self] in self.active }
             center.onArrival = { [unowned self] in self.arrivals.append($0) }
             center.onChange = {}
             center.requestAttention = { [unowned self] in self.attention += 1 }
             approvals.presenter = { [center] in await center.requestApproval($0) }
+        }
+
+        /// As if more than the lockout had passed since the cards last moved.
+        func passTheLockout() {
+            skew += InboxCenter.answerLockout + 0.1
         }
 
         var waiting: [InboxEntry] {
@@ -325,6 +333,10 @@ extension AppTests {
         let choices = InboxApprovalButtons.choices(for: entry)
         #expect(titles(choices.answers) == ["Allow", "Allow on example.com", "Deny"])
         #expect(choices.showTab?.title == "Show Tab")
+        // The text a page sent is shown cleaned (direction override gone, line break kept).
+        guard case .approval(let approval) = entry.kind else { Issue.record("not an approval"); return }
+        #expect(InboxApprovalText(approval).text == "helloevil\nsecond line")
+        #expect(InboxApprovalText(approval).headline == "Claude Code wants to click")
 
         rig.center.showPanel(takingFocus: true)
         let panel = try #require(rig.center.panelController.panel)
@@ -350,7 +362,8 @@ extension AppTests {
         #expect(rig.waiting.map(\.id) == [entry.id])
         #expect(rig.center.isPanelShown)
 
-        // Allow answers.
+        // Allow answers (once the panel has been up for a moment).
+        rig.passTheLockout()
         rig.center.perform(choices.answers[0].action)
         #expect(await answer.value.logValue == "approved")
         #expect(rig.waiting.isEmpty)
@@ -365,6 +378,7 @@ extension AppTests {
             let entry = try await rig.waitForEntry()
             let choices = InboxApprovalButtons.choices(for: entry)
             #expect(choices.answers.count == 3)
+            rig.passTheLockout()
             rig.center.perform(choices.answers[index].action)
             #expect(await answer.value.logValue == expected)
         }
@@ -391,7 +405,182 @@ extension AppTests {
         rig.center.showApprovalTab(entry.id)
         #expect(rig.waiting.first?.deadline == deadline)
 
+        rig.passTheLockout()
         rig.center.perform(choices.answers[1].action)
+        #expect(await answer.value.logValue == "denied")
+    }
+
+    // MARK: Clicks while the cards move (review item 1)
+
+    /// An answer click right after the cards changed is ignored (nothing answered, no deny); after
+    /// the lockout it counts. A double-click on Deny cannot land on the next card's Allow.
+    /// `decideApproval` itself (not a click) is never held back.
+    @Test func answersWaitAfterTheCardsMove() async throws {
+        MainRunLoopGuard.start
+        let rig = Rig()
+        let space = askingSpace()
+        let first = rig.check(click, space, clickRequest())
+        let a = try await rig.waitForEntry()
+        // Arrived just now: a click is ignored.
+        rig.center.perform(.decideApproval(a.id, .denied))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rig.waiting.map(\.id) == [a.id])
+
+        let second = rig.check(AgentActionContext(kind: .click, pageOrigin: "https://other.example"), space, clickRequest())
+        let b = try await rig.waitForEntry(count: 2)
+        rig.passTheLockout()
+        // Deny on the first card counts; the second click of a double-click, now on the next
+        // card's Allow, does not.
+        rig.center.perform(.decideApproval(a.id, .denied))
+        rig.center.perform(.decideApproval(b.id, .approved))
+        #expect(await first.value.logValue == "denied")
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rig.waiting.map(\.id) == [b.id])
+        #expect(rig.center.answersUnlockAt > rig.center.now())
+
+        // Not a click: answered at once.
+        rig.center.decideApproval(b.id, .denied)
+        #expect(await second.value.logValue == "denied")
+    }
+
+    /// The panel appearing (by itself or opened) holds answer clicks back for a moment too.
+    @Test func panelAppearingHoldsAnswersBack() async throws {
+        MainRunLoopGuard.start
+        let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 900, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        let rig = Rig()
+        rig.center.panelController.parentWindow = { window }
+        rig.center.panelController.appIsActive = { false }
+        defer {
+            rig.center.closePanel()
+            window.close()
+        }
+        let answer = rig.check(click, askingSpace(), clickRequest())
+        let entry = try await rig.waitForEntry()
+        #expect(!rig.center.isPanelShown)
+        rig.passTheLockout()
+
+        rig.center.showPanel(takingFocus: true)
+        rig.center.perform(.decideApproval(entry.id, .approved))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rig.waiting.map(\.id) == [entry.id])
+
+        // Showing an already open panel again does not move the lock.
+        rig.passTheLockout()
+        rig.center.showPanel(takingFocus: false)
+        rig.center.perform(.decideApproval(entry.id, .approved))
+        #expect(await answer.value.logValue == "approved")
+    }
+
+    // MARK: Limits and the defensive checks (review items 2, 3, 5, 7)
+
+    @Test func tooManyWaitingAreDenied() async throws {
+        MainRunLoopGuard.start
+        let rig = Rig()
+        let space = askingSpace()
+        let other = askingSpace()
+        let limit = InboxCenter.maxWaitingApprovalsPerSpace
+        #expect(limit == 5)
+        var answers: [Task<AgentApprovals.Outcome, Never>] = []
+        for _ in 0..<limit {
+            answers.append(Task { @MainActor in await rig.center.requestApproval(pending(space, timeout: .seconds(30))) })
+        }
+        try await rig.waitForEntry(count: limit)
+        // One more in the same Space: "no" at once, no entry, no notification.
+        let arrivalsBefore = rig.arrivals.count
+        let extra = await rig.center.requestApproval(pending(space, timeout: .seconds(30)))
+        #expect(extra.logValue == "denied")
+        #expect(rig.waiting.count == limit)
+        #expect(rig.arrivals.count == arrivalsBefore)
+        // Another Space is not affected.
+        let otherAnswer = Task { @MainActor in await rig.center.requestApproval(pending(other, timeout: .seconds(30))) }
+        try await rig.waitForEntry(count: limit + 1)
+        // Through `check` too (the artifact prompt's path): denied, logged as "denied".
+        let prompt = await rig.approvals.check(AgentActionContext(kind: .artifactPrompt, pageOrigin: "http://127.0.0.1:5000"),
+                                               space: space, request: clickRequest())
+        #expect(prompt.logValue == "denied")
+
+        rig.center.denyAllApprovals()
+        for answer in answers { #expect(await answer.value.logValue == "denied") }
+        _ = await otherAnswer.value
+        // Room again once they are answered.
+        let again = rig.check(click, space, clickRequest())
+        let entry = try await rig.waitForEntry()
+        rig.center.decideApproval(entry.id, .approved)
+        #expect(await again.value.logValue == "approved")
+    }
+
+    /// `ask` does not trust the presenter: anything but a real answer ends as "no".
+    @Test func askTreatsOddAnswersAsNo() async {
+        let space = askingSpace()
+        func outcome(_ fake: AgentApprovals.Outcome, _ context: AgentActionContext) async -> String {
+            let approvals = AgentApprovals()
+            approvals.presenter = { _ in fake }
+            return await approvals.check(context, space: space, request: clickRequest()).logValue
+        }
+        let prompt = AgentActionContext(kind: .artifactPrompt, pageOrigin: "http://127.0.0.1:5000")
+        // `.auto` while the rules still ask.
+        #expect(await outcome(.auto, click) == "denied")
+        // "Allow on <site>" for a request without a site.
+        #expect(await outcome(.approvedSite, prompt) == "denied")
+        #expect(await outcome(.refused("x"), click) == "denied")
+        // The real answers pass through.
+        #expect(await outcome(.approved, click) == "approved")
+        #expect(await outcome(.approvedSite, click) == "approved_site")
+        #expect(await outcome(.denied, click) == "denied")
+        #expect(await outcome(.timedOut, click) == "timeout")
+    }
+
+    @MainActor final class SpaceBox {
+        var space: Space?
+        init(_ space: Space) { self.space = space }
+    }
+
+    /// The Space was made read-only (or deleted) while the request waited: a later Allow, or
+    /// Allow on <site>, no longer lets the action through, and the site is not remembered.
+    @Test func answerAfterAPolicyChangeIsNo() async throws {
+        MainRunLoopGuard.start
+        let rig = Rig()
+        let box = SpaceBox(askingSpace())
+        let space = try #require(box.space)
+        rig.approvals.currentSpace = { [box] id in box.space?.id == id ? box.space : nil }
+
+        for answer in [AgentApprovals.Outcome.approved, .approvedSite] {
+            box.space?.agentPolicy = .ask
+            let request = rig.check(click, space, clickRequest())
+            let entry = try await rig.waitForEntry()
+            box.space?.agentPolicy = .readOnly
+            rig.center.decideApproval(entry.id, answer)
+            #expect(await request.value.logValue == "denied")
+        }
+        // The site was not remembered: with "ask" again, it asks again.
+        box.space?.agentPolicy = .ask
+        let asksAgain = rig.check(click, space, clickRequest())
+        let entry = try await rig.waitForEntry()
+        // Deleted while waiting.
+        box.space = nil
+        rig.center.decideApproval(entry.id, .approved)
+        #expect(await asksAgain.value.logValue == "denied")
+    }
+
+    /// "Go to terminal"'s path for an approval is Show Tab: it shows the tab, restarts the clock
+    /// and leaves the request waiting.
+    @Test func goToAnApprovalIsShowTab() async throws {
+        MainRunLoopGuard.start
+        let rig = Rig()
+        var shown = 0
+        let answer = rig.check(click, askingSpace(), clickRequest(tabID: UUID(), showTab: { shown += 1 }))
+        let entry = try await rig.waitForEntry()
+        let before = try #require(entry.deadline)
+        rig.skew += 3
+        rig.center.goTo(entry)
+        #expect(shown == 1)
+        let after = try #require(rig.waiting.first?.deadline)
+        #expect(after.timeIntervalSince(before) > 2.5)
+        #expect(rig.waiting.map(\.id) == [entry.id])
+        rig.center.decideApproval(entry.id, .denied)
         #expect(await answer.value.logValue == "denied")
     }
 

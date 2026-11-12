@@ -42,6 +42,21 @@ final class InboxCenter {
     }
     @ObservationIgnored private var waitingApprovals: [UUID: WaitingApproval] = [:]
 
+    /// At most this many approvals wait at once per Space; one more is denied at once. The sheet
+    /// showed one at a time, so a page calling `prompt()` in a loop could not flood anything;
+    /// this keeps that true for entries, timers, notifications and Dock bounces.
+    static let maxWaitingApprovalsPerSpace = 5
+
+    /// Clicks on an approval's answer buttons (Allow, Allow on <site>, Deny) count only from this
+    /// moment on. Moved `answerLockout` into the future when the panel appears and whenever the
+    /// visible cards change: answering one card removes it and the next one moves up under the
+    /// mouse, so the second click of a double-click on Deny could otherwise land on the next
+    /// card's Allow; and a panel opening by itself could appear under a click meant for the window.
+    @ObservationIgnored private(set) var answersUnlockAt: Date = .distantPast
+    static let answerLockout: TimeInterval = 0.5
+    /// What the panel showed when `answersUnlockAt` was last moved.
+    @ObservationIgnored private var lastVisible: [InboxEntry] = []
+
     /// The rail's tray button (its AppKit view), so the panel can open beside it.
     @ObservationIgnored weak var railAnchor: NSView?
     @ObservationIgnored private var panelStorage: InboxPanelController?
@@ -77,7 +92,7 @@ final class InboxCenter {
         let listChanged = store(updated)
 
         if listChanged { logChange(Self.name(of: signal), tabID: tabID) }
-        if listChanged { onChange() }
+        if listChanged { listDidChange() }
         if case .added(let entry) = change { onArrival(entry) }
         releaseHeld(released)
     }
@@ -91,7 +106,7 @@ final class InboxCenter {
         guard inbox.entries.contains(where: { $0.tabID == tabID && !Self.isApproval($0) }) else { return }
         let held = inbox.wentToTerminal(tabID)
         logChange("went to terminal", tabID: tabID)
-        onChange()
+        listDidChange()
         releaseHeld(held)
     }
 
@@ -101,7 +116,7 @@ final class InboxCenter {
         let gone = updated.tabClosed(tabID)
         if store(updated) {
             logChange("tab closed", tabID: tabID)
-            onChange()
+            listDidChange()
         }
         releaseHeld(gone)
     }
@@ -110,6 +125,10 @@ final class InboxCenter {
     /// approval this also counts as going to the terminal. (An approval's "Show Tab" is
     /// `showApprovalTab`: it keeps the panel open and restarts the clock.)
     func goTo(_ entry: InboxEntry) {
+        if Self.isApproval(entry) {
+            showApprovalTab(entry.id)
+            return
+        }
         closePanel()
         guard let tabID = entry.tabID else { return }
         state?.showTab(tabID, in: entry.spaceID)
@@ -120,7 +139,7 @@ final class InboxCenter {
     func dismiss(_ id: UUID) {
         guard let removed = inbox.remove(id) else { return }
         logChange("dismissed", tabID: removed.tabID)
-        onChange()
+        listDidChange()
         if removed.isHeld || Self.isApproval(removed) { releaseHeld([removed]) }
     }
 
@@ -135,6 +154,12 @@ final class InboxCenter {
         if let state {
             guard let space = state.space(pending.spaceID) else { return .denied }
             if let tabID = pending.request.tabID, space.tab(tabID) == nil { return .denied }
+        }
+        // Too many already waiting in this Space: "no" at once, without an entry.
+        let waitingInSpace = waitingApprovals.values.filter { $0.pending.spaceID == pending.spaceID }.count
+        if waitingInSpace >= Self.maxWaitingApprovalsPerSpace {
+            logChange("approval refused: \(waitingInSpace) already waiting in the Space", tabID: pending.request.tabID)
+            return .denied
         }
         let request = pending.request
         let approval = InboxApproval(
@@ -153,7 +178,7 @@ final class InboxCenter {
                                                          deadline: .now + pending.timeout)
             startApprovalTimer(entry.id)
             logChange("approval added", tabID: entry.tabID)
-            onChange()
+            listDidChange()
             announceApproval(entry)
         }
     }
@@ -199,9 +224,40 @@ final class InboxCenter {
         inbox.setDeadline(id, now().addingTimeInterval(Self.seconds(timeout)))
     }
 
+    /// A click on an answer button of a card (through `perform`). Ignored, and nothing answered,
+    /// while the answer buttons are locked (`answersUnlockAt`). `decideApproval` itself does not
+    /// look at the lock.
+    func answerFromCard(_ id: UUID, _ outcome: AgentApprovals.Outcome) {
+        guard now() >= answersUnlockAt else {
+            logChange("approval click ignored: the cards just moved", tabID: nil)
+            return
+        }
+        decideApproval(id, outcome)
+    }
+
+    /// The panel came on screen: lock the answer buttons for a moment (see `answersUnlockAt`).
+    func panelAppeared() {
+        lockAnswers()
+    }
+
+    private func lockAnswers() {
+        answersUnlockAt = now().addingTimeInterval(Self.answerLockout)
+    }
+
+    /// After any change of the list: lock the answer buttons when what the panel shows changed
+    /// (cards added, removed or changed), then tell the notifier (`onChange`).
+    private func listDidChange() {
+        let visible = inbox.visible
+        if visible != lastVisible {
+            lastVisible = visible
+            lockAnswers()
+        }
+        onChange()
+    }
+
     /// After an "Allow on <site>": other waiting requests that the rules now let through go
     /// ahead (`.auto`). Each is asked at this moment; the always-ask cases never pass.
-    func releaseApprovalsThatNowPass() {
+    private func releaseApprovalsThatNowPass() {
         for (id, waiting) in waitingApprovals where waiting.pending.passesNow() {
             finishApproval(id, .auto)
         }
@@ -227,7 +283,7 @@ final class InboxCenter {
     private func finishApproval(_ id: UUID, _ outcome: AgentApprovals.Outcome) {
         guard let waiting = waitingApprovals.removeValue(forKey: id) else { return }
         waiting.timer?.cancel()
-        if inbox.remove(id) != nil { onChange() }
+        if inbox.remove(id) != nil { listDidChange() }
         logChange("approval \(outcome.logValue)", tabID: waiting.pending.request.tabID)
         waiting.continuation.resume(returning: outcome)
     }

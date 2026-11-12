@@ -7,7 +7,10 @@ extension InboxCenter {
     /// - Parameter takingFocus: true when the owner opened it (tray, menu, shortcut, palette);
     ///   false when the app opens it by itself.
     func showPanel(takingFocus: Bool) {
+        let wasShown = isPanelShown
         panelController.show(relativeTo: railAnchor, takingFocus: takingFocus)
+        // Just appeared, maybe under a click meant for the window: answers wait a moment.
+        if !wasShown, isPanelShown { panelAppeared() }
     }
 
     func closePanel() {
@@ -19,7 +22,7 @@ extension InboxCenter {
         switch action {
         case .goTo(let entry): goTo(entry)
         case .dismiss(let id): dismiss(id)
-        case .decideApproval(let id, let outcome): decideApproval(id, outcome)
+        case .decideApproval(let id, let outcome): answerFromCard(id, outcome)
         case .showApprovalTab(let id): showApprovalTab(id)
         }
     }

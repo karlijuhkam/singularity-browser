@@ -120,27 +120,40 @@ final class AgentApprovals {
         let pending = PendingApproval(
             request: request, spaceID: space.id, siteOrigin: siteOrigin, timeout: timeout,
             passesNow: { [weak self] in
-                guard let self else { return false }
-                // The Space as it is now; one that is gone never passes.
-                let now: Space?
-                if let currentSpace = self.currentSpace { now = currentSpace(space.id) } else { now = space }
-                guard let now else { return false }
-                let decision = AgentApprovalRules.decide(context, policy: now.agentPolicy,
-                                                         allowedOrigins: self.allowedOrigins[space.id] ?? [])
-                switch decision {
+                switch self?.decideNow(context, space: space) {
                 case .allow: return true
-                case .deny, .ask: return false
+                case .deny, .ask, nil: return false
                 }
             })
         let outcome = await presenter(pending)
         // Only the owner's answers come back from the inbox, or `.auto` for a request that the
         // rules let through now. Anything else would be a mistake: treat it as "no".
         switch outcome {
-        case .approved, .denied, .timedOut: return outcome
-        case .approvedSite: return siteOrigin == nil ? .denied : outcome
-        case .auto: return pending.passesNow() ? .auto : .denied
-        case .refused: return .denied
+        case .denied, .timedOut:
+            return outcome
+        case .approved, .approvedSite:
+            if case .approvedSite = outcome, siteOrigin == nil { return .denied }
+            // The owner said yes, but the Space may have been made read-only (or deleted) while
+            // the request waited: then the yes no longer counts.
+            switch decideNow(context, space: space) {
+            case .allow, .ask: return outcome
+            case .deny, nil: return .denied
+            }
+        case .auto:
+            return pending.passesNow() ? .auto : .denied
+        case .refused:
+            return .denied
         }
+    }
+
+    /// The rules' decision for `context` with the Space's policy and allowed sites as they are
+    /// now. Nil when the Space is gone.
+    private func decideNow(_ context: AgentActionContext, space: Space) -> AgentDecision? {
+        let now: Space?
+        if let currentSpace { now = currentSpace(space.id) } else { now = space }
+        guard let now else { return nil }
+        return AgentApprovalRules.decide(context, policy: now.agentPolicy,
+                                         allowedOrigins: allowedOrigins[space.id] ?? [])
     }
 
     /// "claude-code" → "Claude Code".

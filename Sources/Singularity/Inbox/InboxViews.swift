@@ -279,6 +279,23 @@ private struct InboxPermissionBody: View {
     }
 }
 
+/// The texts an approval card shows, each cleaned (all of it comes from an agent or a page).
+struct InboxApprovalText {
+    let headline: String   // "<actor> wants to <action>"
+    let detail: String
+    let url: String        // empty when there is none
+    let text: String       // keeps line breaks; empty when there is none
+
+    init(_ approval: InboxApproval) {
+        let actor = InboxText.clean(approval.actor, limit: 80)
+        let action = InboxText.clean(approval.action, limit: InboxText.messageLimit)
+        headline = "\(actor) wants to \(action)"
+        detail = InboxText.clean(approval.detail, limit: InboxText.messageLimit)
+        url = InboxText.clean(approval.url ?? "", limit: InboxText.messageLimit)
+        text = InboxText.cleanBlock(approval.text ?? "", limit: InboxText.inputLimit)
+    }
+}
+
 /// "<actor> wants to <action>", the element or URL it is about, the page's address, and the text
 /// to be typed or sent (password text arrives already masked). The buttons are in
 /// `InboxApprovalButtons`.
@@ -286,13 +303,10 @@ private struct InboxApprovalBody: View {
     let approval: InboxApproval
 
     var body: some View {
-        let actor = InboxText.clean(approval.actor, limit: 80)
-        let action = InboxText.clean(approval.action, limit: InboxText.messageLimit)
-        let detail = InboxText.clean(approval.detail, limit: InboxText.messageLimit)
-        let url = InboxText.clean(approval.url ?? "", limit: InboxText.messageLimit)
-        let text = InboxText.cleanBlock(approval.text ?? "", limit: InboxText.inputLimit)
+        let shown = InboxApprovalText(approval)
+        let (detail, url, text) = (shown.detail, shown.url, shown.text)
         VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: "\(actor) wants to \(action)")
+            Text(verbatim: shown.headline)
                 .font(.system(size: 12, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
             if !detail.isEmpty {
