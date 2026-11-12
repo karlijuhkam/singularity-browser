@@ -53,13 +53,22 @@ struct AgentLoginShell: AgentShell {
     let launcher: String
     private let home: URL
     private let shell: AgentShell
+    /// True when this copy runs with its own data folder (SINGULARITY_HOME): no Connect/Update.
+    private let separateDataFolder: Bool
 
     /// The launcher inside *this* copy of the app (what agents should be pointed at).
     static var thisAppLauncher: String {
         Bundle.main.bundleURL.appending(path: "Contents/MacOS/singularity-mcp").path
     }
 
-    init(launcher: String, home: URL = FileManager.default.homeDirectoryForCurrentUser, shell: AgentShell = AgentLoginShell()) {
+    /// Whether the environment gives this copy its own data folder (a development copy).
+    static var usesSeparateDataFolder: Bool {
+        !(ProcessInfo.processInfo.environment["SINGULARITY_HOME"] ?? "").isEmpty
+    }
+
+    init(launcher: String, home: URL = FileManager.default.homeDirectoryForCurrentUser, shell: AgentShell = AgentLoginShell(),
+         separateDataFolder: Bool = AgentConnector.usesSeparateDataFolder) {
+        self.separateDataFolder = separateDataFolder
         self.launcher = launcher
         self.home = home
         self.shell = shell
@@ -85,7 +94,7 @@ struct AgentLoginShell: AgentShell {
     /// the config again and shows what it says. Runs only from a row that shows one of those two
     /// buttons: never while checking or working, on a connected row, or for a translocated app.
     func connect(_ agent: AgentKind) async {
-        guard !AgentConnect.isTranslocated(launcher) else { return }
+        guard !separateDataFolder, !AgentConnect.isTranslocated(launcher) else { return }
         var lines = [AgentConnect.addCommand(agent, launcher: launcher)]
         switch rows[agent] {
         case .status(.notConnected):
@@ -122,7 +131,12 @@ struct AgentLoginShell: AgentShell {
     // MARK: - Private
 
     private func refreshRow(_ agent: AgentKind) async {
-        // A translocated app has nothing to offer (no button, no command): don't run anything.
+        // A development copy or a translocated app has nothing to offer (no button, no command):
+        // don't run anything.
+        if separateDataFolder {
+            rows[agent] = .status(.separateDataFolder)
+            return
+        }
         if AgentConnect.isTranslocated(launcher) {
             rows[agent] = .status(.translocated)
             return

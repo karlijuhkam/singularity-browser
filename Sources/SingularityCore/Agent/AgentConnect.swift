@@ -23,6 +23,7 @@ public enum AgentKind: String, CaseIterable, Sendable {
 
 /// What an agent's row shows.
 public enum AgentConnectStatus: Equatable, Sendable {
+    case separateDataFolder    // this copy has its own data folder (SINGULARITY_HOME): no button
     case translocated          // app runs from a temporary path: no button
     case notInstalled          // agent not found: show the command to copy
     case notConnected          // Connect button
@@ -97,7 +98,11 @@ public enum AgentConnect {
 
     /// Combines the facts into what the row shows. An existing entry is reported even when the
     /// program wasn't found (it may just not be on the login shell's PATH).
-    public static func status(installed: Bool, registered: String?, launcher: String) -> AgentConnectStatus {
+    /// A copy with its own data folder (a development copy) never offers to change the agents' setup:
+    /// that setup belongs to the owner's real copy, so this check comes first.
+    public static func status(installed: Bool, registered: String?, launcher: String,
+                              separateDataFolder: Bool = false) -> AgentConnectStatus {
+        if separateDataFolder { return .separateDataFolder }
         if isTranslocated(launcher) { return .translocated }
         if let registered {
             return standardized(registered) == standardized(launcher) ? .connected : .otherCopy(registered)

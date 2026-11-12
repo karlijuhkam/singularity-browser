@@ -181,6 +181,14 @@ import Testing
 
     // MARK: Status
 
+    @Test func separateDataFolderComesFirst() {
+        let mcp = "/Applications/Singularity.app/Contents/MacOS/singularity-mcp"
+        #expect(AgentConnect.status(installed: true, registered: nil, launcher: mcp, separateDataFolder: true)
+            == .separateDataFolder)
+        #expect(AgentConnect.status(installed: true, registered: mcp, launcher: mcp, separateDataFolder: true)
+            == .separateDataFolder)
+    }
+
     @Test func status() {
         let translocated = "/private/var/folders/ab/T/AppTranslocation/1234/d/Singularity.app/Contents/MacOS/singularity-mcp"
         #expect(AgentConnect.status(installed: true, registered: translocated, launcher: translocated) == .translocated)

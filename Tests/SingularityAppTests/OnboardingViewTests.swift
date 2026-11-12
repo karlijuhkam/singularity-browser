@@ -34,7 +34,7 @@ extension AppTests {
         let shell = QuietShell()
         // An empty home folder: no agent config files, so both rows read "not connected".
         let connector = AgentConnector(launcher: "/Applications/Singularity.app/Contents/MacOS/singularity-mcp",
-                                       home: root, shell: shell)
+                                       home: root, shell: shell, separateDataFolder: false)
         let window = NSWindow(contentRect: NSRect(origin: CGPoint(x: -5000, y: -5000), size: size),
                               styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
