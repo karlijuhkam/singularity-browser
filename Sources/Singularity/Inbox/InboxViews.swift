@@ -418,8 +418,9 @@ struct InboxPermissionText {
 }
 
 /// Allow and Deny for a held permission request; only Deny when the input could not be shown in
-/// full (Go to terminal, on every card with a tab, shows Claude Code's own prompt with all of it). Neither is a default button: the owner decides
-/// about his own machine with a deliberate click.
+/// full (Go to terminal, on every card with a tab, shows Claude Code's own prompt with all of
+/// it). Neither is a default button: the owner decides about his own machine with a deliberate
+/// click.
 enum InboxPermissionButtons {
     static func choices(for entry: InboxEntry) -> [InboxApprovalButtons.Choice] {
         guard case .permission(_, _, let isComplete) = entry.kind else { return [] }
