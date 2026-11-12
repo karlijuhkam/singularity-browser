@@ -10,7 +10,12 @@ extension AppTests {
 @MainActor
 @Suite(.serialized) struct InboxNotifierTests {
     @MainActor final class FakeBackend: InboxNotificationBackend {
+        /// What the owner answers when asked.
         var allow = true
+        /// The current setting, as macOS reports it. Asking sets it to the answer, as macOS does,
+        /// unless `staysUndetermined` (the prompt was missed or closed without an answer).
+        var status: InboxNotificationPermission = .notDetermined
+        var staysUndetermined = false
         var authorisationRequests = 0
         var posted: [(id: String, title: String, body: String)] = []
         var delivered: [String] = []
@@ -19,7 +24,13 @@ extension AppTests {
         var delegateSet = false
 
         func setDelegate(_ delegate: UNUserNotificationCenterDelegate) { delegateSet = true }
-        func requestAuthorisation() async -> Bool { authorisationRequests += 1; return allow }
+        func authorisationStatus() async -> InboxNotificationPermission { status }
+        func requestAuthorisation() async -> Bool {
+            authorisationRequests += 1
+            if staysUndetermined { return false }
+            status = allow ? .allowed : .denied
+            return allow
+        }
         /// As macOS does: a posted notification is delivered (a repeat replaces it) until removed.
         func post(id: String, title: String, body: String) async {
             posted.append((id, title, body))
@@ -29,7 +40,6 @@ extension AppTests {
             removed += ids
             delivered.removeAll { ids.contains($0) }
         }
-        func deliveredIDs() async -> [String] { delivered }
         func setBadge(_ label: String?) { badges.append(label) }
     }
 
@@ -80,19 +90,70 @@ extension AppTests {
         #expect(backend.badges == ["1"])
         notifier.post(entry(), spaceName: "Work")
         await notifier.settle()
-        #expect(backend.authorisationRequests == 1)   // never asks again
+        // macOS does not ask again once refused: we don't either.
+        #expect(backend.authorisationRequests == 1)
         #expect(backend.posted.isEmpty)
+    }
+
+    /// A refusal is not remembered: once the owner allows banners in System Settings, the next
+    /// one goes out, without a relaunch.
+    @Test func bannersStartOnceAllowedLater() async {
+        let (notifier, backend) = make(allow: false)
+        notifier.post(entry(), spaceName: "Work")
+        await notifier.settle()
+        #expect(backend.posted.isEmpty)
+        backend.status = .allowed
+        let item = entry()
+        notifier.post(item, spaceName: "Work")
+        await notifier.settle()
+        #expect(backend.posted.map(\.id) == [item.id.uuidString])
+        #expect(backend.authorisationRequests == 1)
+    }
+
+    /// The first prompt was missed (the owner was away) and the setting is still undetermined:
+    /// each post asks again, once, and posts as soon as the answer is yes.
+    @Test func undeterminedAsksAgainOnTheNextPost() async {
+        let (notifier, backend) = make()
+        backend.staysUndetermined = true
+        notifier.post(entry(), spaceName: "Work")
+        notifier.post(entry(), spaceName: "Work")
+        await notifier.settle()
+        #expect(backend.authorisationRequests == 2)
+        #expect(backend.posted.isEmpty)
+        backend.staysUndetermined = false
+        notifier.post(entry(), spaceName: "Work")
+        await notifier.settle()
+        #expect(backend.authorisationRequests == 3)
+        #expect(backend.posted.count == 1)
     }
 
     @Test func syncWithdrawsExactlyTheNotificationsWhoseEntryIsGone() async {
         let (notifier, backend) = make()
-        let kept = entry()
-        let gone1 = UUID().uuidString, gone2 = UUID().uuidString
-        backend.delivered = [gone1, kept.id.uuidString, gone2]
+        let kept = entry(), gone1 = entry(), gone2 = entry()
+        for item in [gone1, kept, gone2] { notifier.post(item, spaceName: "Work") }
         notifier.sync(with: [kept])
         await notifier.settle()
-        #expect(backend.removed == [gone1, gone2])
+        #expect(backend.removed == [gone1.id.uuidString, gone2.id.uuidString])
+        #expect(backend.delivered == [kept.id.uuidString])
         #expect(backend.badges == ["1"])
+        // Withdrawn once, then forgotten: nothing is withdrawn twice.
+        notifier.sync(with: [kept])
+        await notifier.settle()
+        #expect(backend.removed == [gone1.id.uuidString, gone2.id.uuidString])
+    }
+
+    /// Banners this process did not post (another copy of the app shares the bundle id, and so
+    /// the delivered list) are left alone.
+    @Test func syncLeavesOtherCopiesBannersAlone() async {
+        let (notifier, backend) = make()
+        let foreign = UUID().uuidString
+        backend.delivered = [foreign]
+        let gone = entry()
+        notifier.post(gone, spaceName: "Work")
+        notifier.sync(with: [])
+        await notifier.settle()
+        #expect(backend.removed == [gone.id.uuidString])
+        #expect(backend.delivered == [foreign])
     }
 
     @Test func badgeIsTheCountAndNilAtZero() async {

@@ -2,17 +2,26 @@ import AppKit
 import SingularityCore
 import UserNotifications
 
+/// Whether Singularity may show banners, as System Settings says right now.
+enum InboxNotificationPermission {
+    /// Never asked, or the prompt was never answered.
+    case notDetermined
+    case allowed
+    case denied
+}
+
 /// The few calls the notifier makes to macOS, so its decisions can be tested without the real
 /// notification centre.
 @MainActor
 protocol InboxNotificationBackend: AnyObject {
     /// Gets clicks and "show while active" questions sent to `delegate`.
     func setDelegate(_ delegate: UNUserNotificationCenterDelegate)
-    /// Asks macOS once; true when the owner allowed banners.
+    /// The current setting (the owner can change it in System Settings at any time).
+    func authorisationStatus() async -> InboxNotificationPermission
+    /// Shows macOS's permission prompt; true when the owner allowed banners.
     func requestAuthorisation() async -> Bool
     func post(id: String, title: String, body: String) async
     func removeDelivered(ids: [String])
-    func deliveredIDs() async -> [String]
     /// The Dock tile's red badge; nil clears it.
     func setBadge(_ label: String?)
 }
@@ -25,6 +34,16 @@ private final class SystemNotificationBackend: InboxNotificationBackend {
 
     func setDelegate(_ delegate: UNUserNotificationCenterDelegate) {
         center.delegate = delegate
+    }
+
+    func authorisationStatus() async -> InboxNotificationPermission {
+        switch await center.notificationSettings().authorizationStatus {
+        case .notDetermined: .notDetermined
+        // Provisional: delivered quietly to Notification Centre; still worth posting.
+        case .authorized, .provisional: .allowed
+        case .denied: .denied
+        @unknown default: .denied
+        }
     }
 
     func requestAuthorisation() async -> Bool {
@@ -45,10 +64,6 @@ private final class SystemNotificationBackend: InboxNotificationBackend {
         center.removeDeliveredNotifications(withIdentifiers: ids)
     }
 
-    func deliveredIDs() async -> [String] {
-        await center.deliveredNotifications().map(\.request.identifier)
-    }
-
     func setBadge(_ label: String?) {
         NSApp.dockTile.badgeLabel = label
     }
@@ -58,7 +73,12 @@ private final class SystemNotificationBackend: InboxNotificationBackend {
 /// count on the Dock icon.
 ///
 /// Calls to macOS are queued one after another (`enqueue`), so a withdrawal never overtakes the
-/// notification it should withdraw. Permission is asked on the first `post`, not at launch.
+/// notification it should withdraw. Permission is asked on a `post`, not at launch: the current
+/// setting is read before every post, and macOS is asked only while it is undetermined. A "no" is
+/// never remembered here, so banners start as soon as the owner allows them in System Settings.
+///
+/// Only banners this process posted are withdrawn: a second copy of the app (the daily copy and
+/// a development copy share the bundle id) shares macOS's list of delivered notifications.
 ///
 /// With no bundle identifier (the bare debug binary, the test process) there is no backend and
 /// every method does nothing.
@@ -66,8 +86,8 @@ private final class SystemNotificationBackend: InboxNotificationBackend {
 final class InboxNotifier: NSObject, UNUserNotificationCenterDelegate {
     private let backend: (any InboxNotificationBackend)?
     private let onOpen: @MainActor () -> Void
-    /// nil = not asked yet.
-    private var authorised: Bool?
+    /// Ids of the banners this process posted (or queued) and has not withdrawn yet, oldest first.
+    private var postedIDs: [String] = []
     /// The end of the queue of macOS calls.
     private var tail: Task<Void, Never>?
 
@@ -88,24 +108,33 @@ final class InboxNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard let backend else { return }
         let text = InboxNotificationText.make(entry, spaceName: spaceName)
         let id = entry.id.uuidString
-        enqueue { [self] in
-            if authorised == nil { authorised = await backend.requestAuthorisation() }
-            guard authorised == true else { return }
+        // Noted now, not when macOS has it: a `sync` called after this sees it, and its withdrawal
+        // is queued behind the post. Withdrawing one that was never shown does no harm.
+        if !postedIDs.contains(id) { postedIDs.append(id) }
+        enqueue {
+            let allowed: Bool
+            switch await backend.authorisationStatus() {
+            case .allowed: allowed = true
+            case .denied: allowed = false
+            case .notDetermined: allowed = await backend.requestAuthorisation()
+            }
+            guard allowed else { return }
             await backend.post(id: id, title: text.title, body: text.body)
         }
     }
 
-    /// Call after every change of the list: withdraws delivered notifications whose entry is
-    /// gone, and sets the Dock badge to the number of entries (none at 0).
+    /// Call after every change of the list: withdraws the banners this process posted whose
+    /// entry is gone (then forgets them), and sets the Dock badge to the number of entries (none
+    /// at 0).
     func sync(with entries: [InboxEntry]) {
         guard let backend else { return }
         // The badge does not depend on notification permission.
         backend.setBadge(entries.isEmpty ? nil : String(entries.count))
         let live = Set(entries.map { $0.id.uuidString })
-        enqueue {
-            let stale = await backend.deliveredIDs().filter { !live.contains($0) }
-            if !stale.isEmpty { backend.removeDelivered(ids: stale) }
-        }
+        let stale = postedIDs.filter { !live.contains($0) }
+        guard !stale.isEmpty else { return }
+        postedIDs.removeAll { !live.contains($0) }
+        enqueue { backend.removeDelivered(ids: stale) }
     }
 
     /// Tests: waits until every queued call to the backend has finished.
