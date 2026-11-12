@@ -166,7 +166,7 @@ final class InboxCenter {
         guard let tabID = entry.tabID else { return }
         state?.showTab(tabID, in: entry.spaceID)
         // `showTab` already counts as going there; this clears the entry anyway when the tab is gone.
-        if !Self.isApproval(entry) { wentToTerminal(tabID) }
+        wentToTerminal(tabID)
     }
 
     func dismiss(_ id: UUID) {
@@ -446,8 +446,10 @@ final class InboxCenter {
     /// SINGULARITY_TAB is inherited by everything started in the tab, including a tmux or screen
     /// server that later serves panes in Terminal.app; Claude Code there must not send its
     /// questions here. So the helper must run inside this tab's shell: a descendant of its
-    /// process. Peer or shell unknown: "no". (A tmux server started inside a herdr-core shell
-    /// still counts as inside; accepted.)
+    /// process. Peer or shell unknown: "no". A tmux or screen server (or any multiplexer that
+    /// daemonises) is not a descendant in either terminal mode, built-in or herdr-core, even
+    /// when it was started in this tab: Claude Code running inside one gets "no decision" and
+    /// shows its own prompt (no level 2; level 1 only as far as the multiplexer passes OSC on).
     private func comesFromTheTab(_ tabID: UUID, connection: any HookReplying) -> Bool {
         guard let peer = connection.peerPID,
               let shell = tabShellPID?(tabID) ?? state?.terminals.existingSession(tabID)?.shellPID else { return false }

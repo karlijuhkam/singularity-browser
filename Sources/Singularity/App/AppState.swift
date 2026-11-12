@@ -59,7 +59,7 @@ final class AppState {
     let terminals: TerminalRegistry
     let artifacts: ArtifactHosts
     let favicons: FaviconStore
-    /// Approval policy checks and confirmation sheets for agent actions.
+    /// Approval policy checks for agent actions; the questions wait as inbox entries.
     let approvals = AgentApprovals()
     /// Downloads of this run, for the sidebar's Downloads list.
     let downloads = DownloadCenter()

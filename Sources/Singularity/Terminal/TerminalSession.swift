@@ -177,7 +177,14 @@ final class TerminalSession {
         if oscObservation == nil {
             oscObservation = view.observeOscEvents { [weak self] event in
                 guard let signal = TerminalNotificationPayload.signal(code: event.code, payload: event.payload) else { return }
-                Task { @MainActor in self?.inboxSignal(signal) }
+                Task { @MainActor in
+                    guard let self else { return }
+                    // As for the bell: know the foreground program now, not at the next poll. A
+                    // program that sends a notification and exits (`build; printf '\e]9;done\a'`)
+                    // would otherwise have its entry removed by that poll's "program exited".
+                    self.refresh()
+                    self.inboxSignal(signal)
+                }
             }
         }
 

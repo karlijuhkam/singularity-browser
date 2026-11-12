@@ -16,6 +16,7 @@ extension AppTests {
     }
 
     private func makeFixture() throws -> Fixture {
+        MainRunLoopGuard.start
         let root = URL(filePath: "/private/tmp/sg-hook-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
         let macOS = root.appending(path: "Singularity.app/Contents/MacOS", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: macOS, withIntermediateDirectories: true)
