@@ -189,10 +189,10 @@ extension AppTests {
         let f = try makeFixture()
         defer { tearDown(f) }
         let longMessage = String(repeating: "Lorem ipsum dolor sit amet, ", count: 30)
-            .prefix(InboxText.messageLimit - 41) + String(repeating: "x", count: 40)
+            .prefix(InboxText.messageLimit - 40) + String(repeating: "x", count: 40)
         let block = (0..<200).map { "line \($0): rm -rf build/output-\($0)" }.joined(separator: "\n")
         let longBlock = String(block.prefix(InboxText.inputLimit))
-        #expect(longMessage.count < InboxText.messageLimit)
+        #expect(longMessage.count == InboxText.messageLimit)
         #expect(longBlock.count == InboxText.inputLimit)
         f.center.replaceInboxForTesting(everyKind(f.space.id, message: String(longMessage), block: longBlock))
         #expect(f.center.inbox.visible.count == 7)
@@ -290,6 +290,35 @@ extension AppTests {
         #expect(!f.center.isPanelShown)
         #expect(!panel.isVisible)
         #expect(panel.parent == nil)
+    }
+
+    /// The panel's SwiftUI content must not keep the inbox alive (inbox → panel → content → inbox).
+    @Test func panelDoesNotKeepTheInboxAlive() throws {
+        MainRunLoopGuard.start
+        let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 900, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.orderFront(nil)
+        defer { window.close() }
+        weak var released: InboxCenter?
+        autoreleasepool {
+            let center = InboxCenter()
+            center.panelController.parentWindow = { window }
+            center.panelController.appIsActive = { false }
+            center.showPanel(takingFocus: false)
+            center.panelController.panel?.contentView?.layoutSubtreeIfNeeded()
+            center.closePanel()
+            released = center
+        }
+        #expect(released == nil)
+    }
+
+    /// The terminal's folder comes from the shell: cleaned like any other text on a card.
+    @Test func folderIsCleaned() {
+        let home = NSHomeDirectory()
+        #expect(InboxPlace.folderText(home + "/Developer/site") == "~/Developer/site")
+        #expect(InboxPlace.folderText("/tmp/evil\u{202E}txt.\u{0007}sh") == "/tmp/eviltxt.sh")
+        #expect(InboxPlace.folderText("/" + String(repeating: "a", count: 200)).count == 80)
     }
 
     @Test func countBadgeIsHiddenAtZero() {

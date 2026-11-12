@@ -176,7 +176,8 @@ final class InboxPanelController {
             let onScreen = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
             topLeft = NSPoint(x: onScreen.maxX + Self.gap, y: onScreen.maxY)
         } else {
-            // The rail is 48 pt wide and its first button sits 42 pt below the window's top.
+            // From `SidebarView`: the rail is 48 pt wide (`SpaceRail().frame(width: 48)`) and
+            // starts below the 40 pt navigation row, plus the rail's 2 pt top padding.
             topLeft = NSPoint(x: parent.frame.minX + 48 + Self.gap, y: parent.frame.maxY - 42)
         }
         let frame = NSRect(x: topLeft.x, y: topLeft.y - height, width: Self.width, height: height)
@@ -262,18 +263,21 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
 
 /// What the panel shows: the header, then the cards in a scroll view. Reports its full height
 /// (header plus every card) so the controller can size the window.
+///
+/// Holds the inbox weakly: the inbox owns the panel, the panel this view, so a strong reference
+/// here would keep both alive for ever. (Observation still sees what `body` reads through it.)
 struct InboxPanelContent: View {
-    let center: InboxCenter
+    weak var center: InboxCenter?
     let onHeightChange: (CGFloat) -> Void
     @State private var headerHeight: CGFloat = 0
     @State private var listHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
-            InboxHeader(workingCount: center.inbox.workingCount)
+            InboxHeader(workingCount: center?.inbox.workingCount ?? 0)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
             ScrollView {
-                InboxListView(center: center, onAction: { [center] in center.perform($0) })
+                InboxListView(center: center, onAction: { [weak center] in center?.perform($0) })
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)

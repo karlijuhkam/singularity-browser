@@ -35,6 +35,8 @@ struct InboxRailButton: View {
             InboxCountBadge(count: count)
                 .offset(x: 5, y: -4)
                 .allowsHitTesting(false)
+                // The button's own label already says the count.
+                .accessibilityHidden(true)
         }
         // The panel opens beside this button, so it needs the button's AppKit view.
         .background(InboxAnchor { view in inbox.railAnchor = view })
@@ -114,12 +116,13 @@ struct InboxHeader: View {
 }
 
 /// The list. `onAction` closures come from InboxCenter; later tasks add cases.
+/// Holds the inbox weakly, for the reason given at `InboxPanelContent`.
 struct InboxListView: View {
-    let center: InboxCenter
+    weak var center: InboxCenter?
     let onAction: (InboxCardAction) -> Void
 
     var body: some View {
-        let entries = center.inbox.visible
+        let entries = center?.inbox.visible ?? []
         VStack(alignment: .leading, spacing: 6) {
             if entries.isEmpty {
                 Text("Nothing is waiting.")
@@ -129,7 +132,7 @@ struct InboxListView: View {
                     .padding(.vertical, 14)
             } else {
                 ForEach(entries) { entry in
-                    InboxCard(entry: entry, place: InboxPlace(entry, state: center.state), onAction: onAction)
+                    InboxCard(entry: entry, place: InboxPlace(entry, state: center?.state), onAction: onAction)
                 }
             }
         }
@@ -157,10 +160,16 @@ struct InboxPlace {
         } else {
             parts = [spaceName]
             if let tabID = entry.tabID, let folder = space?.tab(tabID)?.workingDirectory {
-                parts.append(HomePath.abbreviate(HomePath.expand(folder)))
+                parts.append(Self.folderText(folder))
             }
         }
         text = parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// A terminal's folder as "~/…". It comes from the shell (any folder name a program made), so
+    /// it is cleaned like agent text.
+    static func folderText(_ workingDirectory: String) -> String {
+        InboxText.clean(HomePath.abbreviate(HomePath.expand(workingDirectory)), limit: 80)
     }
 }
 
