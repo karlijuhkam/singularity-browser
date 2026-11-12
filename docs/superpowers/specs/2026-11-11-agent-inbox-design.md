@@ -308,3 +308,139 @@ Following the existing split (pure logic in Core with unit tests, AppKit/SwiftUI
 - Browser approvals are included, and the inbox replaces the sheet.
 - Accepted as proposed: permission requests answerable in the inbox; working agents only a
   count; nothing sent while the terminal is in view; the notification opens the inbox.
+
+## As tested (2026-11-12)
+
+Live test with the owner's Claude Code 2.1.322 (`--model haiku --permission-mode default`) in a
+scratch project whose `.claude/settings.json` held the hooks (`PreToolUse` matcher
+`AskUserQuestion`, `PermissionRequest`, `Stop`, `Notification`). Claude Code ran in a detached
+tmux pane behind a small pty recorder, with the env a Singularity tab sets (`TERM=xterm-256color`,
+`TERM_PROGRAM=Singularity`, `COLORTERM=truecolor`, `SINGULARITY_SPACE`, and
+`SINGULARITY_TAB=test`). The owner's own user-level hooks (nodeterm, herdr, rex) also ran and did
+nothing. This section overrides anything above that it contradicts.
+
+### Differs from the design
+
+1. **`PermissionRequest` runs alongside the terminal's dialog, not before it.** The dialog is on
+   screen while the hook is held, and whichever answers first wins. Answering in the terminal
+   with Esc kills the hook (SIGTERM) at once; answering **Yes in the terminal does not**: the hook
+   keeps running until its own timeout. So the app must release a held permission when the tab
+   moves on (status record `working`/`done`/`idle`, or `Stop`), or the helper lingers up to an
+   hour. "Go to terminal" needs no hand-back for permissions: the prompt is already there.
+2. **`AskUserQuestion` also raises `PermissionRequest`** (`tool_name: "AskUserQuestion"`, same
+   `tool_input.questions`) whenever `PreToolUse` gave no decision: after a "no decision" reply,
+   after the hold, after a hook timeout. Not after `allow`. Its dialog is the question itself, on
+   screen at the same time. The app must not show it as a permission entry: reply "no decision"
+   at once. (Answering it also works, see item 5 below; not used by the design.)
+3. **`PermissionRequest` stdin has no `tool_use_id`.** `PreToolUse` has one. Key held
+   permissions by connection (plus `session_id`).
+4. **Status records (OSC 7501) only after a probe reply.** At start Claude Code sends
+   `ESC ] 7501 ; ? BEL` and waits up to about 2 s; only if the terminal answers
+   `ESC ] 7501 ; ? BEL` (or `ST`) does it send records, otherwise never. `TERM_PROGRAM` plays no
+   part. SwiftTerm 1.99.3 answers the probe itself (`ProgramStatus.swift`), so the built-in
+   terminal is fine; whether the probe survives `hc attach` (herdr-core terminals) was not tested.
+5. **The text in status records is base64.** `msg` (and `title`) are base64 UTF-8; fields are
+   `key=value` joined with `:`. The `done` message is a short model-written summary
+   ("user picked Postgres as the database"), not the last message: use `Stop`'s
+   `last_assistant_message` for the done entry's text.
+6. **While a `PreToolUse` hook is held the status is `working`** (with `msg` = the question
+   text), not `blocked`; the terminal shows a spinner "running PreToolUse hooks…" and no question.
+   `blocked` comes when the `PermissionRequest` stage starts (same instant as that hook).
+7. **Interrupt = no `Stop`.** Esc or Ctrl-C during a turn: held hooks get SIGTERM, status goes to
+   `idle`, no `Stop` hook. A normal turn end (including after a deny) does run `Stop`.
+8. **Hermes sends nothing by default** (see item 9).
+
+### Per item
+
+1. **`PreToolUse` stdin** (trimmed; `transcript_path`, `scratchpad_dir`, `prompt_id`, `effort`
+   left out): `question`, `header`, `options[].label`, `options[].description` and `multiSelect`
+   are all there; `tool_use_id`, `session_id`, `cwd` too.
+   ```json
+   {"session_id":"f32c0756-ce23-43ec-afd7-5708e5dd894e","cwd":"/private/tmp/…/hooktest",
+    "permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion",
+    "tool_input":{"questions":[{"question":"Which database should we use?","header":"Database",
+      "options":[{"label":"SQLite","description":"File-based, embedded database …"},
+                 {"label":"Postgres","description":"Full client-server relational database …"}],
+      "multiSelect":false}]},
+    "tool_use_id":"toolu_0126uBQMDbQKLFvJr5ZscFJR"}
+   ```
+2. **Answering works** for one question, two questions, and multi-select; no prompt appears, the
+   terminal shows "User answered Claude's questions: · <question> → <answer>". Reply that worked:
+   ```json
+   {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow",
+    "updatedInput":{"questions":[ …the questions exactly as received… ],
+      "answers":{"Which database should we use?":"Postgres",
+                 "Which features should we enable?":"Auth, Search, Billing"}}}}
+   ```
+   - `updatedInput` replaces the whole input: `questions` must be repeated. With `answers` only,
+     the tool fails with "PreToolUse hook for AskUserQuestion returned updatedInput that failed
+     schema validation … `questions` is missing" and the model sees the error.
+   - **Multi-select: join labels with `", "` (comma and space)**: that is what Claude Code itself
+     stores when the owner ticks several boxes in the terminal (`"Auth, Billing"`). The string is
+     passed to the model verbatim (`","` arrived as `Auth,Search,Billing`), so `", "` it is.
+3. **Empty stdout, exit 0** after 0 s, 5 s and 2 min: the normal question appears each time (after
+   the hook returns, via the `PermissionRequest` stage, see difference 2). 15 min was not run:
+   5 s and 2 min behaved the same, and item 4 shows what happens at the limit.
+4. **Timeout.** `"timeout": 3600` is accepted without a word (the whole first session ran with
+   it). The settings schema says only "positive number"; for command hooks 2.1.322 uses
+   `timeout * 1000` with no cap. With `"timeout": 20` and a 40 s hook: at 20 s the hook gets
+   SIGTERM, its later output is lost, nothing is shown in the terminal, and Claude Code carries on
+   as if there were no decision (question: `PermissionRequest` stage, then the normal prompt;
+   permission: the dialog that was already up stays).
+5. **`PermissionRequest`**, Bash `rm …` (not pre-allowed; `touch` in the project folder was not
+   always prompted). Stdin (trimmed):
+   ```json
+   {"session_id":"f32c0756-…","cwd":"/private/tmp/…/hooktest","permission_mode":"default",
+    "hook_event_name":"PermissionRequest","tool_name":"Bash",
+    "tool_input":{"command":"rm made-by-claude-1.txt","description":"Remove file made-by-claude-1.txt"},
+    "permission_suggestions":[{"type":"addDirectories","directories":["/private/tmp/…/hooktest"],
+      "destination":"session"},{"type":"setMode","mode":"acceptEdits","destination":"session"}]}
+   ```
+   - `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`:
+     runs; terminal shows "Allowed by PermissionRequest hook". Nothing is remembered (a later
+     `rm` asked again).
+   - `"behavior":"deny"`: not run; "Denied by PermissionRequest hook", the model is told
+     "Permission denied by hook" and carries on with its turn. An optional
+     `"message":"…"` replaces that reason (seen by the model and in the terminal); use e.g.
+     "Denied in the Singularity inbox."
+   - Empty reply: the dialog (already on screen) is answered in the terminal.
+   - For `AskUserQuestion`: `allow` without `updatedInput` leaves the question to the terminal;
+     `allow` with `"updatedInput":{"questions":[…],"answers":{…}}` answers it.
+6. **`Stop`**: `last_assistant_message` is there.
+   ```json
+   {"session_id":"f32c0756-…","cwd":"/private/tmp/…/hooktest","permission_mode":"default",
+    "hook_event_name":"Stop","stop_hook_active":false,
+    "last_assistant_message":"You chose SQLite as the database. I haven't done anything else.",
+    "background_tasks":[],"session_crons":[]}
+   ```
+7. **Killing Claude Code while a hook is held**: Esc, Ctrl-C (one press interrupts the turn) and
+   closing the terminal (pty hang-up) all SIGTERM the hook at once; the question is recorded as
+   declined. So the helper sees its process end / the app sees the socket drop.
+8. **OSC 7501** (after the probe was answered; all `app=claude-code`, terminated with BEL):
+   - start: `state=idle`;
+   - prompt sent: `state=working`, then `working` with `msg` = what it is doing
+     ("Removing file victim.txt", or the question text while a `PreToolUse` hook runs);
+   - question: `state=blocked:kind=question:msg=answer: Which database should we use? (SQLite · Postgres)`;
+   - permission: `state=blocked:kind=permission:msg=approve Bash: rm victim.txt`;
+   - answered: `working`; turn end: `state=done`, about 1 s later `done` again with the summary
+     `msg`; interrupted: `state=idle`;
+   - the code also has `id=`, `title=`, `progress=` (subagents/tasks) and `state=clear[:id=]`.
+   - No BEL, OSC 9 or OSC 777 from Claude Code. Its title (OSC 0) carries "✳ <topic>".
+   - Without a probe reply (plain tmux): only the probe, no records.
+9. **Hermes** 0.22.5: not run (it would need a model provider). From its source: no OSC 7501.
+   It sends BEL + `OSC 9 ; Hermes: <text> BEL` when a blocking prompt opens
+   (`display.bell_on_prompt`) or a turn ends (`display.bell_on_complete`); OSC 777 only in Warp.
+   Both settings are **off** in the owner's `~/.hermes/config.yaml`, so by default Hermes sends
+   nothing level 1 can see. Turning them on gives a waiting entry per prompt and per turn end.
+
+**Also recorded for later tasks**
+- `session_id` and `cwd` are in every hook's stdin; `tool_use_id` only in `PreToolUse`.
+- Order for a question: `PreToolUse` → (no decision) `PermissionRequest` → dialog; a
+  `Notification` hook (`notification_type: "permission_prompt"`, "Claude needs your permission")
+  follows about 6 s after any question or permission dialog appears.
+- The hook's environment is the terminal's: `SINGULARITY_TAB` and `SINGULARITY_SPACE` exported
+  before starting `claude` arrive in the hook; Claude Code adds `CLAUDE_CODE_SESSION_ID`
+  (= `session_id`), `CLAUDE_PROJECT_DIR`, `CLAUDE_PID`.
+- Project-level hooks ran after the folder-trust prompt with no separate hooks prompt.
+
+**The two numbers:** `hookTimeoutSeconds = 3600`, `holdLimitSeconds = 3300` (no cap found).
