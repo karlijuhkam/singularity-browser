@@ -1,9 +1,9 @@
 # Projects in a Space: design
 
-Status: **approved by the owner on 2026-11-11, not built.** Building is parked; the owner will
-start it from another session. The next step is the implementation plan. Sections marked
-"Builder's call" were chosen by the writer; the owner read the list of them and approved the
-design as written.
+Status: **approved by the owner on 2026-11-11, built on 2026-11-12** (plan
+`docs/superpowers/plans/2026-11-12-projects.md`). Sections marked "Builder's call" were chosen
+by the writer; the owner read the list of them and approved the design as written. Differences
+from this text are listed under "As built" at the end.
 
 ## Intent: why
 
@@ -184,6 +184,27 @@ No new dependency.
 
 Build this after the onboarding work has landed: the design leans on `SpaceFields` and
 `SpaceEditorSheet` as that branch leaves them.
+
+## As built (2026-11-12)
+
+Built as designed. Small things the design did not say, decided while building:
+
+- The picker has no separate title: the palette's text field shows "New terminal in…" as its
+  placeholder. The row of the last used project says "Last used" at its right.
+- The folder header's "Project ▸" menu is only there when the Space has projects. "New Terminal"
+  is always there.
+- The palette's "New Terminal in…" command is only listed when the Space has projects. The menu
+  item and ⇧⌥⌘T always exist; without projects they open a terminal like New Terminal.
+- A project name longer than 18 characters is cut in the middle in the sidebar
+  ("acme-web…monorepo"), so a tag cannot take the whole row. The tag keeps its width and the
+  tab's title truncates instead.
+- Clearing a project's name in Edit Space gives it its folder's name back on Save. "Add
+  Project…" accepts several folders at once.
+- No extra scope line was added to `CLAUDE.md`: the item is in `IDEAS.md`'s approved list, which
+  the 2026-11-10 scope change already covers.
+- A terminal row's tooltip names its project (also when the row shows no tag).
+- Not exercised by hand: this was verified with unit tests, `AppState` tests and off-screen
+  pictures of the sidebar and Edit Space. `IDEAS.md` lists what is left for a hands-on check.
 
 ## Left to the builder
 
