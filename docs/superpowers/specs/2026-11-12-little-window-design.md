@@ -365,20 +365,14 @@ Made while writing, please check:
   `application(_:open:)` stays as the fallback.
 - **Title bar:** an `NSToolbar` (unified compact) with plain AppKit controls: a centred label, an
   `NSPopUpButton`, an `NSButton`. ⌘O is the File menu's "Open in <Space>".
-- **Only `http`/`https` schemes are declared** by release bundles, no HTML document type. Whether
-  that is enough for System Settings' browser list can only be seen with an installed release:
-  the owner's check. If Singularity is missing from the list, add the document type in
-  `claim_web_links`.
-  Looked into on 2026-11-12, without a firm answer: Apple documents the requirement only for iOS
-  (the http and https schemes); link-picker apps built on Electron and Tauri register with the two
-  schemes alone; Arc, Chrome, Safari and Zen on this Mac all also declare HTML document types and
-  `NSUserActivityTypeBrowsingWeb`, which proves nothing either way. Declaring the document type
-  would also make Singularity an "Open With" choice for .html files, which this design leaves out.
+- **Only `http`/`https` schemes are declared** by release bundles, no HTML document type, and
+  that is enough: with 0.3.0 installed (2026-11-12) macOS lists `/Applications/Singularity.app`
+  as a handler for both schemes, and after the owner's "Make Default…" it is the default browser
+  (`NSWorkspace.urlForApplication(toOpen:)`).
 - **Tried with a trial bundle (2026-11-12),** started in the background with its own data folder
   and a link (`open -g -n -a <bundle> --env SINGULARITY_HOME=… <url>`, see CLAUDE.md): a link that
   starts the app arrives and its little window opens in front of the main window; a second link
   to the running copy gets a second window; nothing is written to the Space; the frontmost app
   stays what it was. With a temporary hook (not committed) that closed the main window and then
   ran "Open in …": the main window came back, the app did not quit, and the page was a tab.
-- **Not checked, for the owner to try with the installed release:** the System Settings browser
-  list and the "change default browser" dialog, the look of the active window, 1Password filling a login in a little window.
+- **Not checked, for the owner to see in use:** the look of the active window, 1Password filling a login in a little window.
