@@ -199,6 +199,8 @@ enum PaletteResults {
             state.showSpaceEditor(spaceID: space.id)
         })
         items.append(command("welcome", "Welcome to Singularity…", "sparkle") { state.showWelcome() })
+        // Listed even in a copy that doesn't update itself (the palette has no disabled rows); it then does nothing.
+        items.append(command("check-updates", "Check for Updates…", "arrow.down.circle") { state.updates.checkNow() })
         #if DEBUG
         items.append(command("plugins-test-op", "Plugins: Test 1Password CLI", "key") { PluginDebugCommands.testOnePasswordCLI() })
         #endif

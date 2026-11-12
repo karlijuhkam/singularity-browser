@@ -66,6 +66,9 @@ for bundle in "$BIN_DIR"/*.bundle; do
   [[ -e "$bundle" ]] && cp -R "$bundle" "$APP/Contents/Resources/"
 done
 
+# The self-updater's framework, copied and signed (it must be signed before the bundle itself).
+"$ROOT/scripts/embed-sparkle.sh" "$APP" "$BIN_DIR" "$SIGN_IDENTITY"
+
 echo "→ codesign (identity: $SIGN_IDENTITY)"
 # Helper executables inside the bundle must be signed before the bundle itself.
 codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/singularity-mcp"
@@ -73,8 +76,19 @@ codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/
 # Bun's JavaScript engine needs JIT entitlements under the hardened runtime.
 codesign --force --options runtime --entitlements "$ROOT/Resources/Bun.entitlements" \
   --sign "$SIGN_IDENTITY" "$APP/Contents/Helpers/bun"
+ENTITLEMENTS="$ROOT/Resources/Singularity.entitlements"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  # An ad-hoc signature has no team, so the hardened runtime would refuse to load the embedded
+  # Sparkle.framework. Ad-hoc builds therefore also get Debug.entitlements (library validation
+  # off), merged into a temporary copy of the app's own entitlements.
+  ENTITLEMENTS="$(mktemp -t sg-entitlements)"
+  trap 'rm -f "$ENTITLEMENTS"' EXIT
+  cp "$ROOT/Resources/Singularity.entitlements" "$ENTITLEMENTS"
+  # A relative path (we are in $ROOT): PlistBuddy's command is one string, split at spaces.
+  /usr/libexec/PlistBuddy -c "Merge Resources/Debug.entitlements" "$ENTITLEMENTS" >/dev/null
+fi
 codesign --force --options runtime \
-  --entitlements "$ROOT/Resources/Singularity.entitlements" \
+  --entitlements "$ENTITLEMENTS" \
   --sign "$SIGN_IDENTITY" \
   "$APP"
 

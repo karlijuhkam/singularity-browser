@@ -2,7 +2,9 @@
 
 A native macOS browser organised in **Spaces**. Its sidebar holds three kinds of tabs side by side: **web pages**, **terminals** (where your own coding agents run) and **HTML artifacts** generated on your Mac. An external agent, such as Claude Code running in one of those terminals, can drive the browser through an MCP server, with your approval. There is no built-in AI, no chat and no API keys. Without an agent it is just a calm sidebar browser.
 
-Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is synced and nothing leaves your Mac.
+Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is synced and no data leaves your Mac; the only thing the app does by itself is look for a newer version (see [Updates](#updates)).
+
+Licence: [MIT](LICENSE).
 
 ---
 
@@ -10,12 +12,14 @@ Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is sy
 
 ### 1. Get the app (1 min)
 
-- **Release build:** unzip `Singularity-<version>.zip` and move `Singularity.app` to `/Applications`.
-- **From source:** you need full Xcode. `scripts/env.sh` looks for it at `/Volumes/Zealot/Xcode.app`; set `XCODE_APP=/path/to/Xcode.app` to use another copy. Then run:
+- **Release build:** see [Install](#install).
+- **From source:** you need full Xcode. `scripts/env.sh` finds it by itself at `/Applications/Xcode.app`; set `XCODE_APP=/path/to/Xcode.app` to use another copy. Then run:
 
   ```sh
-  scripts/run.sh          # builds build/Singularity.app and launches it
+  scripts/run.sh          # builds build/Singularity.app and launches it as a development copy
   ```
+
+  The development copy has its own data folder, `~/Singularity-dev`, so it can run next to an installed copy. That folder starts empty; never make it by copying `~/Singularity`.
 
 ### 2. Make it yours (2 min)
 
@@ -27,7 +31,7 @@ Swift and SwiftUI, WKWebView (Safari's engine), macOS 14 or later. Nothing is sy
 - **⌥⌘T** opens a **terminal** in the Space's folder. It runs your normal login shell with your `.zshrc`.
 - **Split view:** drag a tab from the sidebar onto the edge of the page, or right-click → **Open in Split View**. Drag a pane's title bar to move it, and drag the gaps to resize.
 
-All preferences are in **Singularity → Settings…** (⌘,): search engine, terminal font, agent permissions for every Space, Connect buttons for Claude Code and Codex, and per-Space "clear history / cookies / agent log".
+All preferences are in **Singularity → Settings…** (⌘,): search engine, terminal font, agent permissions for every Space, Connect buttons for Claude Code and Codex, and per-Space "clear history / cookies / agent log", and whether the app checks for updates.
 
 ### 3. Connect Claude Code or Codex (2 min)
 
@@ -44,7 +48,7 @@ All preferences are in **Singularity → Settings…** (⌘,): search engine, te
    codex mcp add singularity -- /Applications/Singularity.app/Contents/MacOS/singularity-mcp
    ```
 
-   For a source build, use `…/Singularity-Browser/build/Singularity.app/Contents/MacOS/singularity-mcp`. If Singularity isn't running, the command starts it.
+   For a source build, use `…/Singularity-Browser/build/Singularity.app/Contents/MacOS/singularity-mcp`. (A development copy started by `scripts/run.sh` has Connect and Update switched off, so it can never point your agents at itself.) If Singularity isn't running, the command starts it.
 3. Open a terminal tab in that Space (⌥⌘T), run `claude` (or `codex`), and try:
 
    > Using the singularity browser tools, find the "Install" button on swift.org and click it.
@@ -134,25 +138,41 @@ To write your own (an agent can do it from the guide), see [docs/plugins/AUTHORI
    └─ favicons/
 ```
 
-One exception: each Space's **cookies and logins** live in WebKit's own store at `~/Library/WebKit/dev.roosa.Singularity/WebsiteDataStore/<space id>/`. Copying `~/Singularity` doesn't move your logins, and deleting a Space in the app removes them.
+Two exceptions. Each Space's **cookies and logins** live in WebKit's own store at `~/Library/WebKit/dev.roosa.Singularity/WebsiteDataStore/<space id>/`. Copying `~/Singularity` doesn't move your logins, and deleting a Space in the app removes them. And the updater (Sparkle) keeps its small state, such as the time of the last check, in the app's macOS preferences (`~/Library/Preferences/dev.roosa.Singularity.plist`).
 
 ---
+
+## Install
+
+Download `Singularity-<version>.zip` from the [Releases page](https://github.com/karlijuhkam/singularity-browser/releases), unzip it and move `Singularity.app` to `/Applications` (from the Applications folder, not from Downloads, so it can update itself). Needs macOS 14 or later.
+
+Releases are signed but may not be notarized yet. If macOS says it can't check the app for malware, open **System Settings → Privacy & Security**, scroll to the message about Singularity and click **Open Anyway** once. The release notes say whether a build is notarized.
+
+## Updates
+
+A release copy of Singularity checks GitHub for a newer version when it starts and then every hour. It shows what is new and installs only when you say so, then restarts into the new version; your Spaces, tabs and logins stay as they are. **Singularity → Check for Updates…** checks right away, and **Settings → General** has the switch that turns the automatic checks off.
+
+A check is one HTTPS request to github.com, which sees your IP address and the app's name and version. Nothing else is sent: no system profile, no analytics. Only builds made by `scripts/release.sh` update themselves; a build from source, a development copy or a copy with its own data folder never does. Updates are signed with a key that only the maintainer holds, and the app refuses anything else.
 
 ## Building
 
 | Script | What it does |
 |---|---|
-| `scripts/run.sh` | Debug build, assembled and signed into `build/Singularity.app`, then launched (quits the running copy first) |
-| `scripts/test.sh` | Unit tests (Swift Testing) |
+| `scripts/run.sh` | Debug build, assembled and signed into `build/Singularity.app`, then launched as a development copy with its own data folder (`~/Singularity-dev`, or `SINGULARITY_HOME=…`, an absolute path). Quits only a previous development copy of this checkout that has its own data folder; if a copy from `build/` runs on your real data, it asks you to quit that one yourself and builds nothing |
+| `scripts/test.sh` | Unit tests (Swift Testing), tests of the agents' launcher, of the release scripts and of `run.sh`'s checks, and the plugins' Bun tests when Bun has been fetched |
 | `scripts/build-app.sh` | Just the debug `.app` (`SIGN_IDENTITY=…` to choose a certificate) |
-| `scripts/release.sh` | Universal release build: signed with a Developer ID, notarized and stapled → `dist/Singularity-<version>.zip` |
+| `scripts/release.sh <version>` | A release: see [Releasing](#releasing) |
 | `scripts/icon/make_icns.sh` | Rebuilds `Resources/AppIcon.icns` from the orb renders (`render_orb.py` ports the singularity.rroosa.ee shader) |
 
-**First release only:**
-1. Create a **Developer ID Application** certificate in the Apple Developer team that should appear as Singularity's developer (the script defaults to `TEAM_ID=T748B76PPL`): developer.apple.com → Certificates, IDs & Profiles → "+". Download it and double-click to install.
-2. Store notarization credentials, which asks for an app-specific password:
-   `xcrun notarytool store-credentials singularity-notary --apple-id <you> --team-id <team>`.
-
-`scripts/release.sh --skip-notarize` signs with any certificate, for testing the build without them.
-
 The project is SwiftPM only; there's no Xcode project. Scope, architecture and decisions are in `CLAUDE.md`, and ideas for later are in `IDEAS.md`.
+
+## Releasing
+
+For the maintainer. `scripts/release.sh <version>` (for example `0.2.0`) does everything in one go, from `main` with a clean tree: runs the tests, bumps the version, builds a universal app, signs it, zips it, signs the zip with the update key, writes the update feed (`appcast.xml`), pushes the release commit and publishes a GitHub release with the zip and the feed. The release is created as a draft and published last, so installed copies only ever see a complete release. Before it builds, it checks that the push and the release can work (`origin` is the GitHub repository, `gh` may push to it, the repository is public, `git push --dry-run` works, commit signing works if it is switched on). Before the first step that cannot be undone, it shows the version, build, signing and release notes and asks `Publish? [y/N]`; `--yes` skips the question and is required when there is no terminal. If it fails after the release commit, it prints the commands that finish the release by hand; running it again with the same version prints them too. The header of the script lists its modes and environment switches. `scripts/release.sh --skip-notarize` makes a signed local build and publishes nothing.
+
+Needed once:
+1. The update key: a pair made with Sparkle's `generate_keys` (its private half stays in the login keychain, keep a backup in a password manager; its public half is `PUBLIC_ED_KEY` in `scripts/release.sh`). Without the private key no installed copy can ever be updated again.
+2. For notarized builds: a **Developer ID Application** certificate in the Apple Developer team that should appear as Singularity's developer (the script defaults to `TEAM_ID=T748B76PPL`), and notarization credentials: `xcrun notarytool store-credentials singularity-notary --apple-id <you> --team-id <team>`. Without them the script signs with the team's Apple Development certificate and marks the release "not notarized".
+3. `gh` logged in with an account that can push to the repository, and the repository public (installed copies download the feed and the zip without logging in).
+
+To try the update flow without publishing anything, `release.sh <version> --scratch <dir>` builds a throwaway bundle with a throwaway key and a local feed (see the script's header).

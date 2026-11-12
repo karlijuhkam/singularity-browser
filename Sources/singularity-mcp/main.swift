@@ -41,6 +41,37 @@ func connectToApp(_ path: String) -> Int32? {
     return fd
 }
 
+/// "/x/Singularity.app/Contents/MacOS/singularity-mcp" -> "/x/Singularity.app".
+/// Returns nil when the path is not inside an .app bundle's Contents/MacOS folder.
+func appBundle(forLauncherAt path: String) -> String? {
+    let macOS = URL(fileURLWithPath: path).deletingLastPathComponent()
+    let contents = macOS.deletingLastPathComponent()
+    let bundle = contents.deletingLastPathComponent()
+    guard macOS.lastPathComponent == "MacOS",
+          contents.lastPathComponent == "Contents",
+          bundle.pathExtension == "app" else { return nil }
+    return bundle.path
+}
+
+/// Arguments for /usr/bin/open: start the bundle this launcher lives in. Several bundles can share
+/// the bundle ID (an installed copy, a development copy), so the ID alone is only the fallback.
+func openArguments(launcherPath: String) -> [String] {
+    if let bundle = appBundle(forLauncherAt: launcherPath) { return ["-g", bundle] }
+    return ["-g", "-b", "dev.roosa.Singularity"]
+}
+
+/// True while Sparkle's installer process is running (exit code of pgrep only).
+func updateInstallerRunning() -> Bool {
+    let pgrep = Process()
+    pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    pgrep.arguments = ["-x", "Autoupdate"]
+    pgrep.standardOutput = FileHandle.nullDevice
+    pgrep.standardError = FileHandle.nullDevice
+    guard (try? pgrep.run()) != nil else { return false }
+    pgrep.waitUntilExit()
+    return pgrep.terminationStatus == 0
+}
+
 /// Copies everything from one file descriptor to another until end of input or an error.
 func pump(from source: Int32, to destination: Int32) {
     var buffer = [UInt8](repeating: 0, count: 64 * 1024)
@@ -57,14 +88,39 @@ func pump(from source: Int32, to destination: Int32) {
 }
 
 func run() -> Int32 {
+    // The real location of this executable (symlinks resolved), so we start our own bundle.
+    // realpath(3) rather than Foundation's resolvingSymlinksInPath, which rewrites /private/tmp to /tmp.
+    let launcherPath = Bundle.main.executableURL.flatMap { realpath($0.path, nil) }
+        .map { pointer in defer { free(pointer) }; return String(cString: pointer) }
+        ?? CommandLine.arguments[0]
+
+    // Dry run for tests: say what we would start, and do nothing else. Checked first so that no
+    // socket is touched and no process (open, pgrep) is started.
+    if ProcessInfo.processInfo.environment["SINGULARITY_MCP_DRY_RUN"] == "1" {
+        print((["open"] + openArguments(launcherPath: launcherPath)).joined(separator: " "))
+        return 0
+    }
+
     let path = socketPath()
     var connection = connectToApp(path)
 
     if connection == nil {
-        // Start the app without bringing it to the front, then wait up to 15 s for its socket.
+        // Mid-update: while Sparkle's installer (Autoupdate) replaces the bundle, it relaunches the
+        // app itself. Starting a copy now would collide with that one on the instance lock, so wait
+        // (up to 60 s) for the socket of the relaunched app before falling through to open.
+        var waited = 0
+        while connection == nil, waited < 240, updateInstallerRunning() {
+            usleep(250_000)
+            waited += 1
+            connection = connectToApp(path)
+        }
+    }
+
+    if connection == nil {
+        // Start the app we live in without bringing it to the front, then wait up to 15 s for its socket.
         let opener = Process()
         opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        opener.arguments = ["-g", "-b", "dev.roosa.Singularity"]
+        opener.arguments = openArguments(launcherPath: launcherPath)
         try? opener.run()
         opener.waitUntilExit()
         for _ in 0..<60 where connection == nil {

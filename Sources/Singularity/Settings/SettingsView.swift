@@ -66,9 +66,33 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+            Section("Updates") {
+                let canUpdate = state.updates.hasUpdater
+                Toggle("Check for updates automatically", isOn: settingBinding(state, \.checksForUpdates))
+                    .disabled(!canUpdate)
+                LabeledContent("Version") {
+                    Text(Self.versionText)
+                        .textSelection(.enabled)
+                }
+                Button("Check Now") { state.updates.checkNow() }
+                    .disabled(!state.updates.canCheck)
+                if case .unavailable(let reason) = state.updates.availability {
+                    Text(reason.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    /// "0.1.0 (1)": the version people see, then the build number.
+    private static var versionText: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
     }
 }
 

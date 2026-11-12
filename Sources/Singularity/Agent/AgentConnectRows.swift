@@ -67,7 +67,7 @@ struct AgentConnectRows: View {
             Text("Connected ✓").foregroundStyle(.green)
         case .status(.otherCopy):
             Button("Update") { Task { await connector.connect(agent) } }
-        case .status(.translocated), .failed:
+        case .status(.translocated), .status(.separateDataFolder), .failed:
             EmptyView()
         }
     }
@@ -94,6 +94,8 @@ struct AgentConnectRows: View {
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
             CopyableCommand(text: connector.command(for: agent), font: captionFont.monospaced())
+        case .status(.separateDataFolder):
+            caption("This copy uses its own data folder, so it can’t change your agents’ setup.")
         case .status(.translocated):
             caption("Move Singularity to the Applications folder and reopen it")
         case .checking, .working, .status(.connected):

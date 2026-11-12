@@ -44,6 +44,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var terminalUsesHerdrCore: Bool = false
     /// How long an agent approval waits in the inbox before counting as "Deny".
     public var agentApprovalTimeoutSeconds: Int = 120
+    /// Check for updates by itself (only copies that `UpdatePolicy` allows to update).
+    public var checksForUpdates: Bool = true
 
     public init() {}
 
@@ -60,6 +62,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         terminalUsesHerdrCore = (try? container.decodeIfPresent(Bool.self, forKey: .terminalUsesHerdrCore)) ?? defaults.terminalUsesHerdrCore
         agentApprovalTimeoutSeconds = (try? container.decodeIfPresent(Int.self, forKey: .agentApprovalTimeoutSeconds))
             ?? defaults.agentApprovalTimeoutSeconds
+        checksForUpdates = (try? container.decodeIfPresent(Bool.self, forKey: .checksForUpdates)) ?? defaults.checksForUpdates
     }
 
     /// The search template in effect. A custom template that isn't an http(s) URL containing `%s`

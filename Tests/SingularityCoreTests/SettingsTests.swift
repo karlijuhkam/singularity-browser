@@ -14,6 +14,17 @@ import Testing
         #expect(unknown.searchEngine == .duckDuckGo)
     }
 
+    @Test func checksForUpdatesSetting() throws {
+        func decode(_ json: String) throws -> AppSettings { try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8)) }
+        #expect(try decode("{}").checksForUpdates)
+        #expect(try decode(#"{"checksForUpdates": false}"#).checksForUpdates == false)
+        #expect(try decode(#"{"checksForUpdates": "no"}"#).checksForUpdates)
+        var settings = AppSettings()
+        settings.checksForUpdates = false
+        let again = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(again.checksForUpdates == false)
+    }
+
     @Test func roundTripThroughTheStore() throws {
         let paths = Paths(root: FileManager.default.temporaryDirectory.appending(path: "settings-\(UUID().uuidString)"))
         defer { try? FileManager.default.removeItem(at: paths.root) }

@@ -54,15 +54,28 @@ struct SingularityApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var state: AppState?
     private var appearanceObservation: NSKeyValueObservation?
+    private var sigtermSource: DispatchSourceSignal?
 
     /// The icon file (Finder, Launchpad) is the white orb on a dark tile. While running, the Dock
     /// icon follows light/dark mode like the orb on singularity.rroosa.ee: black orb on a light
     /// tile in light mode, white orb on a dark tile in dark mode.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        quitOnSigterm()
         updateDockIcon()
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             MainActor.assumeIsolated { self?.updateDockIcon() }
         }
+    }
+
+    /// SIGTERM (scripts/run.sh, a plain `kill`) quits like Cmd+Q: the busy-terminal prompt, saves
+    /// and shutdown all run. Without this, AppKit's default is to die at once. SIGKILL still does.
+    /// The default action is switched off so the dispatch source (on the main queue) gets the signal.
+    private func quitOnSigterm() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        sigtermSource = source // keep it alive; a released source stops delivering
     }
 
     /// Spaces or settings that couldn't be read at launch. Their files are never overwritten, but
