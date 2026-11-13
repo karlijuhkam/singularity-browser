@@ -64,11 +64,11 @@
   - the network line treats `programs` like `commands` ("…; the programs it runs can").
 - `PluginPackages`' install command adds `--omit=optional`; its argument-list test is updated. Find out whether the lock check counts optional packages and keep `Summary.lockedCount` meaning "what will be installed".
 
-- [ ] Write the failing tests (decoding with and without the new keys; an unknown permission key still fails; every rule above with one bad and one good value; the description lines as exact strings; `decide` with `panel` and no Spaces; the install arguments).
-- [ ] Run `source scripts/env.sh && swift test --filter PluginPanelManifestTests` and see them fail.
-- [ ] Implement.
-- [ ] Run `swift test --filter SingularityCoreTests` and see everything pass.
-- [ ] Commit: "Plugins: panel, programs and programEnv in the manifest; packages without optional ones".
+- [x] Write the failing tests (decoding with and without the new keys; an unknown permission key still fails; every rule above with one bad and one good value; the description lines as exact strings; `decide` with `panel` and no Spaces; the install arguments).
+- [x] Run `source scripts/env.sh && swift test --filter PluginPanelManifestTests` and see them fail.
+- [x] Implement.
+- [x] Run `swift test --filter SingularityCoreTests` and see everything pass.
+- [x] Commit: "Plugins: panel, programs and programEnv in the manifest; packages without optional ones".
 
 ### Task 2: Core: the program bridge (wire, environment, PluginProcess, host.ts)
 
@@ -100,10 +100,10 @@
 - `panelMessage` is answered through the existing `onPageMessage` handler with `{ tabID: "panel", frameHost: "", payload }`.
 - The `declare module "singularity"` types that plugins see (wherever the template's types live) get the new members.
 
-- [ ] Write the failing Swift tests: wire round-trips for every new case; `spawnAllowed` (4 combinations); `ProgramEnvironment.make` (exact key set; a requested name not allowed is dropped; empty value dropped).
-- [ ] Write the failing end-to-end tests with real Bun and a fixture program through `PluginProcess` (skipped when `Vendor/bun/bun` is missing, as the existing ones are): echo (what goes into stdin comes out of stdout, binary-safe); 5 MB of output read slowly arrives complete and in order while the app never holds more than ~1 MB unread (Review Focus 2); exit status is delivered after the last byte; `kill`; a program that ignores SIGTERM is gone within 3 s of `stop()` and so is a child it started (Review Focus 3); the four refusals; a second `spawn` while one runs; `panelPost` reaches the callback; `panelMessage` is answered by `onPageMessage`.
-- [ ] See them fail, implement, see `swift test --filter SingularityCoreTests` pass.
-- [ ] Commit: "Plugins: a running program, bridged between the sandbox and the app".
+- [x] Write the failing Swift tests: wire round-trips for every new case; `spawnAllowed` (4 combinations); `ProgramEnvironment.make` (exact key set; a requested name not allowed is dropped; empty value dropped).
+- [x] Write the failing end-to-end tests with real Bun and a fixture program through `PluginProcess` (skipped when `Vendor/bun/bun` is missing, as the existing ones are): echo (what goes into stdin comes out of stdout, binary-safe); 5 MB of output read slowly arrives complete and in order while the app never holds more than ~1 MB unread (Review Focus 2); exit status is delivered after the last byte; `kill`; a program that ignores SIGTERM is gone within 3 s of `stop()` and so is a child it started (Review Focus 3); the four refusals; a second `spawn` while one runs; `panelPost` reaches the callback; `panelMessage` is answered by `onPageMessage`.
+- [x] See them fail, implement, see `swift test --filter SingularityCoreTests` pass.
+- [x] Commit: "Plugins: a running program, bridged between the sandbox and the app".
 
 ### Task 3: Core: the plugin tab kind, where a plugin's page is, the import map
 
@@ -117,9 +117,9 @@
 - `PluginSurface.tabsToRemove(for pluginID: String, in space: Space) -> [UUID]` (every plugin tab of that id; used so there is never more than one).
 - `PluginImportMap.make(dependencies: [String], packageJSON: (String) -> Data?) -> [String: String]`: for each declared package name, read `node_modules/<name>/package.json` through the closure and map `<name>` and each `exports` subpath (`./hooks` → `<name>/hooks`) to `/node_modules/<name>/<file>`. For a conditions object take the first of `browser`, `import`, `module`, `default` that is a string ending in `.js` or `.mjs` (look one level into nested condition objects); without `exports`, use `module`, else `main`. Skip `./package.json`, patterns with `*`, and anything whose target has `..` or does not start with `./`. Packages that can't be read are left out.
 
-- [ ] Failing tests: coding of the new kind both ways and an old fixture file (Review Focus 5); settings decoding (absent, wrong type, out-of-range width is clamped); `place` (hidden, panel, tab, tab and panel both set → tab); `tabsToRemove`; import map for a Preact-shaped `package.json` (`.`, `./hooks`, `./jsx-runtime` with `browser`/`import` conditions), a package with only `main`, a hostile target (`../../x.js`), a `*` pattern.
-- [ ] See them fail, implement (the compiler lists every `switch` that needs the new case; in Core give each the behaviour of "not a web page, not a terminal, not an artifact"), see Core tests pass.
-- [ ] Commit: "Plugin tab kind, the page's place, the import map".
+- [x] Failing tests: coding of the new kind both ways and an old fixture file (Review Focus 5); settings decoding (absent, wrong type, out-of-range width is clamped); `place` (hidden, panel, tab, tab and panel both set → tab); `tabsToRemove`; import map for a Preact-shaped `package.json` (`.`, `./hooks`, `./jsx-runtime` with `browser`/`import` conditions), a package with only `main`, a hostile target (`../../x.js`), a `*` pattern.
+- [x] See them fail, implement (the compiler lists every `switch` that needs the new case; in Core give each the behaviour of "not a web page, not a terminal, not an artifact"), see Core tests pass.
+- [x] Commit: "Plugin tab kind, the page's place, the import map".
 
 ### Task 4: App: serving and locking a plugin's page
 
@@ -139,9 +139,9 @@
 - The web view: `WKWebsiteDataStore.nonPersistent()`; its own `WKProcessPool`-independent configuration; no page agent, capture or plugin user scripts; `developerExtrasEnabled` as web tabs have; navigation delegate allows only `singularity-plugin://<id>/…` in the main frame and cancels everything else; `createWebViewWith` returns nil; downloads cancelled; media capture denied; JavaScript dialogs not shown.
 - The page API, injected at document start in the page's own world: `window.singularity = { send(payload): Promise<unknown>, onMessage(handler): void }`. `send` goes through a `WKScriptMessageHandlerWithReply` named `singularityPanel`; the native side accepts a message only from the main frame whose `securityOrigin` is this plugin's scheme and host, refuses payloads over 256 KB (`the message is larger than 256 KB`), and rejects with `the plugin isn't running or didn't answer` when `send` returns nil. `post` delivers to the `onMessage` handler (queued until a handler is set; dropped when the page is not loaded).
 
-- [ ] Failing app tests with a temp plugin folder and an off-screen web view: the entry `.tsx` renders (a fixture page that writes a marker into `document.title` using an import of a sibling `.ts` file and of a fixture package through the import map); a file outside the folder, a dot-file and a symlink pointing out are 404; the policy header is present; from the page `fetch("http://127.0.0.1:<fixture port>/")`, an `<img>` to it, `location.href = …`, `window.open(…)` all fail while the fixture server sees no request (Review Focus 4; reuse the fixture site helper of `PageCaptureTests`); `send` round-trips through a fake `send` closure; a 300 KB payload is refused; `post` reaches `onMessage`, also when called before the handler is set.
-- [ ] See them fail, implement, see `swift test --filter PluginPageTests` pass.
-- [ ] Commit: "Plugins: a plugin's own page, served and locked".
+- [x] Failing app tests with a temp plugin folder and an off-screen web view: the entry `.tsx` renders (a fixture page that writes a marker into `document.title` using an import of a sibling `.ts` file and of a fixture package through the import map); a file outside the folder, a dot-file and a symlink pointing out are 404; the policy header is present; from the page `fetch("http://127.0.0.1:<fixture port>/")`, an `<img>` to it, `location.href = …`, `window.open(…)` all fail while the fixture server sees no request (Review Focus 4; reuse the fixture site helper of `PageCaptureTests`); `send` round-trips through a fake `send` closure; a 300 KB payload is refused; `post` reaches `onMessage`, also when called before the handler is set.
+- [x] See them fail, implement, see `swift test --filter PluginPageTests` pass.
+- [x] Commit: "Plugins: a plugin's own page, served and locked".
 
 ### Task 5: App: PluginManager wiring (programs, panel messages, page hosts, not-running reason)
 
@@ -157,9 +157,9 @@
 - When it launches a plugin it passes `programsAllowed: ProgramPolicy.spawnAllowed(environment: ProcessInfo.processInfo.environment)` and a `programEnvironment` closure built from the real home folder, user name, the login shell's PATH (resolve it once per app run off the main actor, reusing `CommandBroker`'s login-PATH code) and the bundle's short version.
 - The approval sheet and Settings → Plugins pass `hasPanel` to `PermissionDescriptions.lines`, show the per-Space switches only when `manifest.showsSpaceSwitches`, and for a panel plugin with no page script the sheet's Space list is replaced by one line: `Its panel is available in every Space.`
 
-- [ ] Failing app tests with a temp plugins folder and a small fixture plugin (a `background.ts` that answers panel messages and posts back; follow how existing manager-level tests, if any, approve without UI; else drive `PluginSupervisor` + `PluginPageHost` directly): a panel plugin with no Space switched on launches and answers a panel message; `pageHost` is nil while paused and `notRunningReason` is the status text; stopping the plugin tears the host down.
-- [ ] See them fail, implement, see them pass together with `swift test --filter SingularityAppTests` (run in the background with a generous timeout).
-- [ ] Commit: "Plugins: the manager runs panel plugins, their programs and their page".
+- [x] Failing app tests with a temp plugins folder and a small fixture plugin (a `background.ts` that answers panel messages and posts back; follow how existing manager-level tests, if any, approve without UI; else drive `PluginSupervisor` + `PluginPageHost` directly): a panel plugin with no Space switched on launches and answers a panel message; `pageHost` is nil while paused and `notRunningReason` is the status text; stopping the plugin tears the host down.
+- [x] See them fail, implement, see them pass together with `swift test --filter SingularityAppTests` (run in the background with a generous timeout).
+- [x] Commit: "Plugins: the manager runs panel plugins, their programs and their page".
 
 ### Task 6: App: the frame (right-hand panel, plugin tab, commands)
 
@@ -183,9 +183,9 @@
 - Agent tools: `list_tabs` leaves plugin tabs out and every tool that takes a tab refuses one (`not a web page`), as the code already does for terminals where applicable.
 - Deleting a Space or removing the plugin needs no special case beyond the existing tab removal; a `.plugin` tab of a missing plugin shows the native view.
 
-- [ ] Failing app tests with `TestAppState` and a fixture panel plugin (or a manager stub if `PluginManager` can be given one): toggle opens and closes and writes the setting; Open as Tab makes exactly one tab, closes the panel, and a second Open as Tab does not make a second; Move to Side Panel removes it; toggle while the page is a tab selects that tab; a `.plugin` tab of an unknown plugin loads from disk and its body is the native view with `This plugin isn't installed.` (Review Focus 5); `list_tabs` omits it; the toggle does nothing while the welcome flow covers the window.
-- [ ] See them fail, implement, build, see the app tests pass.
-- [ ] Commit: "A plugin's page in a right-hand panel or a tab".
+- [x] Failing app tests with `TestAppState` and a fixture panel plugin (or a manager stub if `PluginManager` can be given one): toggle opens and closes and writes the setting; Open as Tab makes exactly one tab, closes the panel, and a second Open as Tab does not make a second; Move to Side Panel removes it; toggle while the page is a tab selects that tab; a `.plugin` tab of an unknown plugin loads from disk and its body is the native view with `This plugin isn't installed.` (Review Focus 5); `list_tabs` omits it; the toggle does nothing while the welcome flow covers the window.
+- [x] See them fail, implement, build, see the app tests pass.
+- [x] Commit: "A plugin's page in a right-hand panel or a tab".
 
 ### Task 7: The Assistant plugin
 
@@ -236,18 +236,18 @@ Colours follow `prefers-color-scheme`; system font; no external resources.
 
 **`README.md`:** what it does, that it runs your own installed Claude program and counts against your Claude plan (or API account), what part 1 cannot do, the permissions in plain words.
 
-- [ ] Failing Bun tests: `markdown` (each construct; `<script>alert(1)</script>`, `<img src=x onerror=…>` and `[x](javascript:…)` produce only text nodes — Review Focus 6); `conversation` (round-trip, cap, unreadable file, delete, stale marking); `background` with a fake provider and fake `singularity` (hello before start, deltas forwarded, state after done, held send until `billingSeen`, `newChat` clears file and session, model and config folder stored, failed resume → stale + new session); `provider-claude` with a fake `singularity.spawn` that replays a recorded stream-json exchange (ready with `plan`, text deltas, done) and one where the program fails with `programs are off in a test copy`.
-- [ ] See them fail (`Vendor/bun/bun test Tests/plugins/assistant`), implement, see them pass.
-- [ ] `Vendor/bun/bun build --no-bundle Plugins/assistant/panel.tsx` compiles; a Core test loads `Plugins/assistant` with `PluginManifest.load` and gets the expected approval lines (add to the test file that already loads the bundled plugins, or to Task 1's).
-- [ ] Commit: "The Assistant plugin: a plain chat on your own Claude sign-in".
+- [x] Failing Bun tests: `markdown` (each construct; `<script>alert(1)</script>`, `<img src=x onerror=…>` and `[x](javascript:…)` produce only text nodes — Review Focus 6); `conversation` (round-trip, cap, unreadable file, delete, stale marking); `background` with a fake provider and fake `singularity` (hello before start, deltas forwarded, state after done, held send until `billingSeen`, `newChat` clears file and session, model and config folder stored, failed resume → stale + new session); `provider-claude` with a fake `singularity.spawn` that replays a recorded stream-json exchange (ready with `plan`, text deltas, done) and one where the program fails with `programs are off in a test copy`.
+- [x] See them fail (`Vendor/bun/bun test Tests/plugins/assistant`), implement, see them pass.
+- [x] `Vendor/bun/bun build --no-bundle Plugins/assistant/panel.tsx` compiles; a Core test loads `Plugins/assistant` with `PluginManifest.load` and gets the expected approval lines (add to the test file that already loads the bundled plugins, or to Task 1's).
+- [x] Commit: "The Assistant plugin: a plain chat on your own Claude sign-in".
 
 ### Task 8: End to end, documents, release
 
 **Files:** create `Tests/SingularityAppTests/RealAssistantTests.swift`; modify `scripts/test.sh` only if the new Bun test folder is not already picked up; `CLAUDE.md`, `docs/plugins/AUTHORING.md`, `IDEAS.md`, `docs/superpowers/specs/2026-11-09-plugins-design.md` (round 2 note), the spec's new "As built" section.
 
-- [ ] App test (runs when Bun is present; no network, so the plugin's real packages are never installed in tests): copy `Plugins/assistant` to a temp folder and add a small fixture `node_modules/preact` that provides what `panel.tsx` imports; the manifest loads, `panel.tsx`, `markdown.ts` and `panel.css` are served and compile through `PluginPageServer`, and the page sends its first `hello` to a fake `send` closure and renders the empty-chat text from the reply.
-- [ ] `RealAssistantTests` (opt-in: runs only when `SINGULARITY_REAL_ASSISTANT=1`; skipped by `scripts/test.sh`): installs the plugin's packages into a temp copy with the bundled Bun, runs `background.ts` under the real `PluginProcess` with the real pinned `claude` and `programsAllowed: true`, sends `hello` then one `send` ("Reply with the single word: pong"), and expects `ready` with a billing value, at least one delta and `ready` again within 60 s. Off-screen, no window.
-- [ ] Run `scripts/test.sh` in full; fix what fails.
-- [ ] Build a full bundle beside the owner's copy (`APP=/private/tmp/sg-app/Singularity.app scripts/build-app.sh`), check `Contents/Resources/Plugins/assistant` is there without `node_modules`; remove the bundle afterwards.
-- [ ] Documents: `CLAUDE.md` (scope-change line for the Assistant parts 1 to 3 with the owner's decisions; `TabKind.plugin`; the architecture list's new files; a "Plugin panels and programs" key-decision entry with the things that bit us; the third exception for Claude's session files; `SINGULARITY_REAL_PROGRAMS`); `AUTHORING.md` (`panel`, the page API, `programs`, `programEnv`, `spawn`, `panel.post`, new error messages, the review checklist items from the spec's "Known weaknesses"); `IDEAS.md` (the Claude Chat item → built as Assistant part 1, parts 2 and 3 next, other providers); the plugins design's round 2 note; the spec's "As built" (every place the build differs from the design).
-- [ ] Commit, merge `assistant` into `main` (fast-forward), `scripts/release.sh 0.7.0 --yes`.
+- [x] App test (runs when Bun is present; no network, so the plugin's real packages are never installed in tests): copy `Plugins/assistant` to a temp folder and add a small fixture `node_modules/preact` that provides what `panel.tsx` imports; the manifest loads, `panel.tsx`, `markdown.ts` and `panel.css` are served and compile through `PluginPageServer`, and the page sends its first `hello` to a fake `send` closure and renders the empty-chat text from the reply.
+- [x] `RealAssistantTests` (opt-in: runs only when `SINGULARITY_REAL_ASSISTANT=1`; skipped by `scripts/test.sh`): installs the plugin's packages into a temp copy with the bundled Bun, runs `background.ts` under the real `PluginProcess` with the real pinned `claude` and `programsAllowed: true`, sends `hello` then one `send` ("Reply with the single word: pong"), and expects `ready` with a billing value, at least one delta and `ready` again within 60 s. Off-screen, no window.
+- [x] Run `scripts/test.sh` in full; fix what fails.
+- [x] Build a full bundle beside the owner's copy (`APP=/private/tmp/sg-app/Singularity.app scripts/build-app.sh`), check `Contents/Resources/Plugins/assistant` is there without `node_modules`; remove the bundle afterwards.
+- [x] Documents: `CLAUDE.md` (scope-change line for the Assistant parts 1 to 3 with the owner's decisions; `TabKind.plugin`; the architecture list's new files; a "Plugin panels and programs" key-decision entry with the things that bit us; the third exception for Claude's session files; `SINGULARITY_REAL_PROGRAMS`); `AUTHORING.md` (`panel`, the page API, `programs`, `programEnv`, `spawn`, `panel.post`, new error messages, the review checklist items from the spec's "Known weaknesses"); `IDEAS.md` (the Claude Chat item → built as Assistant part 1, parts 2 and 3 next, other providers); the plugins design's round 2 note; the spec's "As built" (every place the build differs from the design).
+- [x] Commit, merge `assistant` into `main` (fast-forward), `scripts/release.sh 0.7.0 --yes`.
