@@ -8,7 +8,9 @@ extension InboxCenter {
     ///   false when the app opens it by itself.
     func showPanel(takingFocus: Bool) {
         let wasShown = isPanelShown
-        panelController.show(relativeTo: railAnchor, takingFocus: takingFocus)
+        // With the sidebar hidden and not slid out, the tray button is off screen: the panel then
+        // opens at the window's top-left corner, where the button would be.
+        panelController.show(relativeTo: trayIsOnScreen() ? railAnchor : nil, takingFocus: takingFocus)
         // Just appeared, maybe under a click meant for the window: answers wait a moment.
         if !wasShown, isPanelShown { panelAppeared() }
     }
@@ -60,6 +62,9 @@ final class InboxPanelController {
     var appIsActive: () -> Bool = { NSApp.isActive }
 
     private(set) var isShown = false
+    /// Open beside the rail's tray button (not at the window's corner). The hidden sidebar's
+    /// slide-out stays out while this holds.
+    var isAnchoredToTray: Bool { isShown && anchor != nil }
     /// Height of the panel's content without scrolling, as SwiftUI last measured it.
     private(set) var contentHeight: CGFloat = 0
 

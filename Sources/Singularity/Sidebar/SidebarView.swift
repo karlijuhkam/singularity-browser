@@ -25,20 +25,37 @@ struct SidebarView: View {
                     }
                     if let space = state.selectedSpace {
                         TabList(space: space)
-                        if space.agentsEnabled || !(state.agentLogs[space.id] ?? []).isEmpty {
-                            AgentLogPane(space: space)
-                        }
                     }
                     if !state.downloads.items.isEmpty {
                         DownloadsPane()
                     }
-                    HStack(spacing: 0) {
-                        NewTabButton()
-                        NewTerminalButton()
-                    }
                 }
                 .padding(.trailing, 6)
+                .padding(.bottom, 4)
+            }
+
+            // The bottom row runs under the rail too, from the sidebar's left edge to its right:
+            // New Tab, then New Terminal and the launchers (Settings → Terminal → Launchers).
+            BottomRow()
+                .padding(.trailing, 6)
                 .padding(.bottom, 8)
+        }
+    }
+}
+
+private struct BottomRow: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        let launchers = state.launchers
+        HStack(spacing: 0) {
+            NewTabButton()
+            NewTerminalButton()
+            ForEach(launchers.prefix(LauncherRow.shown)) { launcher in
+                LauncherButton(launcher: launcher)
+            }
+            if launchers.count > LauncherRow.shown {
+                LauncherOverflowMenu(launchers: Array(launchers.dropFirst(LauncherRow.shown)))
             }
         }
     }
@@ -417,13 +434,18 @@ private struct NewTabButton: View {
         Button {
             state.showPalette(.newTab)
         } label: {
-            Label("New Tab", systemImage: "plus")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .contentShape(Rectangle())
+            HStack(spacing: 0) {
+                // Centred under the rail's circles (the rail is 48 pt wide).
+                Image(systemName: "plus")
+                    .frame(width: 48)
+                Text("New Tab")
+                    .lineLimit(1)
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 28)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("New Tab (⌘T)")

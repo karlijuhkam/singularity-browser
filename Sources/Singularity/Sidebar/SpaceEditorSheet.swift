@@ -9,6 +9,7 @@ struct SpaceEditorSheet: View {
     let request: SpaceEditorRequest
 
     @State private var name = ""
+    @State private var icon = ""
     @State private var colorHex = SpaceColors.presets[0]
     @State private var workingDirectory = "~"
     @State private var agentsEnabled = false
@@ -24,7 +25,7 @@ struct SpaceEditorSheet: View {
                 .font(.headline)
 
             Form {
-                SpaceFields(name: $name, colorHex: $colorHex, workingDirectory: $workingDirectory)
+                SpaceFields(name: $name, icon: $icon, colorHex: $colorHex, workingDirectory: $workingDirectory)
 
                 LabeledContent("Projects") {
                     ProjectsEditor(projects: $projects)
@@ -87,6 +88,7 @@ struct SpaceEditorSheet: View {
         .onAppear {
             if let existing {
                 name = existing.name
+                icon = existing.icon ?? ""
                 colorHex = existing.colorHex
                 workingDirectory = existing.workingDirectory
                 agentsEnabled = existing.agentsEnabled
@@ -108,11 +110,13 @@ struct SpaceEditorSheet: View {
         if let existing {
             state.updateSpace(existing.id, name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
                               agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
+            state.setSpaceIcon(icon, spaceID: existing.id)
             state.setAgentInspection(agentInspection, spaceID: existing.id)
             state.setProjects(projects, spaceID: existing.id)
         } else {
             let space = state.createSpace(name: trimmed, colorHex: colorHex, workingDirectory: workingDirectory,
                                           agentsEnabled: agentsEnabled, agentPolicy: agentPolicy)
+            state.setSpaceIcon(icon, spaceID: space.id)
             state.setAgentInspection(agentInspection, spaceID: space.id)
             state.setProjects(projects, spaceID: space.id)
         }

@@ -8,6 +8,7 @@ struct MainView: View {
     @Environment(AppState.self) private var state
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         @Bindable var state = state
@@ -19,20 +20,7 @@ struct MainView: View {
                 OnboardingView()
                     .background(VisualEffectBackground())
             } else {
-                HStack(spacing: 0) {
-                    SidebarView()
-                        .frame(width: 270)
-                    ContentArea()
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                        .padding([.top, .bottom, .trailing], 8)
-                }
-                .background {
-                    ZStack {
-                        VisualEffectBackground()
-                        Color(hex: state.selectedSpace?.colorHex ?? "#8A8F98").opacity(0.14)
-                    }
-                }
+                browser
             }
 
             if let mode = state.palette {
@@ -45,7 +33,11 @@ struct MainView: View {
             }
         }
         // Tells AppState which NSWindow the browser window is (little windows bring it forward).
-        .background(MainWindowReader { [state] window in state.mainWindow = window })
+        .background(MainWindowReader { [state] window in
+            state.mainWindow = window
+            state.applyWindowButtons()
+        })
+        .onChange(of: state.sidebarIsOffScreen) { state.applyWindowButtons() }
         // Let the sidebar run up under the (invisible) title bar, next to the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
         .sheet(item: $state.spaceEditor) { request in
@@ -68,6 +60,74 @@ struct MainView: View {
         }
     }
 
+}
+
+extension MainView {
+    /// Sidebar and page. The sidebar is one view in three states: beside the page; hidden (moved
+    /// off the window's left edge, so it keeps its scroll position and open folders); and slid
+    /// out over the page while the pointer is at the left edge (`SidebarPeekController`).
+    @ViewBuilder
+    fileprivate var browser: some View {
+        let width = CGFloat(state.sidebarWidth)
+        let hidden = state.settings.sidebarHidden
+        let peeking = state.sidebarPeek.isPeeking
+        ZStack(alignment: .topLeading) {
+            ContentArea()
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                .padding([.top, .bottom, .trailing], 8)
+                // Hidden: the page has the whole window, with the same 8 pt margin on the left.
+                .padding(.leading, hidden ? 8 : width)
+
+            if hidden {
+                // In that left margin: the strip that notices the pointer at the window's edge.
+                SidebarEdgeTrigger { [state] in state.sidebarPeek.pointerReachedEdge() }
+                    .frame(width: SidebarPeekController.edgeWidth)
+                    .frame(maxHeight: .infinity)
+            }
+
+            SidebarView()
+                .frame(width: width)
+                .overlay(alignment: .trailing) {
+                    // The last 6 pt of the sidebar (its own padding, never the page) drag its width.
+                    SidebarResizeHandle(
+                        width: Double(width),
+                        dragged: { [state] in state.sidebarPeek.liveWidth = SidebarLayout.clamp($0) },
+                        ended: { [state] in
+                            guard let width = state.sidebarPeek.liveWidth else { return }
+                            state.updateSettings { $0.sidebarWidth = width }
+                            state.sidebarPeek.liveWidth = nil
+                        },
+                        reset: { [state] in state.updateSettings { $0.sidebarWidth = SidebarLayout.defaultWidth } })
+                        .frame(width: 6)
+                }
+                .background {
+                    // Slid out, it floats over the page and needs its own background.
+                    if hidden {
+                        ZStack {
+                            VisualEffectBackground()
+                            spaceTint
+                        }
+                        .clipShape(UnevenRoundedRectangle(bottomTrailingRadius: 10, topTrailingRadius: 10, style: .continuous))
+                        .shadow(color: .black.opacity(0.25), radius: 12, x: 2)
+                    }
+                }
+                // 30 pt further than its width, so the shadow is off screen too.
+                .offset(x: hidden && !peeking ? -(width + 30) : 0)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: peeking)
+        }
+        .background {
+            ZStack {
+                VisualEffectBackground()
+                spaceTint
+            }
+        }
+        .onChange(of: state.welcomeCoversWindow) { state.sidebarPeek.close() }
+    }
+
+    private var spaceTint: some View {
+        Color(hex: state.selectedSpace?.colorHex ?? "#8A8F98").opacity(0.14)
+    }
 }
 
 /// The selected tab's content: the tab alone, or the whole split it belongs to (Arc-style:

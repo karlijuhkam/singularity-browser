@@ -1,6 +1,7 @@
 # Sidebar: launchers, Space icons, hide and resize, agent activity moves out: design
 
-Date: 2026-11-13. Status: written for the owner's approval; nothing is built yet.
+Date: 2026-11-13. Status: approved by the owner and built the same day. "As built" at the end
+overrides the design where they differ.
 
 ## Why
 
@@ -241,3 +242,24 @@ entry under Key decisions with the things that bit us, the new files in the arch
 its Approvals paragraph stops saying the log is "shown in the sidebar's Agent activity pane".
 `IDEAS.md` gets "Arc's Space icons in the Arc import" under "New, not yet decided". This document
 gets an "As built" section.
+
+## As built (2026-11-13)
+
+- **Launcher command:** typed into the shell after `TerminalSession.waitUntilReady` (the shell's
+  first output, at most 5 s), from `didStartProcess`, which both engines and herdr-core's fallback
+  go through. Checked against the owner's real login shell by the opt-in test
+  (`SG_REAL_SHELL=1 swift test --filter SidebarStateTests/aRealShell`): typed once, and a second
+  shell gets nothing. Not tried with herdr-core switched on.
+- **Launcher icons in Settings:** the icon menu offers the two logos, ten suggested emoji and
+  "first letter". There is no free emoji picker in that row; any emoji can be set by editing
+  `settings.json`. Edit Space has the full picker.
+- **Settings holds launcher rows as typed**, so a new row with an empty command stays in the
+  list while it is being filled in; only rows with a command become buttons.
+- **Slide-out closing:** a 0.15 s timer that reads the pointer, not mouse-exited events (they are
+  not delivered while a menu or drag has the mouse). "A tab drag under way" is read as "a mouse
+  button is down".
+- **The slide-out, dragging the width and the emoji picker were not tried by hand**: tests cover
+  the rules and off-screen pictures cover the layout (shown, hidden, slid out), but no test moves
+  a pointer. These are the owner's to try first.
+- **Window buttons** are hidden through `standardWindowButton(_:)?.isHidden`; not checked across
+  entering and leaving full screen.

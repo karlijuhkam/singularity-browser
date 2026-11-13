@@ -2,7 +2,7 @@ import AppKit
 import SingularityCore
 import SwiftUI
 
-/// A Space's name, colour and terminal folder: the three fields shared by the Space editor sheet
+/// A Space's name, icon, colour and terminal folder: the fields shared by the Space editor sheet
 /// and the welcome flow's "Your first Space" step. The caller owns the values (and decides when to
 /// save them); these controls only edit the bindings.
 struct SpaceFields: View {
@@ -13,12 +13,16 @@ struct SpaceFields: View {
     }
 
     @Binding var name: String
+    /// One emoji for the Space's circle in the rail, or "" for the first letter of the name.
+    @Binding var icon: String
     @Binding var colorHex: String
     @Binding var workingDirectory: String
     let style: Style
 
-    init(name: Binding<String>, colorHex: Binding<String>, workingDirectory: Binding<String>, style: Style = .form) {
+    init(name: Binding<String>, icon: Binding<String>, colorHex: Binding<String>, workingDirectory: Binding<String>,
+         style: Style = .form) {
         _name = name
+        _icon = icon
         _colorHex = colorHex
         _workingDirectory = workingDirectory
         self.style = style
@@ -29,6 +33,7 @@ struct SpaceFields: View {
         case .form:
             // No container: inside a `Form` each of the three becomes its own row.
             TextField("Name", text: $name)
+            LabeledContent("Icon") { EmojiField(emoji: $icon) }
             LabeledContent("Colour") { colorDots(size: 20, spacing: 6) }
             LabeledContent("Terminal folder") {
                 HStack {
@@ -43,6 +48,15 @@ struct SpaceFields: View {
                         .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.large)
+                }
+                labelled("Icon") {
+                    HStack(spacing: 10) {
+                        EmojiField(emoji: $icon)
+                            .controlSize(.large)
+                        Text("Optional. Shown instead of the first letter.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 labelled("Colour") { colorDots(size: 24, spacing: 10) }
                 labelled("Terminal folder") {

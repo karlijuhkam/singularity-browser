@@ -146,6 +146,8 @@ struct OnboardingView: View {
             Button("Continue") {
                 state.applyWelcomeSpace(name: draft.trimmedName, colorHex: draft.colorHex,
                                         workingDirectory: draft.workingDirectory)
+                // After it: the placeholder may just have been given its new slug and folder.
+                if let space = state.welcomeSpace { state.setSpaceIcon(draft.icon, spaceID: space.id) }
                 state.advanceWelcome()
             }
             .disabled(draft.trimmedName.isEmpty)

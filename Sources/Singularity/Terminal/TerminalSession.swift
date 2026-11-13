@@ -51,9 +51,14 @@ final class TerminalSession {
     /// Keeps SwiftTerm sending us OSC sequences (notifications for the inbox); see `didStartProcess`.
     @ObservationIgnored private var oscObservation: TerminalOscObservation?
 
+    /// A launcher's command, typed into the shell once it is ready, then forgotten (nil).
+    @ObservationIgnored private var initialCommand: String?
+
     /// - Parameter herdr: the installed `hc` to run the shell through, or nil for the built-in terminal.
+    /// - Parameter initialCommand: a launcher's command (Settings → Terminal → Launchers).
     init(tabID: UUID, spaceID: UUID, spaceSlug: String, workingDirectory: String, font: NSFont, state: AppState?,
-         herdr: String? = nil) {
+         herdr: String? = nil, initialCommand: String? = nil) {
+        self.initialCommand = initialCommand
         self.tabID = tabID
         self.spaceID = spaceID
         self.spaceSlug = spaceSlug
@@ -188,12 +193,31 @@ final class TerminalSession {
             }
         }
 
+        typeInitialCommand()
+
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             // Timers scheduled from the main thread fire on the main thread.
             MainActor.assumeIsolated { self?.refresh() }
         }
         refresh()
+    }
+
+    /// Types the launcher's command into the shell, as if the owner had typed it and pressed
+    /// Return. Typed rather than run as the tab's program: the login shell has the owner's PATH,
+    /// aliases and shell functions (`claude` can be one), and it is still there when the program
+    /// exits. Runs for whichever engine got the shell going (built-in, herdr-core, or the built-in
+    /// one as herdr-core's fallback), and only once: the command is forgotten before it is typed.
+    private func typeInitialCommand() {
+        guard let command = initialCommand else { return }
+        initialCommand = nil
+        Task { [weak self] in
+            // Wait for the shell's first output (it has read its startup files), at most 5 s; a
+            // slower shell still gets the text, which then waits in the terminal's input buffer.
+            await self?.waitUntilReady()
+            guard let self, self.isRunning, !self.isClosing else { return }
+            self.view.send(txt: command + "\r")
+        }
     }
 
     /// Hands a terminal signal to the inbox (not once the tab is closing: its entries are gone).

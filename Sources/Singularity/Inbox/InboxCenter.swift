@@ -85,6 +85,8 @@ final class InboxCenter {
     /// The visible entries' ids, in order, when `answersUnlockAt` was last moved.
     @ObservationIgnored private var lastVisibleIDs: [UUID] = []
 
+    /// False while the sidebar is hidden and not slid out (`AppState` sets this).
+    @ObservationIgnored var trayIsOnScreen: () -> Bool = { true }
     /// The rail's tray button (its AppKit view), so the panel can open beside it.
     @ObservationIgnored weak var railAnchor: NSView?
     @ObservationIgnored private var panelStorage: InboxPanelController?

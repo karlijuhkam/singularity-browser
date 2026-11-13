@@ -25,7 +25,10 @@ final class TerminalRegistry {
             font: state?.terminalFont ?? .monospacedSystemFont(ofSize: 13, weight: .regular),
             state: state,
             // Settings → Terminal: through the owner's herdr-core, when it is switched on and installed.
-            herdr: state?.settings.terminalUsesHerdrCore == true ? HerdrCore.locate() : nil
+            herdr: state?.settings.terminalUsesHerdrCore == true ? HerdrCore.locate() : nil,
+            // A launcher's command, for the tab's first shell only: taking it forgets it, so a
+            // restarted shell (`restart`) gets nothing typed.
+            initialCommand: state?.takePendingCommand(tab.id)
         )
         sessions[tab.id] = session
         return session

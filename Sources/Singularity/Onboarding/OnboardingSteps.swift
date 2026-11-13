@@ -17,6 +17,8 @@ private enum StepFont {
 /// Step 2's fields while they are being edited. Only Continue writes them to the Space.
 struct SpaceDraft: Equatable {
     var name = ""
+    /// One emoji, or "" for the first letter of the name.
+    var icon = ""
     var colorHex = SpaceColors.presets[0]
     var workingDirectory = "~"
 
@@ -24,6 +26,7 @@ struct SpaceDraft: Equatable {
 
     init(_ space: Space) {
         name = space.name
+        icon = space.icon ?? ""
         colorHex = space.colorHex
         workingDirectory = space.workingDirectory
     }
@@ -35,8 +38,8 @@ struct SpaceStep: View {
     @Binding var draft: SpaceDraft
 
     var body: some View {
-        // The same three fields as Edit Space, laid out with more room.
-        SpaceFields(name: $draft.name, colorHex: $draft.colorHex, workingDirectory: $draft.workingDirectory,
+        // The same fields as Edit Space, laid out with more room.
+        SpaceFields(name: $draft.name, icon: $draft.icon, colorHex: $draft.colorHex, workingDirectory: $draft.workingDirectory,
                     style: .roomy)
     }
 }

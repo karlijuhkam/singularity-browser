@@ -57,8 +57,9 @@ private struct SpaceDot: View {
 
     var body: some View {
         let colour = Color(hex: space.colorHex)
-        Text(space.name.first.map { String($0).uppercased() } ?? "?")
-            .font(.system(size: 12, weight: .semibold))
+        // The Space's emoji (Edit Space → Icon), else the first letter of its name.
+        Text(verbatim: space.icon ?? space.name.first.map { String($0).uppercased() } ?? "?")
+            .font(.system(size: space.icon == nil ? 12 : 15, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: 28, height: 28)
             .background(colour, in: Circle())

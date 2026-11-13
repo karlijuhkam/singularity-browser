@@ -167,6 +167,14 @@ private struct TerminalSettings: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Section("Launchers") {
+                LaunchersEditor()
+                Text("Each launcher is a button at the bottom of the sidebar, next to New Terminal, and a command in the palette. It opens a new terminal like New Terminal does and types the command into your shell, so your PATH, aliases and shell functions apply. The first four are shown as buttons, the rest in a menu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("herdr-core") {
                 Toggle("Run terminals through herdr-core (hc)", isOn: settingBinding(state, \.terminalUsesHerdrCore))
                     .disabled(hcPath == nil && !state.settings.terminalUsesHerdrCore)
@@ -198,6 +206,8 @@ private struct AgentSettings: View {
     @State private var connector = AgentConnector(launcher: AgentConnector.thisAppLauncher)
     /// Claude Code's settings file and this copy's hook helper (a test copy gets a file of its own).
     @State private var hookInstaller = HookInstaller()
+    /// The Space whose agent activity is shown in a sheet.
+    @State private var activitySpace: Space?
 
     var body: some View {
         Form {
@@ -207,6 +217,9 @@ private struct AgentSettings: View {
                         Circle().fill(Color(hex: space.colorHex)).frame(width: 10, height: 10)
                         Text(space.name)
                         Spacer()
+                        Button("Activity…") { activitySpace = space }
+                            .controlSize(.small)
+                            .help("What agents did in this Space")
                         Picker("", selection: policyBinding(space)) {
                             ForEach(AgentPolicy.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
@@ -255,6 +268,7 @@ private struct AgentSettings: View {
         }
         .formStyle(.grouped)
         .padding()
+        .sheet(item: $activitySpace) { space in AgentActivitySheet(space: space) }
         // Runs each time the Agents pane appears, so a change made in a terminal shows up here.
         .task { await connector.refresh() }
     }

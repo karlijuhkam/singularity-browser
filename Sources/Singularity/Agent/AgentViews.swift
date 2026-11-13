@@ -47,58 +47,52 @@ extension View {
     }
 }
 
-/// The sidebar's "Agent activity" section: the Space's most recent agent actions.
-struct AgentLogPane: View {
+/// A Space's recent agent actions (Settings → Agents → "Activity…"): the last 40, newest first,
+/// updating while it is open. It used to be a section of the sidebar.
+struct AgentActivitySheet: View {
     @Environment(AppState.self) private var state
+    @Environment(\.dismiss) private var dismiss
     let space: Space
-    @State private var isExpanded = false
 
     var body: some View {
         let entries = Array((state.agentLogs[space.id] ?? []).suffix(40).reversed())
-        VStack(alignment: .leading, spacing: 4) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 10))
-                        .foregroundStyle(agentTint)
-                    Text("Agent activity")
-                        .font(.system(size: 11, weight: .semibold))
-                    Spacer()
-                    Text(space.agentPolicy.title)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
-                .foregroundStyle(.secondary)
-                .contentShape(Rectangle())
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(agentTint)
+                Text("Agent activity in \(space.name)")
+                    .font(.headline)
+                Spacer()
+                Text(space.agentPolicy.title)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 10)
-
-            if isExpanded {
-                if entries.isEmpty {
-                    Text("Nothing yet. Agent actions in this Space appear here.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 10)
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(entries) { entry in
-                                AgentLogRow(entry: entry, space: space)
-                            }
+            if entries.isEmpty {
+                Text("Nothing yet. Agent actions in this Space appear here.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(entries) { entry in
+                            AgentLogRow(entry: entry, space: space)
                         }
                     }
-                    .frame(maxHeight: 220)
                 }
+                .frame(height: 320)
+            }
+            HStack {
+                Text("Every action is also in the Space's agent-log.jsonl.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
             }
         }
+        .padding(20)
+        .frame(width: 460)
         .onAppear { state.loadAgentLog(spaceID: space.id) }
-        .onChange(of: space.id) { state.loadAgentLog(spaceID: space.id) }
     }
 }
 
@@ -114,9 +108,8 @@ private struct AgentLogRow: View {
     }()
 
     var body: some View {
-        Button {
-            if let tabID = entry.tabID, space.tab(tabID) != nil { state.selectTab(tabID) }
-        } label: {
+        // Not a button: the sheet belongs to the Settings window, so there is no tab to jump to.
+        Group {
             HStack(spacing: 6) {
                 icon
                     .font(.system(size: 10))
@@ -140,9 +133,7 @@ private struct AgentLogRow: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 2)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
         .help("\(entry.client) · \(entry.decision)\n\(entry.result)")
     }
 

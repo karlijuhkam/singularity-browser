@@ -31,8 +31,9 @@ enum PaletteResults {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // The "New terminal in" picker lists only the Space's projects: no tabs, no URLs.
-        if case .newTerminalIn(let folderID, let adoptForFolder) = mode {
-            return projectItems(space, matching: trimmed, state: state, folderID: folderID, adoptForFolder: adoptForFolder)
+        if case .newTerminalIn(let folderID, let adoptForFolder, let launcherID) = mode {
+            return projectItems(space, matching: trimmed, state: state, folderID: folderID, adoptForFolder: adoptForFolder,
+                                launcherID: launcherID)
         }
 
         // "Split with…": only things that can go into a pane (other tabs, a new terminal, a URL).
@@ -120,13 +121,14 @@ enum PaletteResults {
     /// The picker's rows, in Core's order (last used first, the Space's folder last). Typing
     /// filters them with the same fuzzy threshold as the rest of the palette, best match first.
     private static func projectItems(_ space: Space, matching query: String, state: AppState,
-                                     folderID: UUID?, adoptForFolder: Bool) -> [PaletteItem] {
+                                     folderID: UUID?, adoptForFolder: Bool, launcherID: UUID?) -> [PaletteItem] {
         let items = space.projectChoices.map { choice in
             PaletteItem(id: "project-\(choice.id)", title: choice.name, subtitle: choice.path,
                         hint: choice.projectID != nil && choice.projectID == space.lastProjectID ? "Last used" : "",
                         icon: .symbol(choice.projectID == nil ? "house" : "folder"),
                         action: .run {
-                            state.startTerminal(choice: choice.projectID, inFolder: folderID, adoptForFolder: adoptForFolder)
+                            state.startTerminal(choice: choice.projectID, inFolder: folderID, adoptForFolder: adoptForFolder,
+                                                launcherID: launcherID)
                         })
         }
         guard !query.isEmpty else { return items }
@@ -189,6 +191,14 @@ enum PaletteResults {
             })
         }
         items.append(command("new-terminal", "New Terminal", "terminal") { state.openTerminal() })
+        for launcher in state.launchers {
+            items.append(command("launcher-\(launcher.id)", "New \(launcher.displayName) Terminal", "terminal") {
+                state.openTerminal(launcher: launcher)
+            })
+        }
+        items.append(command("toggle-sidebar", state.settings.sidebarHidden ? "Show Sidebar" : "Hide Sidebar", "sidebar.left") {
+            state.toggleSidebar()
+        })
         items.append(command("show-inbox", "Show Inbox", "tray") { state.inbox.showPanel(takingFocus: true) })
         if !space.projects.isEmpty {
             items.append(command("new-terminal-in", "New Terminal in…", "terminal") { state.openTerminalChoosingProject() })

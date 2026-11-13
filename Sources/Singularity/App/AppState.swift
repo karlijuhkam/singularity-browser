@@ -65,6 +65,8 @@ final class AppState {
     let downloads = DownloadCenter()
     /// The agent inbox: what agents in terminal tabs are waiting for.
     let inbox = InboxCenter()
+    /// The sidebar's width while dragged, and the slide-out of a hidden sidebar.
+    let sidebarPeek = SidebarPeekController()
     /// macOS notifications and the Dock badge for the inbox (wired in `init`).
     @ObservationIgnored private(set) var inboxNotifier: InboxNotifier?
     /// Little windows: links from other apps, each in its own throwaway window.
@@ -91,6 +93,8 @@ final class AppState {
     private(set) var agentBusyTabs: [UUID: Int] = [:]
     /// Recent agent log entries per Space (oldest first), loaded from agent-log.jsonl on demand.
     private(set) var agentLogs: [UUID: [AgentLogEntry]] = [:]
+    /// Launcher commands waiting for their tab's first shell (see `takePendingCommand`).
+    @ObservationIgnored private(set) var pendingCommands: [UUID: String] = [:]
     /// The MCP server agents connect to (set at the end of init, since it needs `self`).
     @ObservationIgnored private(set) var mcp: MCPHub?
     /// The socket Claude Code's hook (`singularity-hook`) talks to: questions and permission
@@ -186,6 +190,8 @@ final class AppState {
         terminals.state = self
         artifacts.state = self
         inbox.state = self
+        inbox.trayIsOnScreen = { [weak self] in self?.sidebarIsOffScreen != true }
+        sidebarPeek.state = self
         // The notifier sets itself as the notification centre's delegate here, in init, so a click
         // on a banner that launched the app is delivered. It does nothing without a bundle id.
         let notifier = InboxNotifier(onOpen: { [weak self] in self?.inbox.showPanel(takingFocus: true) })
@@ -330,6 +336,14 @@ final class AppState {
         // Tool descriptions mention the Space's name, so a rename also counts as a change.
         if wasEnabled != agentsEnabled || agentsEnabled { mcp?.toolsChanged() }
         if wasEnabled != agentsEnabled { siteSettingsDidChange(id) } // agents off also ends console/network capture
+    }
+
+    /// Edit Space's icon: one emoji for the Space's circle in the rail, or nothing (nil, "" or
+    /// anything that is not an emoji) for the first letter of its name.
+    func setSpaceIcon(_ icon: String?, spaceID: UUID) {
+        let emoji = icon.flatMap(Emoji.single)
+        guard let space = space(spaceID), space.icon != emoji else { return }
+        mutateSpace(spaceID) { $0.icon = emoji }
     }
 
     /// Sets only `agentsEnabled` (the policy is left as it is), with the same effects as `updateSpace`.
@@ -682,6 +696,22 @@ final class AppState {
         newTerminal(inFolder: selectedSpace?.folderForNewTerminal, alwaysAsk: false)
     }
 
+    /// A launcher button (sidebar bottom row, palette): New Terminal by exactly the same rules,
+    /// with the launcher's command typed into the new shell.
+    func openTerminal(launcher: Launcher) {
+        newTerminal(inFolder: selectedSpace?.folderForNewTerminal, alwaysAsk: false, launcher: launcher)
+    }
+
+    /// The launchers as they are used (Settings holds them as typed: `Launcher.clean`).
+    var launchers: [Launcher] { Launcher.clean(settings.launchers) }
+
+    /// The command a launcher wants typed into a tab's first shell. Taken (and forgotten) by the
+    /// terminal session when it starts that shell, so it is typed once: never after a restart of
+    /// the app or the shell, and never when a herdr-core tab finds its shell again. In memory only.
+    func takePendingCommand(_ tabID: UUID) -> String? {
+        pendingCommands.removeValue(forKey: tabID)
+    }
+
     /// "New Terminal" in a folder header's menu: the same, in that folder.
     func openTerminal(inFolder folderID: UUID) {
         newTerminal(inFolder: folderID, alwaysAsk: false)
@@ -693,32 +723,45 @@ final class AppState {
         newTerminal(inFolder: selectedSpace?.folderForNewTerminal, alwaysAsk: true)
     }
 
-    private func newTerminal(inFolder folderID: UUID?, alwaysAsk: Bool) {
+    private func newTerminal(inFolder folderID: UUID?, alwaysAsk: Bool, launcher: Launcher? = nil) {
         guard let space = selectedSpace else { return }
         closeWelcome()
         switch space.terminalStart(inFolder: folderID, alwaysAsk: alwaysAsk) {
         case .start(let directory, let projectID):
+            var tabID: UUID?
             mutateSpace(space.id) {
-                $0.addTerminal(directory: directory, projectID: projectID, inFolder: folderID, select: true)
+                tabID = $0.addTerminal(directory: directory, projectID: projectID, inFolder: folderID, select: true)
             }
+            setPendingCommand(launcher, for: tabID)
             loadSelectedTab()
         case .ask:
             // The picker is a mode of the command palette. A plain New Terminal inside a folder
             // that has no project yet also gives the folder the chosen project.
-            showPalette(.newTerminalIn(folderID: folderID, adoptForFolder: !alwaysAsk && folderID != nil))
+            // The picker carries the launcher along, so the choice starts it and not a plain terminal.
+            showPalette(.newTerminalIn(folderID: folderID, adoptForFolder: !alwaysAsk && folderID != nil,
+                                       launcherID: launcher?.id))
         }
     }
 
     /// The picker's choice: a project of the Space, or nil for the Space's own folder.
-    func startTerminal(choice projectID: UUID?, inFolder folderID: UUID?, adoptForFolder: Bool) {
+    /// `launcherID`: the launcher that asked (a launcher removed in the meantime starts a plain terminal).
+    func startTerminal(choice projectID: UUID?, inFolder folderID: UUID?, adoptForFolder: Bool, launcherID: UUID? = nil) {
         guard let space = selectedSpace else { return }
         closeWelcome()
         let directory = space.project(projectID)?.path ?? space.workingDirectory
+        var tabID: UUID?
         mutateSpace(space.id) {
             $0.recordPickerChoice(projectID, adoptForFolder: adoptForFolder ? folderID : nil)
-            $0.addTerminal(directory: directory, projectID: projectID, inFolder: folderID, select: true)
+            tabID = $0.addTerminal(directory: directory, projectID: projectID, inFolder: folderID, select: true)
         }
+        setPendingCommand(launchers.first { $0.id == launcherID }, for: tabID)
         loadSelectedTab()
+    }
+
+    /// Internal (not private) so a test can check "typed once" without starting a shell.
+    func setPendingCommand(_ launcher: Launcher?, for tabID: UUID?) {
+        guard let tabID, let command = launcher.map({ Launcher.cleanCommand($0.command) }), !command.isEmpty else { return }
+        pendingCommands[tabID] = command
     }
 
     /// The folder header's Project menu (nil = None).
@@ -1363,6 +1406,34 @@ final class AppState {
         }
     }
 
+    // MARK: - Sidebar width and hiding
+
+    /// The sidebar's width right now: the one being dragged, else the setting.
+    var sidebarWidth: Double {
+        SidebarLayout.clamp(sidebarPeek.liveWidth ?? settings.sidebarWidth)
+    }
+
+    /// Hidden and not slid out: nothing of the sidebar is on screen. (Never while the welcome
+    /// flow covers the window: the sidebar isn't shown then anyway, and the window keeps its buttons.)
+    var sidebarIsOffScreen: Bool {
+        settings.sidebarHidden && !sidebarPeek.isPeeking && !welcomeCoversWindow
+    }
+
+    /// View → Hide Sidebar / Show Sidebar (⌘S), and the palette.
+    func toggleSidebar() {
+        sidebarPeek.close()
+        updateSettings { $0.sidebarHidden.toggle() }
+    }
+
+    /// The window's close, minimise and zoom buttons go away with a hidden sidebar and come back
+    /// with the slide-out (as in Arc); otherwise they would sit on the page's corner.
+    func applyWindowButtons() {
+        guard let window = mainWindow else { return }
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(kind)?.isHidden = sidebarIsOffScreen
+        }
+    }
+
     /// The terminal font from Settings (falls back to the system's monospaced font).
     var terminalFont: NSFont {
         let size = CGFloat(settings.terminalFontSize)
@@ -1412,7 +1483,8 @@ enum PaletteMode: Hashable {
     case splitWith(edge: SplitEdge, beside: UUID)
     /// The "New terminal in" picker: the Space's projects. The terminal lands in `folderID`
     /// (nil = Tabs); with `adoptForFolder` the chosen project also becomes that folder's.
-    case newTerminalIn(folderID: UUID?, adoptForFolder: Bool)
+    /// `launcherID`: the launcher button that asked; its command is typed into the new terminal.
+    case newTerminalIn(folderID: UUID?, adoptForFolder: Bool, launcherID: UUID? = nil)
 }
 
 struct SpaceEditorRequest: Identifiable {
