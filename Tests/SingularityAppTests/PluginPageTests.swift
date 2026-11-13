@@ -293,6 +293,34 @@ extension AppTests {
     }
 
     @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
+    func aDeadWebContentProcessReloadsThePageButNotInALoop() async throws {
+        let plugin = try FixturePlugin()
+        defer { plugin.remove() }
+        let (host, window) = makeHost(plugin)
+        defer { close(host, window) }
+        #expect(host.webView.allowsLinkPreview == false)
+        await wait("the page to render") { host.webView.title == "rendered:from-util" }
+        func mark() async throws { _ = try await host.webView.evaluateJavaScript("window.marker = 1; 1") }
+        func reloaded() async -> Bool {
+            (try? await host.webView.evaluateJavaScript("window.marker === undefined && document.title === 'rendered:from-util'")) as? Bool == true
+        }
+
+        // WebKit calls this when the page's process died; we call it the same way.
+        host.crashReloadSpacing = .seconds(2)
+        try await mark()
+        host.webViewWebContentProcessDidTerminate(host.webView)
+        await wait("the first reload") { await reloaded() }
+
+        // Again right away: it waits for the spacing, then loads once.
+        try await mark()
+        host.webViewWebContentProcessDidTerminate(host.webView)
+        host.webViewWebContentProcessDidTerminate(host.webView)
+        try await Task.sleep(for: .milliseconds(800))
+        #expect(await reloaded() == false)
+        await wait("the second reload", seconds: 5) { await reloaded() }
+    }
+
+    @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
     func theBridgeTakesOnlySendsFromTheMainFrame() async throws {
         let plugin = try FixturePlugin()
         defer { plugin.remove() }
@@ -508,8 +536,9 @@ private struct FixturePlugin {
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         try write("plugin.json", """
             {"id": "demo", "name": "Demo", "version": "1.0.0", "description": "A test panel.", "author": "Tests",
-             "panel": {"page": "\(page)", "title": "Demo"}, "permissions": {}}
+             "background": "background.ts", "panel": {"page": "\(page)", "title": "Demo"}, "permissions": {}}
             """)
+        try write("background.ts", "// A panel needs a background program (never run here).\n")
         try write("package.json", #"{"dependencies": {"preact": "10.0.0"}}"#)
         // A well-formed lock entry for the declared version (the integrity is 64 zero bytes).
         let integrity = "sha512-" + Data(count: 64).base64EncodedString()

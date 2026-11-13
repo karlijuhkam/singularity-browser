@@ -17,6 +17,8 @@ public enum PluginError: Error, Equatable, Sendable {
     /// A name in `programEnv` that plugins may not set (or one with no program to receive it).
     case invalidProgramEnv(String)
     case invalidPanelTitle
+    /// A `panel` without a `background`: the page would never get a program to talk to.
+    case panelNeedsBackground
     case missingLockfile
     case pageSiteNotPermitted(String)
     /// A symlink inside a plugin folder (it could point outside the plugin); the path is relative.

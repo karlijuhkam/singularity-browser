@@ -176,11 +176,13 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             && !name.hasPrefix("SINGULARITY_")
     }
 
-    /// The panel's title is one line of 1 to 40 characters once trimmed.
+    /// The panel's title is one line of 1 to 40 characters once trimmed, and a panel needs a
+    /// background program: its page exists only while the background runs.
     private func validatePanel() throws(PluginError) {
         guard let panel else { return }
         let title = panel.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !(1...40).contains(title.count) || panel.title.contains(where: \.isNewline) { throw .invalidPanelTitle }
+        if background == nil { throw .panelNeedsBackground }
     }
 
     /// No `.npmrc`; packages only as exact npm registry versions, pinned by a matching `bun.lock`

@@ -6,6 +6,8 @@ import SwiftUI
 /// native page that says why not.
 enum PluginPageContent {
     case page(PluginPageHost)
+    /// No page yet, but it is coming (at launch, or just approved): "<Title> is starting".
+    case starting(title: String)
     case notRunning(title: String, reason: String)
 }
 
@@ -15,6 +17,7 @@ extension AppState {
     /// down. `fallbackTitle`: a tab's stored title, for a plugin that is gone.
     func pluginPageContent(_ id: String, fallbackTitle: String = "") -> PluginPageContent {
         if let host = plugins.pageHost(for: id) { return .page(host) }
+        if plugins.pageIsStarting(id) { return .starting(title: "\(pluginTitle(id, fallback: fallbackTitle)) is starting") }
         return .notRunning(title: "\(pluginTitle(id, fallback: fallbackTitle)) isn't running",
                            reason: plugins.notRunningReason(id))
     }
@@ -26,6 +29,8 @@ extension AppState {
 struct PluginPanel: View {
     @Environment(AppState.self) private var state
     let pluginID: String
+    /// The width it is drawn at: its own (`pluginPanelWidth`), or less in a narrow window.
+    let width: Double
 
     /// The window's title bar is invisible but still there (the content runs under it), and
     /// macOS starts a window drag on a click in it before asking the view. The header sits below
@@ -44,12 +49,12 @@ struct PluginPanel: View {
             }
             .padding(.top, Self.titleBarHeight)
         }
-        .frame(width: CGFloat(state.pluginPanelWidth))
+        .frame(width: CGFloat(width))
         .overlay(alignment: .leading) {
             // Straddles the line: 3 pt over the page's margin, 3 pt over the panel. Works like the
             // sidebar's strip: live while dragging, saved on mouse-up, double-click resets.
             SidebarResizeHandle(
-                width: state.pluginPanelWidth,
+                width: width,   // a drag starts from what is on screen
                 dragged: { [state] in state.pluginPanelLiveWidth = PluginPanelLayout.clamp($0) },
                 ended: { [state] in
                     guard let width = state.pluginPanelLiveWidth else { return }
@@ -71,7 +76,7 @@ private struct PluginPanelHeader: View {
     let pluginID: String
 
     var body: some View {
-        let others = state.plugins.panelPlugins()
+        let panelPlugins = state.plugins.panelPlugins()
         HStack(spacing: 6) {
             Image(systemName: "puzzlepiece.extension")
                 .font(.system(size: 11))
@@ -85,9 +90,9 @@ private struct PluginPanelHeader: View {
             Menu {
                 Button("Open as Tab") { state.openPluginPageAsTab(pluginID) }
                 Button("Close") { state.closePluginPanel() }
-                if others.count > 1 {
+                if panelPlugins.count > 1 {
                     Divider()
-                    ForEach(others) { plugin in
+                    ForEach(panelPlugins) { plugin in
                         // A Toggle in a menu is drawn as an item with a checkmark.
                         Toggle(isOn: Binding(
                             get: { plugin.id == pluginID },
@@ -130,11 +135,34 @@ struct PluginPageArea: View {
                 // After the plugin stopped and started again the page is a new web view; `.id`
                 // makes SwiftUI build a new container for it, as for a restarted terminal.
                 .id(ObjectIdentifier(host))
+        case .starting(let title):
+            PluginStartingView(title: title)
+                .simultaneousGesture(TapGesture().onEnded { if let tabID { state.focusPane(tabID) } })
         case .notRunning(let title, let reason):
             PluginNotRunningView(title: title, reason: reason)
                 // In a split, a click here focuses the pane (the click monitor only sees hosted views).
                 .simultaneousGesture(TapGesture().onEnded { if let tabID { state.focusPane(tabID) } })
         }
+    }
+}
+
+/// Shown for the moment before the page comes: at launch, before the plugins were read, and while
+/// an approved plugin's background starts. The page replaces it by itself.
+private struct PluginStartingView: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityLabel("Starting…")
+            Text(verbatim: title)
+                .font(.headline)
+                .multilineTextAlignment(.center)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
     }
 }
 

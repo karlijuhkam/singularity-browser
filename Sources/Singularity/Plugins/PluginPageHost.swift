@@ -36,6 +36,13 @@ final class PluginPageHost: NSObject {
     /// True while a page of ours is committed in the web view (pushes are dropped otherwise).
     private var loaded = false
     private var tornDown = false
+    /// When the page was last loaded again after its web content process died, and whether such a
+    /// reload is waiting for its turn (`reloadAfterCrash`).
+    private var lastCrashReload: ContinuousClock.Instant?
+    private var crashReloadWaiting = false
+    /// At most one reload per this long after crashes, so a page that keeps crashing its web
+    /// content process doesn't reload in a tight loop. A `var` so tests can shorten it.
+    var crashReloadSpacing: Duration = .seconds(5)
 
     /// - Parameters:
     ///   - compile: compiles the plugin's TypeScript/TSX (the app passes its `ArtifactScriptService`).
@@ -67,6 +74,8 @@ final class PluginPageHost: NSObject {
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.isInspectable = true
+        // A force click on a link would otherwise preview that page, from anywhere, in a popover.
+        webView.allowsLinkPreview = false
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -118,6 +127,26 @@ final class PluginPageHost: NSObject {
     func reload() {
         guard !tornDown else { return }
         webView.load(URLRequest(url: PluginPageServer.rootURL(pluginID: pluginID)))
+    }
+
+    /// After the web content process died (memory pressure, a WebKit crash) the web view is blank:
+    /// load the page again, at once the first time, then at most once per `crashReloadSpacing`.
+    func reloadAfterCrash() {
+        guard !tornDown, !crashReloadWaiting else { return }
+        let wait = lastCrashReload.map { crashReloadSpacing - (ContinuousClock.now - $0) } ?? .zero
+        guard wait > .zero else {
+            lastCrashReload = .now
+            reload()
+            return
+        }
+        crashReloadWaiting = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: wait)
+            guard let self else { return }
+            self.crashReloadWaiting = false
+            self.lastCrashReload = .now
+            self.reload()
+        }
     }
 
     /// Stops the page for good: no more messages either way. The web view can't be used again.
@@ -209,6 +238,7 @@ extension PluginPageHost: WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         loaded = false
+        reloadAfterCrash()
     }
 }
 

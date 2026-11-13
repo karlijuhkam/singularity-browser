@@ -100,6 +100,13 @@ import Testing
         _ = try load(panel: #"{"page":"panel.html","title":"\#(String(repeating: "x", count: 40))"}"#)
     }
 
+    @Test func aPanelNeedsABackgroundProgram() throws {
+        // Its page exists only while the background runs: without one it would never show.
+        #expect(throws: PluginError.panelNeedsBackground) { _ = try load(panel: goodPanel, background: false) }
+        #expect(try load(panel: goodPanel).panel != nil)
+        #expect(PluginError.panelNeedsBackground.userMessage == "its panel needs a background program")
+    }
+
     @Test func panelPageMustBeAFileInTheFolder() {
         for bad in ["nope.html", "../x.html", "/etc/hosts"] {
             #expect(throws: PluginError.missingFile(bad), Comment(rawValue: bad)) {

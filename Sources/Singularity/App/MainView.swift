@@ -66,9 +66,17 @@ extension MainView {
     /// Sidebar and page. The sidebar is one view in three states: beside the page; hidden (moved
     /// off the window's left edge, so it keeps its scroll position and open folders); and slid
     /// out over the page while the pointer is at the left edge (`SidebarPeekController`).
-    /// A plugin's panel, when open, is a column at the window's right edge, beside the page.
-    @ViewBuilder
+    /// A plugin's panel, when open, is a column at the window's right edge, beside the page, as
+    /// wide as the window allows (`PluginPanelLayout.shownWidth`: the page keeps at least 320 pt).
     fileprivate var browser: some View {
+        // Only for the window's width (the panel's room); it fills the window like the ZStack did.
+        GeometryReader { window in
+            browser(windowWidth: window.size.width)
+        }
+    }
+
+    @ViewBuilder
+    private func browser(windowWidth: CGFloat) -> some View {
         let width = CGFloat(state.sidebarWidth)
         let hidden = state.settings.sidebarHidden
         let peeking = state.sidebarPeek.isPeeking
@@ -80,8 +88,11 @@ extension MainView {
                     .padding([.top, .bottom, .trailing], 8)
                     // Hidden: the page has the whole window, with the same 8 pt margin on the left.
                     .padding(.leading, hidden ? 8 : width)
-                if let pluginID = state.shownPanelPlugin {
-                    PluginPanel(pluginID: pluginID)
+                // Too narrow a window draws no panel; it stays open and ⌃⌘J still closes it.
+                if let pluginID = state.shownPanelPlugin,
+                   let panelWidth = PluginPanelLayout.shownWidth(state.pluginPanelWidth, windowWidth: Double(windowWidth),
+                                                                 sidebarWidth: hidden ? 8 : Double(width)) {
+                    PluginPanel(pluginID: pluginID, width: panelWidth)
                 }
             }
 

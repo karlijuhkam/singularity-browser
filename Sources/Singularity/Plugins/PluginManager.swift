@@ -96,6 +96,9 @@ final class PluginManager {
     @ObservationIgnored var onChange: (() -> Void)?
     /// Shown at the top of Settings → Plugins when the saved approvals couldn't be read.
     private(set) var stateWarning: String?
+    /// The first look at every plugin folder (`start`) has finished. Until then a plugin without
+    /// a row may just not have been read yet (its page area says "starting", not "isn't installed").
+    private(set) var firstScanDone = false
 
     /// How long `send` waits for a plugin's answer. Longer than a command's 60 s limit, because a
     /// page action may run `op`, which can wait for Touch ID.
@@ -173,8 +176,14 @@ final class PluginManager {
             watcher.start()
             self.watcher = watcher
         }
-        for id in Set(folderIDs()).union(plugins.map(\.id)).sorted() {
+        let refreshes = Set(folderIDs()).union(plugins.map(\.id)).sorted().map { id in
             enqueue(id) { [weak self] in await self?.refresh(id, filesChanged: false) }
+        }
+        if !firstScanDone {
+            Task { @MainActor [weak self] in
+                for refresh in refreshes { _ = await refresh.result }
+                self?.firstScanDone = true
+            }
         }
     }
 
@@ -483,6 +492,13 @@ final class PluginManager {
     /// "This plugin isn't installed." for an id with no folder.
     func notRunningReason(_ id: String) -> String {
         plugin(id)?.statusLine.text ?? "This plugin isn't installed."
+    }
+
+    /// No page yet, but it is on its way (`PluginSurface.pageIsStarting`): the first scan hasn't
+    /// finished, or the plugin is approved and its background is about to run.
+    func pageIsStarting(_ id: String) -> Bool {
+        PluginSurface.pageIsStarting(firstScanDone: firstScanDone,
+                                     plugin: plugin(id).map { ($0.decision, $0.runState) })
     }
 
     /// The plugin's own page, while its background runs; nil otherwise (then show

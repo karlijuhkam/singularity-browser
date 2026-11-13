@@ -948,7 +948,8 @@ final class AppState {
         closeWelcome()
         lastPanelPlugin = id
         removePluginTabs(id)
-        let tab = BrowserTab.plugin(pluginID: id, title: plugins.panelTitle(id) ?? "")
+        // The manifest's title, or the id while the plugin hasn't been read yet (`loadTab` corrects it).
+        let tab = BrowserTab.plugin(pluginID: id, title: pluginTitle(id))
         mutateSpace(spaceID) {
             $0.append(tab)
             $0.selectedTabID = tab.id

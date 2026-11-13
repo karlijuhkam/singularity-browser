@@ -48,6 +48,49 @@ import Testing
         #expect(again.pluginPanel == "assistant")
     }
 
+    @Test func shownWidthLeavesThePageItsRoom() {
+        func shown(_ width: Double, window: Double, sidebar: Double = 240) -> Double? {
+            PluginPanelLayout.shownWidth(width, windowWidth: window, sidebarWidth: sidebar)
+        }
+        // A wide window: the panel's own width.
+        #expect(shown(380, window: 1600) == 380)
+        #expect(shown(720, window: 1600) == 720)
+        // Clamped like the setting: 5000 is 720, 10 is 300.
+        #expect(shown(5000, window: 1600) == 720)
+        #expect(shown(10, window: 1600) == 300)
+        // The page keeps 320: 1000 - 240 - 320 = 440 for a 720-wide panel.
+        #expect(shown(720, window: 1000) == 440)
+        #expect(shown(380, window: 1000) == 380)
+        // Not below the panel's minimum while the window has room for both (240 + 320 + 300 = 860).
+        #expect(shown(720, window: 860) == 300)
+        // Too narrow for both: what is left after the page's 320 (820 - 240 - 320 = 260).
+        #expect(shown(380, window: 820) == 260)
+        // Under 200 left: not drawn at all.
+        #expect(shown(380, window: 759) == nil)
+        #expect(shown(380, window: 760) == 200)
+        // A hidden sidebar leaves only its 8 pt margin.
+        #expect(shown(720, window: 820, sidebar: 8) == 492)
+        #expect(shown(380, window: 400, sidebar: 8) == nil)
+        // Odd numbers never leave a negative or endless width.
+        #expect(shown(380, window: .infinity) == 380)
+        #expect(shown(.nan, window: 1600) == 380)
+    }
+
+    @Test func thePageIsStartingOnlyWhileItIsOnItsWay() {
+        // Before the first look at the plugins folder, an unknown plugin may just not be read yet.
+        #expect(PluginSurface.pageIsStarting(firstScanDone: false, plugin: nil))
+        #expect(!PluginSurface.pageIsStarting(firstScanDone: true, plugin: nil))
+        // Approved and about to run, or running before its page is made.
+        #expect(PluginSurface.pageIsStarting(firstScanDone: true, plugin: (.launch, .stopped)))
+        #expect(PluginSurface.pageIsStarting(firstScanDone: false, plugin: (.launch, .running)))
+        // A reason of its own: not approved, off, blocked, failing.
+        #expect(!PluginSurface.pageIsStarting(firstScanDone: false, plugin: (.notApproved, .stopped)))
+        #expect(!PluginSurface.pageIsStarting(firstScanDone: true, plugin: (.nothingToRun, .stopped)))
+        #expect(!PluginSurface.pageIsStarting(firstScanDone: true, plugin: (.blocked("x"), .stopped)))
+        #expect(!PluginSurface.pageIsStarting(firstScanDone: true, plugin: (.launch, .crashedRepeatedly)))
+        #expect(!PluginSurface.pageIsStarting(firstScanDone: true, plugin: (.launch, .failedToStart("no bun"))))
+    }
+
     // MARK: where the page is
 
     private func space(_ name: String, _ tabs: [BrowserTab]) -> Space {

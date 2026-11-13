@@ -148,6 +148,14 @@ extension AppTests {
         #expect(state.loadErrors.isEmpty)
         #expect(state.selectedTab?.kind == .plugin(pluginID: "ghost"))
         state.loadSelectedTab()
+        // Before the plugins folder was read, it may just not be known yet: "starting", not "isn't installed".
+        #expect(!state.plugins.firstScanDone)
+        guard case .starting(let starting) = state.pluginPageContent("ghost", fallbackTitle: tab.title) else {
+            Issue.record("expected the starting page")
+            return
+        }
+        #expect(starting == "Ghost is starting")
+        try await waitUntil("the first scan") { state.plugins.firstScanDone }
         guard case .notRunning(let title, let reason) = state.pluginPageContent("ghost", fallbackTitle: tab.title) else {
             Issue.record("expected the native page")
             return

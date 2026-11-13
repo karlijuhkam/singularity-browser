@@ -11,6 +11,23 @@ public enum PluginPanelLayout {
         guard width.isFinite else { return defaultWidth }
         return min(max(width, minWidth), maxWidth)
     }
+
+    /// The page beside the panel keeps at least this much.
+    public static let minPageWidth: Double = 320
+    /// Narrower than this, the panel isn't drawn at all.
+    public static let minShownWidth: Double = 200
+
+    /// The width the panel is drawn at: its own width (`width`, clamped as above), but never so
+    /// wide that the page gets less than `minPageWidth` in a window `windowWidth` wide whose
+    /// sidebar takes `sidebarWidth`. Not below `minWidth` while the window has room for both; in a
+    /// window too narrow for that, whatever is left after the page's 320, and nil (not drawn) when
+    /// that is under `minShownWidth`. Only for drawing: the stored width stays as it is.
+    public static func shownWidth(_ width: Double, windowWidth: Double, sidebarWidth: Double) -> Double? {
+        let room = windowWidth - sidebarWidth - minPageWidth
+        guard room.isFinite else { return clamp(width) }
+        if room >= minWidth { return min(clamp(width), room) }
+        return room >= minShownWidth ? room : nil
+    }
 }
 
 /// Where a plugin's page is shown right now.
@@ -35,5 +52,17 @@ public enum PluginSurface {
     /// Every tab of this plugin in the Space, so the caller can keep at most one.
     public static func tabsToRemove(for pluginID: String, in space: Space) -> [UUID] {
         space.tabs.filter { $0.pluginID == pluginID }.map(\.id)
+    }
+
+    /// While there is no page: is it on its way, so the page area says "starting" rather than why
+    /// it doesn't run? Yes while the first look at the plugins folder hasn't finished and the
+    /// plugin isn't known yet (`plugin` nil), and while a known plugin should run (`.launch`) and
+    /// its background is not up yet (`.stopped`, or `.running` before the page is made). A plugin
+    /// that isn't approved, is off, or failed has its own status text instead.
+    public static func pageIsStarting(firstScanDone: Bool,
+                                      plugin: (decision: PluginLaunch.Decision, run: PluginSupervisor.State)?) -> Bool {
+        guard let plugin else { return !firstScanDone }
+        guard plugin.decision == .launch else { return false }
+        return plugin.run == .stopped || plugin.run == .running
     }
 }
