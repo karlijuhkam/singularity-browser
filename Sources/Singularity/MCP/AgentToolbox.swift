@@ -199,6 +199,8 @@ final class AgentToolbox {
         let spaces = state.spaces.filter(\.agentsEnabled).map { space -> [String: Any] in
             ["slug": space.slug, "name": space.name, "tabs": space.tabs.filter { !$0.isPlugin }.count,
              "policy": space.agentPolicy.rawValue,
+             // Where an agent writes an artifact: a new HTML page here gets a tab by itself.
+             "artifacts_folder": state.paths.artifactsDirectory(space.slug).path,
              "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
         }
         if spaces.isEmpty {
