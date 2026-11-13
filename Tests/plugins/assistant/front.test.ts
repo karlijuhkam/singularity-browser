@@ -120,3 +120,17 @@ test("only acting lines may say they wait for an OK", () => {
     expect(mayWaitForOK(f(name))).toBe(false);
   }
 });
+
+test("control and format characters are removed, and title and address are cut", () => {
+  const block = frontBlock({
+    space: { slug: "wo\u0007rk", name: "Wo\u202Ertk\u200B" },
+    tab: { id: "T1", kind: "web", title: "A\u0000B\u202EC\nD" + "x".repeat(400), url: "https://a.test/\u2066" + "y".repeat(3000) },
+  });
+  expect(/[\p{Cc}\p{Cf}]/u.test(block.replace(/\n/g, ""))).toBe(false);
+  expect(block).toContain("Space: work (Wortk)");
+  const title = block.split("\n").find((l) => l.startsWith("Title: "))!;
+  const address = block.split("\n").find((l) => l.startsWith("Address: "))!;
+  expect(title.length).toBeLessThanOrEqual("Title: ".length + 300);
+  expect(title).toContain("ABC D");
+  expect(address.length).toBeLessThanOrEqual("Address: ".length + 2000);
+});

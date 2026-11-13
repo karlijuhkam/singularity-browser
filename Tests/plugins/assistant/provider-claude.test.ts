@@ -530,7 +530,7 @@ test("tool calls: running, then done or failed, with the door's name and the cal
 });
 
 test("the init message's status for the browser's server is reported", async () => {
-  for (const [status, connected] of [["failed", false], ["connected", true]] as const) {
+  for (const [status, connected] of [["failed", false], ["needs-auth", false], ["disabled", false], ["connected", true]] as const) {
     const turn = helloTurn("sess-1");
     turn[0] = { ...(turn[0] as object), mcp_servers: [{ name: "singularity", status }] } as any;
     const { provider, events, programs } = start([chat([turn])], { browser } as any);
@@ -541,6 +541,32 @@ test("the init message's status for the browser's server is reported", async () 
     provider.stop();
     await waitFor(() => programs[0].ended, "the program to end");
   }
+});
+
+test("a pending or unknown status for the browser's server sends nothing", async () => {
+  for (const status of ["pending", "something-new"]) {
+    const turn = helloTurn("sess-1");
+    turn[0] = { ...(turn[0] as object), mcp_servers: [{ name: "singularity", status }] } as any;
+    const { provider, events, programs } = start([chat([turn])], { browser } as any);
+    await waitFor(() => of(events, "ready").length > 0, "ready");
+    provider.send("Hi");
+    await waitFor(() => of(events, "done").length > 0, "done");
+    expect(of(events, "browser")).toEqual([]);
+    provider.stop();
+    await waitFor(() => programs[0].ended, "the program to end");
+  }
+});
+
+test("the system prompt's nothing-visible sentence", async () => {
+  const { provider, events, programs } = start([chat([helloTurn("sess-1")])], { browser } as any);
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  if (!realSDK) {
+    const prompt = String(seenOptions.at(-1)!.systemPrompt);
+    expect(prompt).toContain("If nothing is visible to you, say so; if the user expected you to see a page, you may be switched off for this Space or site");
+    expect(prompt).not.toContain("tell the user they can switch you on");
+  }
+  provider.stop();
+  await waitFor(() => programs[0].ended, "the program to end");
 });
 
 test("no browser server given: no browser status", async () => {

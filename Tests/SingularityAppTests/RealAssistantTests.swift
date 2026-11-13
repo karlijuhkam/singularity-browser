@@ -23,7 +23,7 @@ import Testing
 ///   fixture MCP server (`Fixtures/fixture-mcp-server.ts`, run with the repository's Bun, answers
 ///   `pong-alpha-7391`). The test answers the plugin's `singularity.browser.server()` request with
 ///   that server, in place of the app's `singularity-mcp`, so no app and no browser are involved.
-///   It expects a tool line that ends `done` and `7391` in the answer. (The plugin's request for the
+///   It expects a tool line that ends `done` and `7391` in the answer (in the streamed deltas or in the last message of the final state), within its own 60 s. (The plugin's request for the
 ///   tab in front is answered with "none".)
 ///
 /// It uses the owner's plan (a few cents of usage) and leaves one short session in Claude's own
@@ -154,16 +154,20 @@ extension AppTests {
 
             // The second message: a tool of the fixture server. The plugin's tool line must end
             // "done" and the answer must hold the number the tool returned.
+            // Its own 60 s, from here: the first turn may have used most of the first deadline.
+            let toolDeadline = ContinuousClock.now + .seconds(60)
             let postsBeforeTool = seen.postCount
             process.send(.panelMessage(requestID: 4, payload: .object([
                 "type": .string("send"),
                 "text": .string("Call the browser tool alpha_ping (alpha.ping) once, with no arguments, then tell me the exact text it returned."),
             ])))
-            let toolSent = try await seen.waitForReply(4, until: deadline)
+            let toolSent = try await seen.waitForReply(4, until: toolDeadline)
             #expect(Self.field(toolSent, "status") == .string("answering"), "send was answered with \(toolSent)")
-            _ = try await seen.waitFor("ready after the tool answer", until: deadline) { () -> Bool? in
+            _ = try await seen.waitFor("ready after the tool answer", until: toolDeadline) { () -> Bool? in
                 let posts = seen.posts.dropFirst(postsBeforeTool)
-                guard let first = posts.firstIndex(where: { Self.field($0, "type") == .string("delta") }) else { return nil }
+                // The tool turn is over when a state says ready again after the answer began: a
+                // streamed delta, or the first state that holds an answer message.
+                guard let first = posts.firstIndex(where: { Self.field($0, "type") == .string("delta") || Self.field($0, "type") == .string("state") }) else { return nil }
                 let readyAgain = posts[first...].contains {
                     Self.field($0, "type") == .string("state") && Self.field($0, "status") == .string("ready")
                 }
@@ -174,8 +178,18 @@ extension AppTests {
                 guard Self.field(post, "type") == .string("delta"), case .string(let text)? = Self.field(post, "text") else { return nil }
                 return text
             }.joined()
-            print("real-assistant: tool answer \(toolAnswer.debugDescription)")
-            #expect(toolAnswer.contains("7391"), "the answer should hold the tool's text: \(toolAnswer)")
+            // The answer's text: the streamed deltas, or else the last message of the final state
+            // (a short answer may arrive as one state without separate deltas).
+            let finalText: String = toolPosts.last(where: {
+                Self.field($0, "type") == .string("state") && Self.field($0, "status") == .string("ready")
+            }).flatMap { post -> String? in
+                guard case .array(let messages)? = Self.field(post, "messages"),
+                      case .string(let text)? = messages.last.flatMap({ Self.field($0, "text") }) else { return nil }
+                return text
+            } ?? ""
+            print("real-assistant: tool answer \(toolAnswer.debugDescription), final \(finalText.debugDescription)")
+            #expect(toolAnswer.contains("7391") || finalText.contains("7391"),
+                    "the answer should hold the tool's text: \(toolAnswer) / \(finalText)")
             // The state posts carry the messages; some message has a tool line whose status is done.
             let doneLines = toolPosts.flatMap { post -> [String] in
                 guard Self.field(post, "type") == .string("state"), case .array(let messages)? = Self.field(post, "messages") else { return [] }

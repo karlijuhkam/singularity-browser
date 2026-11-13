@@ -638,7 +638,7 @@ async function readyAssistant(options: MakeOptions = {}) {
 
 test("the text sent to the provider starts with the block; the chat and the saved file keep only the user's text", async () => {
   const front = { current: FRONT as FrontTab | null };
-  const { provider, send, file, dir } = await readyAssistant({ front });
+  const { provider, send, file, dir } = await readyAssistant({ front, browser: SERVER });
   const state = await send({ type: "send", text: "What is this?" });
   expect(provider.sent.length).toBe(1);
   expect(provider.sent[0].startsWith(frontBlock(FRONT))).toBe(true);
@@ -653,7 +653,7 @@ test("the text sent to the provider starts with the block; the chat and the save
 
 test("each send asks for the tab in front again; nothing in front says so", async () => {
   const front = { current: FRONT as FrontTab | null };
-  const { provider, send } = await readyAssistant({ front });
+  const { provider, send } = await readyAssistant({ front, browser: SERVER });
   await send({ type: "send", text: "one" });
   provider.emit({ type: "done" });
   front.current = null;
@@ -665,6 +665,17 @@ test("each send asks for the tab in front again; nothing in front says so", asyn
   expect(provider.sent[2]).toBe("Nothing in front is visible to you.\n\nthree");
 });
 
+test("a bare build (no browser server, or none given): no note, and the chip shows nothing shared", async () => {
+  for (const browser of [null, undefined] as const) {
+    const front = { current: FRONT as FrontTab | null };
+    const { provider, send, posts } = await readyAssistant({ front, ...(browser === null ? { browser } : {}) });
+    expect((await send({ type: "hello" })).chip).toBe("Nothing shared from here");
+    await send({ type: "send", text: "plain" });
+    expect(provider.sent).toEqual(["plain"]);
+    void posts;
+  }
+});
+
 test("a copy without the front API sends the text as it is", async () => {
   const { provider, send } = await readyAssistant();
   await send({ type: "send", text: "plain" });
@@ -673,7 +684,7 @@ test("a copy without the front API sends the text as it is", async () => {
 
 test("the chip: in the hello answer, and pushed when the tab in front changes", async () => {
   const front = { current: FRONT as FrontTab | null };
-  const { send, posts, changeFront } = await make({}, undefined, { front });
+  const { send, posts, changeFront } = await make({}, undefined, { front, browser: SERVER });
   const state = await send({ type: "hello" });
   expect(state.chip).toBe("Invoice 42");
   changeFront(null);
@@ -709,7 +720,7 @@ test("the browser server is handed to the provider at every start; failing or no
 
 test("tool events become lines in order with the text; results never appear; the file keeps the lines", async () => {
   const front = { current: FRONT as FrontTab | null };
-  const { provider, send, lastState, file, dir } = await readyAssistant({ front });
+  const { provider, send, lastState, file, dir } = await readyAssistant({ front, browser: SERVER });
   await send({ type: "send", text: "Summarise" });
   provider.emit({ type: "text", delta: "Let me read it." });
   provider.emit({ type: "tool", id: "a", name: "work.read_page", input: { tab_id: "T1" }, status: "running" });
@@ -743,7 +754,7 @@ test("tool events become lines in order with the text; results never appear; the
 
 test("a turn that ends with a tool still running leaves it as not done", async () => {
   const front = { current: FRONT as FrontTab | null };
-  const { provider, send, lastState } = await readyAssistant({ front });
+  const { provider, send, lastState } = await readyAssistant({ front, browser: SERVER });
   await send({ type: "send", text: "Go" });
   provider.emit({ type: "tool", id: "a", name: "work.read_page", input: { tab_id: "T1" }, status: "running" });
   provider.emit({ type: "done" });
@@ -752,7 +763,7 @@ test("a turn that ends with a tool still running leaves it as not done", async (
 
 test("the tool lines use the tab that was in front at send, not the one in front now", async () => {
   const front = { current: FRONT as FrontTab | null };
-  const { provider, send, lastState } = await readyAssistant({ front });
+  const { provider, send, lastState } = await readyAssistant({ front, browser: SERVER });
   await send({ type: "send", text: "Go" });
   front.current = { ...FRONT, tab: { ...FRONT.tab, id: "T2", title: "Else" } };
   provider.emit({ type: "tool", id: "a", name: "work.read_page", input: { tab_id: "T1" }, status: "running" });
@@ -793,7 +804,7 @@ test("the real provider with a fake program: the sent text carries the block, a 
 
 test("a Stop that brings no end restarts the provider: a running tool line says not done", async () => {
   const front = { current: FRONT as FrontTab | null };
-  const { provider, send, lastState, file, dir } = await readyAssistant({ front, stopWaitMs: 20 });
+  const { provider, send, lastState, file, dir } = await readyAssistant({ front, browser: SERVER, stopWaitMs: 20 });
   await send({ type: "send", text: "Go" });
   provider.emit({ type: "tool", id: "a", name: "work.click", input: { tab_id: "T1" }, status: "running" });
   await send({ type: "stop" });

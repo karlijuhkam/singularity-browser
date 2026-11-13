@@ -42,8 +42,12 @@ function handle(message: Message): void {
         send({ id, error: { code: -32602, message: `Unknown tool ${message.params?.name ?? ""}` } });
       }
       break;
-    default:
+    case "ping":
       send({ id, result: {} });
+      break;
+    default:
+      // A method this server doesn't have (a client may probe resources or prompts).
+      send({ id, error: { code: -32601, message: "Method not found" } });
   }
 }
 

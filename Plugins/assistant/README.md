@@ -42,8 +42,7 @@ The Assistant can look at your browser, only where you allow it.
   is in front and puts a short note before your text in what goes to `claude`: the Space (name and
   short name), the tab's id and kind, and its title and address. Title and address come from the
   page, so they are marked as untrusted, and `<` and `>` in them are replaced so a page can't close
-  the mark. The chat and the saved conversation show only what you typed. Nothing is sent when no
-  tab is shared: the note then says nothing in front is visible. The line above the message box
+  the mark. The note is never shown or saved (tool lines below may name the tab's title). When no tab is shared, no title or address is sent: the note only says nothing in front is visible. The line above the message box
   (the chip) shows what the next message will carry.
 - **The switch.** The tab in front is shared only for a Space you switched the Assistant on for
   (the button under the chat). The Assistant's browser
@@ -64,7 +63,7 @@ The Assistant can look at your browser, only where you allow it.
 - **If the browser's tools can't start**, the chat still works without them and a line above the
   message box says so, with Try Again.
 - Without the app's browser door (a bare debug build) the Assistant is the plain chat it was in
-  version 0.1.
+  version 0.1: no browser tools, no note about the tab in front, and the chip shows nothing shared.
 
 ## What it can't do
 
@@ -72,8 +71,10 @@ The Assistant can look at your browser, only where you allow it.
 - `claude` is started with none of its built-in tools, with no MCP servers but Singularity's own
   (not even the ones in your own Claude config), without your Claude settings files (so none of
   your hooks, plugins or CLAUDE.md) and without skills (see `provider-claude.ts`). Two things stay
-  as they are: settings your organisation manages for Claude, and a message that starts with "/",
-  which `claude` may read as one of its own commands (what it answers then is shown as the answer).
+  as they are: settings your organisation manages for Claude, and, only in a build with
+  no browser door (no note is sent there), a message that starts with "/", which `claude` may read
+  as one of its own commands (what it answers then is shown as the answer). With the browser's
+  tools, every message starts with the note about the tab in front, so this does not apply.
 - Answers are shown as text (with simple formatting). Links are shown as their address, never as
   something to click, and HTML in an answer is shown as it is, never run.
 

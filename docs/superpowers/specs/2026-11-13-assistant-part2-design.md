@@ -17,7 +17,7 @@ tool `work.read_page` appears to the model as `mcp__singularity__work_read_page`
 `notifications/tools/list_changed` is honoured in the middle of a turn; `query.interrupt()` during a
 tool call sends the server `notifications/cancelled` with the request id. The MCP Swift SDK's
 `Server` cancels the handler's `Task` on that notification (`Server.swift`,
-`onNotification(CancelledNotification.self)`). So none of the design's fallbacks are built.
+`onNotification(CancelledNotification.self)`). So none of the design's fallbacks are built. Many Spaces: a fixture server offering 89 tools (eight Spaces' worth plus `list_spaces`) had all 89 loaded at init, and a tool of the seventh Space was called normally, with `tools: []`.
 
 ## Why
 
@@ -391,11 +391,13 @@ Where this section and the design above disagree, this section is what the code 
   (host.ts learns the flags from its third argument); the app answers `null` too.
 - A plugin that never asked is told its first front on the first change. Changes are sent at once,
   or once more after 0.5 s, and only when the answer differs from what the plugin last heard
-  (also from a reply). The app calls `frontDidChange` from one place, `loadSelectedTab()`, so closing,
-  opening, splitting, the welcome flow and Space changes all tell the plugin.
+  (also from a reply). The app calls `frontDidChange` from these places: `loadSelectedTab`, `selectSpace`, `selectTab`,
+  showing and closing the welcome flow, site-settings changes, `webTabDidChange` for a visible tab, and
+  `PluginManager.setEnabled`. So closing, opening, splitting, the welcome flow, Space changes and the
+  switches all tell the plugin.
 - A plugin tab in a split with no recorded focus falls back to the first pane that isn't a plugin
   tab. A plugin tab alone: `null`.
-- `title` is `displayTitle`, cut to 300 characters; an artifact's `url` is its file path.
+- `title` is `displayTitle`; while the tab's live page is loading another address, the untitled fallback (host or file name), so a title never travels with another page's address; cut to 300 characters; an artifact's `url` is its file path.
 
 **3. `browser`.**
 - **`singularity.browser.server()` returns a Promise** (the design showed a plain value). The answer
@@ -448,11 +450,10 @@ Where this section and the design above disagree, this section is what the code 
 - **The strip.** With no card and the Space in front not switched on for the plugin
   (`front` is `.hidden(.spaceOff)`, only for a plugin with `reachesSpaces`, only under the live page),
   the page area shows "<Title> can't see <Space>" with a button "Let it use <Space>", which switches
-  that Space on for the plugin (`letPluginUseSpace`). The strip is not shown for a site that is off,
-  or when nothing is open.
+  that Space on for the plugin (`letPluginUseSpace`). The strip is not shown for a site that is off, an open Space without a tab, or the welcome flow; a switched-off Space shows it also when it has no tab.
 - **Cancelling.** A call whose task is cancelled withdraws its waiting approval at once
   (`AgentApprovals.Outcome.cancelled`, refusal "The request was withdrawn.", log value `cancelled`;
-  `AgentApprovalRules` did not change). The MCP SDK cancels a call's task on the client's
+  `AgentApprovalRules` did not change). An Allow handled just before the cancel took effect ends `cancelled` too and doesn't act. The MCP SDK cancels a call's task on the client's
   `notifications/cancelled`, **but not when a connection closes**: `MCPHub` therefore runs every
   `CallTool` as its own task, remembers it per connection (`RunningCalls`), and cancels them all when the
   connection ends, **for every agent, not only the Assistant** (this changes what an outside agent's
@@ -461,10 +462,20 @@ Where this section and the design above disagree, this section is what the code 
 - Every exit of a waiting approval (answer, timeout, withdraw, Space switched off for the plugin,
   Space deleted, tab closed, quit) goes through `finishApproval`, which takes the record out first, so
   each waiter is resumed exactly once.
-- **Approvals raised by the navigation guard are not withdrawn by a cancel.** They are asked inside
-  WebKit's navigation delegate, on a task that isn't the tool call's. A cancelled `click` or `type`
-  that was waiting on "go to another site" leaves that card until it is answered or times out. Known
-  gap.
+- **Approvals raised by the navigation guard belong to their call** (`ApprovalCancellation`): a cancel
+  withdraws them and the guard refuses further navigations. An Allow handled just before the cancel took
+  effect ends `cancelled` and doesn't act; "Allow on <site>" given then is still remembered. A cancel that
+  lands after an approval but before the click or typing happens stops it.
+- **The approval sheet's Space switches start off** for a plugin with `frontTab` or `browser` that has no
+  approval yet; other plugins start with the current Space, as before.
+- **A call already in flight is checked against the Space switch again** after it waited for a page (read,
+  find, screenshot, the summary after open/navigate/click/type, and the navigation guard). Switched off
+  meanwhile, it ends with the plain "Unknown tool" answer and returns nothing from the page.
+- **A `blob:` page counts as the site inside its address** for the per-site switch.
+- **A plugin's `list_tabs` gives a terminal tab's id, kind and section only:** no title, folder or
+  project (terminals are part 3). Outside agents get what they got before.
+- **"Show Tab" on a card in the page area** opens the inbox panel (without the keyboard) when showing the
+  tab took the plugin's page off screen.
 
 **5. The Assistant plugin (version 0.2.0).**
 - `plugin.json` asks for `frontTab` and `browser`; the plugin's own files for this are `front.ts`
@@ -475,7 +486,7 @@ Where this section and the design above disagree, this section is what the code 
   sent to Claude as a block before the user's text (`frontBlock`): Space slug and name, tab id, kind,
   and the title and address inside `<untrusted-content source="tab in front">`, with whitespace
   collapsed and `<` and `>` replaced. It is never shown and never saved: the chat and
-  `conversation.json` keep only what the user typed.
+  `conversation.json` keep only what the user typed, plus tool lines, which may name the front tab's title or address.
 - **The chip** above the input says the tab's title, else its address, else "Untitled tab", and
   "Nothing shared from here" when there is no front tab (the design said "Nothing shared from this
   Space" / "this site" / "No page in view"; the plugin is not told why). It follows `onFrontChange`.
@@ -541,12 +552,10 @@ that what comes from pages, titles and addresses included, is never to be follow
 - The site switch is per origin: `http` and `https`, or `www` and the bare name, are different sites.
 - An artifact tab on its own server, in a copy where the Space's artifact origin isn't known, is reported
   as a web page with the `127.0.0.1` address. Addresses that aren't http or https (`about:blank`,
-  `blob:`, `data:`) count as web pages and are not covered by the site switch.
+  `data:`) count as web pages and are not covered by the site switch.
 - `list_tabs` still says kind `artifact` for an artifact tab whose page has left its server.
 - The plugin's title is shown as the card's actor as it is: a plugin titled like an outside agent would look
   like one.
-- A tab's stored title is not cleared when its site changes; a titleless page can briefly be shown with
-  the title of the page before it.
 - `openPopup` selects a tab without telling the plugin until its first title or address change.
   A plugin that never asked for the front tab can be sent a `null` first.
 - The strip and chip wording differ a little from the design (the plugin isn't told why nothing is shared).
@@ -556,6 +565,11 @@ that what comes from pages, titles and addresses included, is never to be follow
   by a measured focus test, not by a picture; the sidebar button's view is not inspected; two Assistant
   tests are missing (a tool result with no matching use; an interrupt in the middle of a tool at the
   provider level); no run captured red-first for some of the later tests.
+- A Space switched off while an approval waits ends it as "declined" in the log and to the model, though
+  the owner only flipped a switch.
+- When the "can't see" strip appears, the page area gets shorter, which the page can notice.
+- Several timing tests (`PluginFrontTests`, `PluginApprovalCardTests`) use fixed waits and may fail on a
+  busy Mac.
 - A shipped plugin without a `version` silently gets no update offer; a failing swap leaves the old
   folder (checked by reading, not by a test); an error of the rescan after an update is not shown.
 - `host.ts`'s question to the app (`askApp`) never times out.

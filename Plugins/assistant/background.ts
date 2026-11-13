@@ -18,8 +18,9 @@
 // providerVersion, sdkVersion, error, chip, browserProblem, version } (see view.ts, ViewState).
 //
 // Where the user is: at every send the tab in front (singularity.front()) is put, as a note
-// (front.ts, frontBlock), before the user's text in what goes to the provider. The chat and
-// conversation.json keep only what the user typed. The browser's tools come from
+// (front.ts, frontBlock), before the user's text in what goes to the provider, but only when the
+// provider was given the browser's tools (a bare build is chat only: no note, and the chip says
+// nothing is shared). The chat and conversation.json keep only what the user typed. The browser's tools come from
 // singularity.browser.server(), asked at every start of the provider. Tool calls arrive as `tool`
 // events and become lines on the answer's message (front.ts, toolLine); a tool's answer never
 // reaches this file.
@@ -30,7 +31,7 @@
 // this plugin; the claude program keeps its own sign-in.
 import { singularity } from "singularity";
 import { ConversationFile, markStale, type Message, type ToolLine } from "./conversation.ts";
-import { chipText, frontBlock, type FrontTab, toolLine, FAILED_SUFFIX } from "./front.ts";
+import { chipText, frontBlock, NOTHING_SHARED, type FrontTab, toolLine, FAILED_SUFFIX } from "./front.ts";
 import type { BrowserServer, Provider, ProviderEvent } from "./provider.ts";
 import { claudeSDKVersion, createClaudeProvider, type QueryFunction } from "./provider-claude.ts";
 import type { Status, ViewState } from "./view.ts";
@@ -108,6 +109,13 @@ export function createAssistant(deps: Dependencies) {
   let session: string | undefined;
   /** The tab in front as last heard of (hello, a send, a change), for the chip. */
   let latestFront: FrontTab | null = null;
+  /**
+   * Whether the provider has the browser's tools. Only then is the tab in front shared (the note
+   * and the chip): the chat-only prompt says Claude can't see pages. Until the server has been
+   * asked for, a build that has the door counts as having it, so the chip doesn't flicker.
+   */
+  let hasBrowser = deps.singularity.browser?.server !== undefined;
+  const chip = (front: FrontTab | null) => (hasBrowser ? chipText(front) : NOTHING_SHARED);
   /** The tab that was in front when the message being answered was sent (for its tool lines). */
   let frontAtSend: FrontTab | null = null;
   /** The tool lines still running, by the id `claude` gave the call. */
@@ -194,7 +202,7 @@ export function createAssistant(deps: Dependencies) {
       providerVersion,
       sdkVersion: deps.sdkVersion,
       error,
-      chip: chipText(latestFront),
+      chip: chip(latestFront),
       browserProblem,
       version,
     };
@@ -219,6 +227,15 @@ export function createAssistant(deps: Dependencies) {
     const mine = ++startCount;
     const begin = (browser: BrowserServer | null | undefined) => {
       if (mine !== startCount) return; // stopped or started again while waiting for the server
+      const had = hasBrowser;
+      hasBrowser = browser !== undefined && browser !== null;
+      if (had !== hasBrowser) {
+        try {
+          panel.post({ type: "front", chip: chip(latestFront) });
+        } catch (e) {
+          log("couldn't send the chip to the page: " + String(e));
+        }
+      }
       const options: Parameters<Provider["start"]>[0] = { resume: session, model: chosenModel, configFolder: configFolder || undefined };
       if (browser !== undefined) options.browser = browser;
       provider.start(options, onEvent);
@@ -378,13 +395,13 @@ export function createAssistant(deps: Dependencies) {
     return latestFront;
   }
 
-  /** Sends to the provider: the note about the tab in front, when this build has one, then the text. */
+  /** Sends to the provider: the note about the tab in front, when this build shares it and the provider has the browser's tools, then the text. */
   function sendNow(text: string): void {
     status = "answering";
     error = null;
     turn += 1;
     frontAtSend = heldFront;
-    provider.send(deps.singularity.front ? frontBlock(frontAtSend) + "\n\n" + text : text);
+    provider.send(deps.singularity.front && hasBrowser ? frontBlock(frontAtSend) + "\n\n" + text : text);
   }
 
   async function handle(payload: unknown): Promise<unknown> {
@@ -505,7 +522,7 @@ export function createAssistant(deps: Dependencies) {
   deps.singularity.onFrontChange?.((front) => {
     latestFront = front;
     try {
-      panel.post({ type: "front", chip: chipText(front) });
+      panel.post({ type: "front", chip: chip(front) });
     } catch (e) {
       log("couldn't send the chip to the page: " + String(e));
     }

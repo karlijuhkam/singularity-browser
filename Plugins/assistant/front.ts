@@ -21,12 +21,17 @@ const NOTHING_VISIBLE = "Nothing in front is visible to you.";
 /** An address or a search text in a line is cut here (the model chooses them). */
 const MAX_SHOWN = 200;
 
+/** Title and address are cut here before they go to Claude (the app cuts them too). */
+const MAX_TITLE = 300;
+const MAX_ADDRESS = 2000;
+
 /**
- * Replaces < and > (page text must not be able to close the wrapper) and turns every run of
- * whitespace, newlines included, into one space (a title can't start a line of its own).
+ * Turns every run of whitespace, newlines included, into one space (a title can't start a line
+ * of its own), removes the other Unicode control and format characters (they could hide or
+ * reorder text), and replaces < and > (page text must not be able to close the wrapper).
  */
 function defang(text: string): string {
-  return text.replace(/\s+/g, " ").trim().replace(/</g, "‹").replace(/>/g, "›");
+  return text.replace(/\s+/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim().replace(/</g, "‹").replace(/>/g, "›");
 }
 
 /** The note put before the user's text in what is sent to Claude (never shown, never saved). */
@@ -40,8 +45,8 @@ export function frontBlock(front: FrontTab | null): string {
     `Kind: ${tab.kind}`,
     '<untrusted-content source="tab in front">',
   ];
-  if (tab.title !== undefined) lines.push(`Title: ${defang(tab.title)}`);
-  if (tab.url !== undefined) lines.push(`Address: ${defang(tab.url)}`);
+  if (tab.title !== undefined) lines.push(`Title: ${defang(tab.title.slice(0, MAX_TITLE))}`);
+  if (tab.url !== undefined) lines.push(`Address: ${defang(tab.url.slice(0, MAX_ADDRESS))}`);
   lines.push("</untrusted-content>");
   return lines.join("\n");
 }
@@ -61,8 +66,9 @@ const PREFIX = "mcp__singularity__";
 
 /**
  * The name the door gives a tool, from the name `claude` reports: "mcp__singularity__my_work_read_page"
- * is "my_work.read_page". The Space's slug may hold underscores, so the name is split at its
- * last known tool name, never at the first "_". null for a tool that isn't the door's.
+ * is "my_work.read_page". The app's slugs hold only a-z, 0-9 and "-" (never "_"), but tool
+ * names hold underscores, so the name is split at its last known tool name, never at the first
+ * "_". null for a tool that isn't the door's.
  */
 export function doorName(claudeName: string): string | null {
   if (!claudeName.startsWith(PREFIX)) return null;
