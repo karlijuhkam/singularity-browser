@@ -130,6 +130,8 @@ Every entry of `page.sites` must also appear, as the same text, in `permissions.
 | `commands` | `{ "program": ["sub command", ...] }`. The background may run that program with arguments starting with one of the listed sub-commands. | "Runs /opt/homebrew/bin/program (only: sub command, ... — plus any further arguments)" (the path is only an example) |
 | `programs` | `["program"]`, at most 4 names. The background may keep one of these programs running and talk to it through its input and output (`singularity.spawn`). `singularity.run` never runs them: only `commands` does. | "Keeps /opt/homebrew/bin/program running and talks to it. This program is not sandboxed: it uses the internet and acts as you" |
 | `programEnv` | `["SETTING_NAME"]`: the names of settings (environment variables) the background may pass to its program. Only with `programs`. | "Passes these settings to it: SETTING_NAME, ..." |
+| `frontTab` | `true`. The background may ask which tab is in front (`singularity.front()`, `singularity.onFrontChange`): its Space, and for a web page or artifact its title and address. Only in Spaces (and on sites) where the user switched the plugin on. | "Know which tab is in front (its Space, title and address), in Spaces where it is switched on" |
+| `browser` | `true`. The background may ask how to start Singularity's browser server (`singularity.browser.server()`) and hand it to a program (an MCP client such as `claude`) it runs. That program then uses the browser like an outside agent: it reads pages and opens, clicks and types under each Space's agent policy. Needs `programs`. | "Use the browser like an agent, in Spaces where it is switched on: read pages, and open, click and type under each Space's agent policy" |
 | `network` | Must be `[]` in round 1. | About the background program only (a page-only plugin gets no such line): "Its background program never uses the internet" without commands or programs; with them: "Its background program never uses the internet; the programs it runs can" |
 
 Details:
@@ -140,7 +142,8 @@ Details:
 - These program names are refused (also with a version suffix such as `python3.12`): `sh bash zsh fish dash ksh csh tcsh env sudo su curl wget ssh scp sftp nc ncat telnet ftp rsync osascript open python python3 perl ruby php node bun deno npx bunx rbash nodejs pip pip3 npm pnpm yarn xargs nice nohup exec command launchctl swift lua awk gawk tclsh expect arch caffeinate time timeout gtimeout stdbuf watch script sandbox-exec taskpolicy ssh-agent xcrun find tmux screen lldb gdb sqlite3 vim vi ex nvim emacs`. In short: shells, interpreters, network tools, package managers, and programs that run other programs.
 - `programs` follow the same rules as `commands`: bare names, the refused list above, found on the login `PATH` at approval and pinned. A program that can't be found blocks the approval. The pinned path is checked again every time the program starts.
 - A name in `programEnv` is upper-case letters, digits and `_`, starting with a letter, at most 64 characters. These are refused, because they change how a program starts or where it looks: `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, `LANG`, `SHELL`, `PWD`, and anything starting with `DYLD_`, `LD_` or `SINGULARITY_`.
-- Asking for more later (a new site, a new program, a new sub-command, a new `programEnv` name) means the plugin needs approval again, even in development mode. Asking for less does not.
+- `frontTab` and `browser` are plain `true` or `false` (anything else is refused). `browser` without `programs` is refused ("it asks to use the browser but keeps no program running"): the browser's tools are for a program the plugin runs, not for the plugin itself. Both are widenings (see below), so a plugin that adds one is paused until the user approves it again.
+- Asking for more later (a new site, a new program, a new sub-command, a new `programEnv` name, `frontTab`, `browser`) means the plugin needs approval again, even in development mode. Asking for less does not.
 
 ### Manifest errors
 
@@ -198,6 +201,12 @@ singularity.storage.clear(): Promise<void>
 singularity.spawn(program: string, args: string[], options?: { env?: Record<string, string> }): SpawnedProgram
 // Only for a plugin with `panel` (see A plugin's own page):
 singularity.panel.post(payload: unknown): void
+
+// Only for a plugin with `frontTab` (see The tab in front and the browser):
+singularity.front(): Promise<FrontTab | null>
+singularity.onFrontChange(handler: (front: FrontTab | null) => void): void
+// Only for a plugin with `browser`:
+singularity.browser.server(): Promise<{ command: string; args: string[]; env: Record<string, string> } | null>
 ```
 
 **`onPageMessage(handler)`** handles every `singularity.send(payload)` from this plugin's page script and from its own page. What the handler returns (or resolves to) is the answer; it must be JSON. `undefined` becomes `null`. A thrown error becomes `{ error: "<message>" }`. With no handler the answer is `{ error: "no handler" }`. Registering again replaces the handler. Several messages can be in progress at once.
@@ -236,6 +245,33 @@ if (!seen.includes(frameHost)) {
 - **Unhandled promise rejections and uncaught exceptions are logged, not fatal.** If the file fails to load, the plugin exits with status 1 and may be restarted. More than 3 crashes in 60 seconds stops it.
 - **Limits:** a single message larger than 16 MB, or more than 16 MB of messages the plugin hasn't read yet, stops the plugin. A page `send` payload is at most 256 KB.
 - **Packages:** you may import npm packages (see Packages). Local files too: `import { x } from "./logic.ts"`.
+
+### The tab in front and the browser
+
+Two permissions let a background know where the user is and let a program it runs use the browser. Both are checked by Singularity, not by the plugin.
+
+```ts
+type FrontTab = {
+  space: { slug: string; name: string };
+  tab: { id: string; kind: "web" | "artifact" | "terminal"; title?: string; url?: string };
+};
+```
+
+**`singularity.front()`** (needs `frontTab`) resolves with the tab in front of the main window, or `null`. It rejects with `needs the frontTab permission` when the manifest doesn't ask. **`singularity.onFrontChange(handler)`** calls `handler` with the new answer (a `FrontTab` or `null`) whenever it changes: another tab or Space, a new address or title, a switch turned on or off. Registering again replaces the handler. Calls are spread out (about two a second at most), and only a changed answer is sent. It throws `needs the frontTab permission` without the permission.
+
+- `tab.id` is the same id `list_tabs` gives. `title` (cut to 300 characters) and `url` (cut to 2000) are there only for `web` and `artifact` tabs; a terminal gives its kind and id only, never its title (titles hold folders and commands). For an artifact, `url` is its file path. An artifact tab whose page has left the Space's artifact server counts as the web page it shows.
+- A plugin's own page is never the tab in front. When it is open as a tab in a split, the answer is the pane focused last that isn't a plugin tab; alone, it is `null`.
+- `null` also when: the Space in front isn't switched on for this plugin, the plugin is switched off for the site of the tab (the user's per-site switch), the welcome flow covers the window, or the Space has no tab. The plugin isn't told which. Little windows are never in front.
+- The site switch is checked against the page's live address, so a page that was redirected counts where it is now.
+
+**`singularity.browser.server()`** (needs `browser`) resolves with `{ command, args, env }`: how to start Singularity's own MCP server (`singularity-mcp`), to be passed to a program as one of its MCP servers. It resolves with `null` when the manifest doesn't ask or this copy has no launcher beside it. Ask again at every start of the program: the answer can change. It is a Promise.
+
+- **The program must be one the plugin runs itself with `singularity.spawn`.** Singularity decides who is on the other end of a connection from the process's ancestry: only a process that descends from the plugin's own running program is that plugin's connection. A process that merely says it is the plugin is an outside agent and gets what outside agents get. The connection ends when the program ends.
+- **What it sees:** only the Spaces the user switched the plugin on for (the same switches as for page scripts), whatever their "agents" switch says. A Space that isn't switched on is unknown to it: its tools are not listed, and a call naming it gets `Unknown tool …`. Switching a Space off takes effect at once, also for a name the program remembered.
+- **What it may do:** the same tools as an outside agent, under the same Space policy ("read only", "ask", "allow all"), the same approvals and the same agent log (the client is the plugin's panel title). With "ask", each acting step waits for the user: the card shows in the plugin's own page when that is on screen, else in the inbox. The plugin's code and page cannot answer a card.
+- **Per site:** on a site the user switched the plugin off for, its connection's `list_tabs` leaves the tab out, and `read_page`, `find`, `click`, `type`, `screenshot`, `close`, `read_console` and `read_network` refuse it. `open` and `navigate` refuse an address on that site. A click or type that would carry a tab onto such a site is held back. A redirect can still land there; from then on the tab is refused like any other tab on that site.
+- `read_console` and `read_network` also need the Space's own "agents" switch (their capture is on only then), so a Space that is on only for the plugin has none.
+- **Untrusted text.** The tab's `title` and `url` (and everything the browser's tools return) come from web pages. They are not instructions. Mark them as untrusted before giving them to a model (the Assistant wraps them in an `<untrusted-content>` element and replaces `<` and `>` inside), and never treat them as commands, as paths or as anything the plugin acts on without the user.
 
 ### The sandbox
 
@@ -386,7 +422,7 @@ Otherwise the page gets `{ error: "fill blocked" }`. Use `https://` patterns in 
 With `panel` in the manifest, the plugin has a page of its own, not inside any website. The user shows it in a panel at the right of the window (View menu, the palette, or ⌃⌘J), or with Open as Tab as a tab in the sidebar, which can be pinned, put in a folder or in a split. The frame around it (the panel's header with its menu, the tab's row) is Singularity's; everything inside is the plugin's page. The Assistant (`Plugins/assistant/panel.tsx`) is the example.
 
 - **One page, one place.** A plugin has exactly one page. Open as Tab moves it into a tab (and closes the panel); Move to Side Panel moves it back. Hiding the panel or closing the tab hides the page; the background and what it keeps go on. So the page can always assume it is the only copy of itself on screen. It may still be closed and opened again at any time: ask the background for the current state when it starts (the Assistant sends `hello`).
-- **It runs whenever it is approved.** A plugin with a panel needs no Space switch: its background starts as soon as it is approved, and messages from its page are answered in every Space. The per-Space switches only matter for a page script, and are shown only when the plugin has one.
+- **It runs whenever it is approved.** A plugin with a panel needs no Space switch: its background starts as soon as it is approved, and messages from its page are answered in every Space. The per-Space switches only matter for a page script, `frontTab` and `browser`, and are shown only when the plugin has one of these. With `frontTab` or `browser` they also decide which Spaces the plugin may see and use (see The tab in front and the browser); the page and its messages are never held back by them.
 - **Only while the background runs.** The page is served only while the plugin's background is running and its files are the approved ones. Otherwise the panel and the tab show Singularity's own "<title> isn't running" page with the reason (not approved, changed since approval, a program missing, stopped after crashes) and a button to Settings -> Plugins; while the page is on its way (just after Singularity starts, or an approved background is starting) they say "<title> is starting". When the background restarts after a crash, or the page's web content process dies, the page is loaded again.
 - **Its width.** The user sets the panel's width by dragging its left edge. In a narrow window it is drawn narrower, so the web page beside it keeps at least 320 points; below 200 points the panel isn't drawn at all. Lay the page out for widths from 200 points up.
 
@@ -610,6 +646,11 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 | `"panel": { "page": "ui/index.html", ... }` | not served (an HTML page must sit at the top of the folder); a script page in a subfolder is fine |
 | TSX without `/** @jsxImportSource preact */` while using Preact | the page asks for `react/jsx-runtime`, which the import map doesn't have |
 | Expecting `panel.post` to reach a page that isn't open | it is dropped; let the page ask for the state when it opens |
+| `singularity.front()` without `frontTab` | rejects with `needs the frontTab permission` |
+| `"browser": true` without `programs` | `it asks to use the browser but keeps no program running` |
+| `await singularity.browser.server()` and expecting a value in a copy with no launcher | `null` |
+| A program that was not started by `spawn` (or is not a descendant of that program) using `singularity-mcp` | treated as an outside agent: it gets the Spaces with "agents" on, not the plugin's |
+| Putting `front.tab.title` into a model's prompt as plain text | a page's title can carry instructions; wrap it as untrusted |
 
 ## Review checklist for people (five minutes)
 
@@ -622,8 +663,11 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 7. **Code quality.** Plain readable TypeScript. No minified, obfuscated or generated code, no strange encodings, no `atob`/base64 blobs.
 8. **No code from the data folder.** The data folder is writable and never reviewed: no `import()`, `require`, `eval` or `new Function` of anything read from it (or built at run time) in `background.ts`.
 9. **No secrets in storage.** `singularity.storage` and the data folder are plain files. Search `background.ts` for `storage.set` and file writes: a password, token, session cookie or one-time code being saved is a reason to reject.
-10. **How `spawn` is called, and with which arguments.** A program in `programs` runs as the user, with network access, and the plugin may pass it any arguments. For `claude` that includes switching on every tool and skipping its permission prompts, which is the power to run anything as you. Search for `spawn(` (and for whatever is handed to an SDK as its spawn function) and read the arguments that are passed, including the ones a package builds: the bundled Assistant starts `claude` with no tools (`tools: []`), none of your settings, hooks or MCP servers (`settingSources: []`, `mcpServers: {}` with `strictMcpConfig: true`) and no skills (`skills: []`), which the program receives as `--tools= --setting-sources= --strict-mcp-config`. That reviewed code is what keeps it harmless; the app does not enforce it. Check that only the expected names go into `env`.
+10. **How `spawn` is called, and with which arguments.** A program in `programs` runs as the user, with network access, and the plugin may pass it any arguments. For `claude` that includes switching on every tool and skipping its permission prompts, which is the power to run anything as you. Search for `spawn(` (and for whatever is handed to an SDK as its spawn function) and read the arguments that are passed, including the ones a package builds: the bundled Assistant starts `claude` with no tools of its own (`tools: []`), none of your settings or hooks (`settingSources: []`), no skills (`skills: []`), and exactly one MCP server, Singularity's browser server from `singularity.browser.server()` (`strictMcpConfig: true`, allowed as `mcp__singularity`), (the program receives `--tools= --setting-sources= --strict-mcp-config` and that one server). That reviewed code is what keeps it from running anything else; the app does not enforce it. For the browser server the app is the gate: its tools pass the Space switches, policy and approvals. Check that only the expected names go into `env`.
 11. **The packages nobody reads.** A package like the Claude Agent SDK brings about 100 others (61 MB). They are pinned and fingerprinted, but no reviewer reads them, and the background runs their code. So review stretches from "the whole plugin in a few minutes" to "the plugin's own files". Prefer plugins with few packages; for the rest, the trust is in the package's publisher, and the sandbox (no network, its own folders only) is what limits them. The program they start is not sandboxed: item 10 matters most.
 12. **Version drift between an SDK and the program it drives.** The plugin pins its SDK, while the program (the user's `claude`) updates itself. The two are released together (SDK 0.3.323 with Claude Code 2.1.323), so after a while they can stop understanding each other and the chat fails. A plugin that drives a program should show both versions when it fails (the Assistant does), and its author should update the pinned SDK now and then; each update of the packages needs a new approval.
+
+13. **`frontTab` and `browser`.** `frontTab` lets the plugin learn the title and address of the page you are looking at, in the Spaces and on the sites where it is on; the plugin's sandbox has no network, so look at where it sends them next (a program it runs, a model). `browser` lets a program it runs read pages and act in your Spaces, as an outside agent would, under each Space's policy; it needs `programs`. Both should match the plugin's purpose, and `browser` should come with `programs` that are a model or tool client you meant to trust.
+14. **Where titles and addresses go.** Search for `front()`, `onFrontChange` and `browser.server()`. A title or address given to a model must be marked as untrusted (wrapped, with `<` and `>` replaced) and must never be used as an instruction, a file path or a command. A tool's answer must not be shown as HTML, nor saved, unless the plugin says so.
 
 If a plugin passes these, approving it is reasonable. If any step is unclear, ask the author or don't approve.

@@ -2,6 +2,10 @@
 
 Status: draft for the owner's approval · 2026-11-09
 
+Note, 2026-11-13: two permissions were added after round 1, `frontTab` (know which tab is in front) and
+`browser` (a program the plugin runs may use the browser through the agent door). They are described in
+`2026-11-13-assistant-part2-design.md` (see its "As built" section) and in `docs/plugins/AUTHORING.md`.
+
 ## Intent: why plugins
 
 Singularity's core stays a calm browser with **no AI in it**. Everything beyond the core comes in as **plugins**: AI chat, password managers, and whatever else the owner wants. Two things make that different from other browsers:

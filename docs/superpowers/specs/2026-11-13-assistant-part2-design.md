@@ -4,6 +4,21 @@ Design, 2026-11-13. Part 1 (`2026-11-13-assistant-part1-design.md`, read its "As
 first) gave a plain chat with no tools. This part lets the Assistant know which tab is in front,
 read pages and act in the browser. Part 3 (terminals) is not in this document.
 
+Status: part 2 built on 2026-11-13 (plan `docs/superpowers/plans/2026-11-13-assistant-part2.md`). The
+"As built" section at the end says where the build differs from this design, and wins where they
+disagree.
+
+## As spiked (2026-11-13, throwaway, nothing kept)
+
+With the real `claude` 2.1.323 and SDK 0.3.323: `mcpServers: { singularity: { type: "stdio", command,
+args, env, timeout } }` with `strictMcpConfig: true`, `tools: []`, `settingSources: []` connects;
+`allowedTools: ["mcp__singularity"]` lets every tool of that server run with no permission prompt; a
+tool `work.read_page` appears to the model as `mcp__singularity__work_read_page`;
+`notifications/tools/list_changed` is honoured in the middle of a turn; `query.interrupt()` during a
+tool call sends the server `notifications/cancelled` with the request id. The MCP Swift SDK's
+`Server` cancels the handler's `Task` on that notification (`Server.swift`,
+`onNotification(CancelledNotification.self)`). So none of the design's fallbacks are built.
+
 ## Why
 
 The owner: "since it cant do anything then lets start working on phase 2". The Assistant is meant
@@ -329,3 +344,231 @@ a waiting tool call so the server sees it. Fallbacks (my calls):
   chip and the native card and strip (follow the inbox card and part 1's page).
 - How ancestry is read and cached; where the plugin id travels from connection to inbox entry.
 - Names of internal types and files.
+
+## As built (2026-11-13)
+
+Built on the branch `assistant-2` in eight tasks (plan `docs/superpowers/plans/2026-11-13-assistant-part2.md`).
+Where this section and the design above disagree, this section is what the code does.
+
+### Decisions and differences, in the order of the design
+
+**1. The switch.**
+- As designed: the plugin's existing per-Space switch (`PluginApproval.enabledSpaces`), no new field on
+  `Space`. `PluginManifest.reachesSpaces` (`frontTab` or `browser`) is the rule that shows the
+  switches, together with having a page script (`showsSpaceSwitches`). A plugin with a panel but
+  neither permission and no page script still shows none.
+- A change applies at once: the plugin is told the front tab again, its connection gets
+  `tools/list_changed`, and its waiting approvals for that Space are denied
+  (`InboxCenter.denyApprovals(ofPlugin:inSpace:)`, called from `PluginManager.setEnabled`).
+- `tools/list_changed` reaches a plugin's connection only when its own list changed (it compares the
+  tool names and descriptions it was last given). A switch of a plugin never notifies outside
+  agents (`MCPHub.toolsChanged(pluginsOnly:)`).
+
+**1a. Off for one site.**
+- The site settings panel lists a plugin that is on for the Space and has a page script that runs
+  there, or `frontTab`, or `browser` (`PluginReach.listedForSite`).
+- **The site is judged by the tab's live address**, for web tabs and for artifact tabs: a page that
+  was redirected or moved on counts where it is now (the stored address counts too, for a web tab).
+  An artifact tab whose live page has left the Space's artifact server counts as the web page it
+  shows: for the door's checks, and for `front`, which then says kind `web` with that address and
+  never an artifact file path.
+- The door's list of refusals is as designed (`list_tabs` leaves the tab out; `read_page`, `find`,
+  `click`, `type`, `screenshot`, `close`, `read_console`, `read_network` refuse it; `open` and
+  `navigate` refuse an address on that site before anything is loaded or asked). The check is made
+  before the call and, for `read_page`, `find` and `screenshot`, again after the read.
+- **Stronger than the design's limit.** While a plugin's connection runs a `click` or `type`, the
+  navigation guard (`installNavigationGuard`, the same one that asks about going to another site)
+  cancels any navigation of the page's main frame onto a switched-off site, and the call's log value
+  gets `+nav_site_off`. A redirect or a script that moves the page without a navigation the guard sees
+  can still land there. From then on the tab is refused like any other tab on that site, and the
+  result of that call says "Now at a site <Title> is switched off for." instead of the address and
+  title.
+- The refusal text is `<Title> is switched off for this site.` (`AgentCaller.siteOff`).
+
+**2. `frontTab`.**
+- As designed. `singularity.front()` and `onFrontChange` are in `host.ts`; `front()` rejects with
+  `needs the frontTab permission` at once, in the plugin, when the manifest has no `frontTab`
+  (host.ts learns the flags from its third argument); the app answers `null` too.
+- A plugin that never asked is told its first front on the first change. Changes are sent at once,
+  or once more after 0.5 s, and only when the answer differs from what the plugin last heard
+  (also from a reply). The app calls `frontDidChange` from one place, `loadSelectedTab()`, so closing,
+  opening, splitting, the welcome flow and Space changes all tell the plugin.
+- A plugin tab in a split with no recorded focus falls back to the first pane that isn't a plugin
+  tab. A plugin tab alone: `null`.
+- `title` is `displayTitle`, cut to 300 characters; an artifact's `url` is its file path.
+
+**3. `browser`.**
+- **`singularity.browser.server()` returns a Promise** (the design showed a plain value). The answer
+  goes over the wire as `browserServerRequest` and comes back as `reply`; `null` without the
+  permission or without a launcher beside the app.
+- **Recognising the connection.** The caller is decided once, when the connection is accepted, from
+  the peer's pid (`LOCAL_PEERPID`): a descendant of the running program of an approved plugin whose
+  manifest and approval both have `browser` (`PluginManager.pluginOwning(pid:)`). A pid that can't be
+  read means an outside agent. The connection remembers **the program's pid it was accepted under**;
+  every call checks that this is still the plugin's running program
+  (`PluginManager.programPID(of:)`, which reports a pid only while the program is unreaped, so it is
+  never a recycled one). **A plugin's connection ends with its program:** when the program exits or
+  the plugin stops, is paused, changed or removed, `MCPHub.closeStaleConnections(ofPlugin:)` shuts
+  the connections made under an older program, and until then their calls are refused.
+- **Which Spaces.** As designed: the Spaces switched on for the plugin, whatever their "agents"
+  switch says, re-checked at every call and again after an approval has been waited for. **A call
+  naming a Space that is not open to the plugin gets the plain "Unknown tool … Call list_spaces to see
+  what is available." and writes no log line.** The design's text "<Title> is switched off in the
+  “<Space>” Space." (`AgentCaller.spaceOff`) is therefore not used for this case: it would tell a plugin
+  the name of a Space it was never given by guessing slugs. This holds for a Space that was switched
+  off, and for one that was closed or deleted. Outside agents keep their own text.
+- The log's client and the approval card's actor are the plugin's panel title (the manifest's name
+  without a panel). `list_spaces` with no Space open says "No Spaces are open to <Title>. …"
+  (`AgentCaller.noSpaces`); its tab counts leave out tabs on switched-off sites. The server's
+  instructions for a plugin say "switched on for <Title>".
+- **`read_console` and `read_network` still need the Space's own "agents" switch** (`InspectionRules`
+  is unchanged: capture runs only when the Space's agents switch and the site's switch are on). So a
+  Space that is on only for the plugin has no console or network tools. Known gap, on purpose:
+  widening capture is a decision of its own.
+- Settings → Agents: the policy picker is enabled when agents are on or a plugin with `browser` is
+  switched on for the Space, and a line under the row says "Also used by <Title>[, …]".
+
+**4. Approvals in the plugin's page area.**
+- An approval caused by a plugin's connection carries the plugin's id into the inbox entry. While the
+  plugin's page is on screen (`AppState.pluginPageOnScreen`: app active, main window visible and key
+  or main, no welcome flow, and the panel actually drawn at this window width, or a tab of the plugin
+  among the selected Space's visible tabs), `InboxRules.shownInPluginPage` is true: the inbox panel
+  does not open by itself, and no banner or Dock bounce is made. The entry stays in the inbox list and
+  on the tray.
+- The cards are `InboxCard` itself, drawn under the page (`PluginPageCards.swift`), at most 3 and
+  "and N more in the inbox". Answers go through `inbox.perform`, so the 0.5 s lock
+  (`pageCardsAppeared` sets it, as `panelAppeared` does) and the re-check against the Space's current
+  policy are the same. No button is a default button or has a keyboard shortcut, and the card buttons
+  are not focusable (an environment value, `inboxCardButtonsTakeFocus`, false in the page cards; the
+  link-style buttons "Show Tab" and "Go to terminal" are drawn as plain buttons there, because AppKit's
+  link button takes the first responder even when told not to). The inbox panel is unchanged.
+- The page area's layout keeps the page in the same place in the view tree, so its web view is never
+  rebuilt when a card comes or goes. Cards also show while the page says "is starting" or "isn't
+  running".
+- **The strip.** With no card and the Space in front not switched on for the plugin
+  (`front` is `.hidden(.spaceOff)`, only for a plugin with `reachesSpaces`, only under the live page),
+  the page area shows "<Title> can't see <Space>" with a button "Let it use <Space>", which switches
+  that Space on for the plugin (`letPluginUseSpace`). The strip is not shown for a site that is off,
+  or when nothing is open.
+- **Cancelling.** A call whose task is cancelled withdraws its waiting approval at once
+  (`AgentApprovals.Outcome.cancelled`, refusal "The request was withdrawn.", log value `cancelled`;
+  `AgentApprovalRules` did not change). The MCP SDK cancels a call's task on the client's
+  `notifications/cancelled`, **but not when a connection closes**: `MCPHub` therefore runs every
+  `CallTool` as its own task, remembers it per connection (`RunningCalls`), and cancels them all when the
+  connection ends, **for every agent, not only the Assistant** (this changes what an outside agent's
+  closed connection does: its waiting approvals are withdrawn at once instead of at their timeout). A
+  call that arrives after the end gets "The connection was closed.".
+- Every exit of a waiting approval (answer, timeout, withdraw, Space switched off for the plugin,
+  Space deleted, tab closed, quit) goes through `finishApproval`, which takes the record out first, so
+  each waiter is resumed exactly once.
+- **Approvals raised by the navigation guard are not withdrawn by a cancel.** They are asked inside
+  WebKit's navigation delegate, on a task that isn't the tool call's. A cancelled `click` or `type`
+  that was waiting on "go to another site" leaves that card until it is answered or times out. Known
+  gap.
+
+**5. The Assistant plugin (version 0.2.0).**
+- `plugin.json` asks for `frontTab` and `browser`; the plugin's own files for this are `front.ts`
+  (the block, the chip, tool names and lines), `provider-claude.ts` (one MCP server and
+  `allowedTools: ["mcp__singularity"]` when the app gave one; still `tools: []`, `settingSources: []`,
+  `skills: []`, `strictMcpConfig`), `background.ts`, `panel.tsx`.
+- The tab in front is asked at `hello` (for the chip) and at every send, and goes into what is
+  sent to Claude as a block before the user's text (`frontBlock`): Space slug and name, tab id, kind,
+  and the title and address inside `<untrusted-content source="tab in front">`, with whitespace
+  collapsed and `<` and `>` replaced. It is never shown and never saved: the chat and
+  `conversation.json` keep only what the user typed.
+- **The chip** above the input says the tab's title, else its address, else "Untitled tab", and
+  "Nothing shared from here" when there is no front tab (the design said "Nothing shared from this
+  Space" / "this site" / "No page in view"; the plugin is not told why). It follows `onFrontChange`.
+- **Tool lines.** A line is built from the call's own input and from the tab that was in front when the
+  message was sent; nothing a tool answered is used. Examples: "Read <title>", "Looked for “…” on
+  <title>", "Opened <address>", "Went to <address>", "Clicked on <title>", "Typed on <title>", "Took a
+  picture of <title>", "Listed the tabs", "Looked at your Spaces"; a Space other than the one in front
+  adds " in <slug>". A tab that isn't the front tab is "a tab". The suffix " — waiting for your OK"
+  is shown only for the acting tools (open, navigate, close, click, type), only while the call is still
+  running after 1.5 s (`mayWaitForOK` judges by the line's own text). A call whose result was an error
+  ends " — not done", and so does one still running when the answer ends, is stopped or the program
+  restarts (those lines are saved as not done). Lines are text nodes. Text after a tool line starts a new
+  message, so lines and text stay in order.
+- **The spec's `refused` status and "Not allowed" line were not built:** a call the app refused shows
+  " — not done" like any failed call.
+- **"The browser tools couldn't start."** with Try Again, above the input: when
+  `singularity.browser.server()` rejects (the chat then starts without tools), or when Claude's init
+  message shows the `singularity` server with a status other than connected. No line when the answer is
+  `null` (a copy with no launcher: the chat simply has no tools).
+- The empty chat now says "Ask anything. The Assistant can look at the tab in front when you share it."
+  (the part 1 text was no longer true).
+
+**7a. The sidebar button.**
+- As designed: the last button of the bottom row, at its right end, symbol `bubble.left.and.text.bubble.right`,
+  doing what ⌃⌘J does (`togglePluginPanel`, so also: select the tab when the page is a tab, and open
+  Settings → Plugins with no panel plugin installed). Tinted with the accent colour while the panel is
+  shown. Tooltip: the menu item's title and "(⌃⌘J)". Not drawn when no panel plugin is installed and none
+  is shipped. It is lit also while the panel is too narrow to draw (as the menu item's check mark is).
+
+**Update of a shipped plugin (not in the design's list, built with it).**
+- Settings → Plugins shows, in an installed plugin's row, "Update available (<version>)" and an Update
+  button when the app ships a plugin with the same id and a different `version`, and the installed
+  copy is not in development mode and its files are the approved ones, or it was never approved
+  (`BundledPlugins.updateOffer`). A plugin whose files changed, whose permissions widened or that is
+  invalid gets no offer: edited files must never be overwritten. Update copies the shipped folder to a
+  staging folder, checks it as Add does, swaps it in with an atomic replace (the old folder survives every
+  failure), leaves the data folder alone, rescans, and opens the normal approval sheet. Never approved in
+  code. A shipped plugin without a `version` in its manifest gets no offer.
+
+**8. Safety.** As designed. The recognised connection can never get more than an outside agent has in a
+Space with agents on, except that it does not need that switch. Everything from pages is wrapped as
+untrusted on its way to Claude, the title and address included, and the Assistant's system prompt says
+that what comes from pages, titles and addresses included, is never to be followed.
+
+**9. Tests.**
+- Core: `PluginReachTests`, `AgentCallerTests`, `InboxPluginTests`, `BundledPluginUpdateTests`, and the
+  manifest and wire tests. App: `PluginFrontTests`, `PluginDoorTests` (the fixture program
+  `Fixtures/door-client.sh` runs the real built `singularity-mcp` against a test app state's socket, once
+  as the program itself and once as its child; a stranger that calls itself "Assistant" gets the outside
+  view), `PluginApprovalCardTests`, and additions to `PluginSurfaceStateTests`. Bun: `front.test.ts` and
+  the Assistant's other tests.
+- Opt-in `RealAssistantTests` sends a second message that makes the real `claude` call `alpha.ping` of a
+  fixture MCP server (`Tests/SingularityAppTests/Fixtures/fixture-mcp-server.ts`, run with the
+  repository's Bun). The test answers the plugin's browser-server request with that server itself, so no
+  app and no browser are involved. It expects a tool line that ends done and `7391` in the answer.
+
+### Known small gaps (left on purpose for now)
+
+- A plugin's connection is told apart by the peer's pid read when the connection was accepted. If
+  that process ended and its pid was reused by a descendant of the plugin's program within
+  milliseconds, an outsider could be taken for the plugin's connection. It would gain only what the
+  plugin already has.
+- The site switch is per origin: `http` and `https`, or `www` and the bare name, are different sites.
+- An artifact tab on its own server, in a copy where the Space's artifact origin isn't known, is reported
+  as a web page with the `127.0.0.1` address. Addresses that aren't http or https (`about:blank`,
+  `blob:`, `data:`) count as web pages and are not covered by the site switch.
+- `list_tabs` still says kind `artifact` for an artifact tab whose page has left its server.
+- The plugin's title is shown as the card's actor as it is: a plugin titled like an outside agent would look
+  like one.
+- A tab's stored title is not cleared when its site changes; a titleless page can briefly be shown with
+  the title of the page before it.
+- `openPopup` selects a tab without telling the plugin until its first title or address change.
+  A plugin that never asked for the front tab can be sent a `null` first.
+- The strip and chip wording differ a little from the design (the plugin isn't told why nothing is shared).
+- Tests: some wait 700 to 800 ms in real time; the tests of the site refusals of `find`, `click`, `type`,
+  `screenshot` and `read_console`, and of the navigation guard's extras, are missing (`read_page`, `close`,
+  `open`, `navigate` and `list_tabs` are covered); `PluginPageCards` views are checked through their logic and
+  by a measured focus test, not by a picture; the sidebar button's view is not inspected; two Assistant
+  tests are missing (a tool result with no matching use; an interrupt in the middle of a tool at the
+  provider level); no run captured red-first for some of the later tests.
+- A shipped plugin without a `version` silently gets no update offer; a failing swap leaves the old
+  folder (checked by reading, not by a test); an error of the rescan after an update is not shown.
+- `host.ts`'s question to the app (`askApp`) never times out.
+- The Assistant's tool-line "waiting" suffix depends on the wording of the line (`mayWaitForOK`).
+- Switching a Space off works forward only: what the Assistant already read stays in the running
+  conversation and in Claude's session; New Chat clears it.
+
+### Not checked without the owner's hands
+
+The whole thing in the running app: the approval cards' look and that typing in the chat can't press
+them (Return and Space in the input, the cards in the panel and in a plugin tab), the strip and its
+button, the chip following the tab in front, the tool lines while a real page is read and a real
+acting step waits, the sidebar button (lit, tooltip, hidden sidebar), the Update row after an app
+update, and a real approval answered in the panel and then one answered in the inbox. Tests drive the
+same code against off-screen windows and a fixture program; the opt-in `RealAssistantTests` is for the
+owner's own account and has not been run.

@@ -4,7 +4,7 @@ import Testing
 @testable import Singularity
 
 /// Opt-in, never part of `scripts/test.sh`: the bundled Assistant plugin with the REAL `claude`,
-/// on the owner's own Claude account, sending one short message.
+/// on the owner's own Claude account, sending two short messages.
 ///
 ///     source scripts/env.sh && SINGULARITY_REAL_ASSISTANT=1 swift test --filter RealAssistantTests
 ///
@@ -19,6 +19,12 @@ import Testing
 ///   `programsAllowed: true`, sends `hello`, waits for `ready` with a billing value, sends
 ///   "Reply with the single word: pong", and expects at least one piece of the answer and `ready`
 ///   again, all within 60 s of the `hello`.
+/// - then a second message in the same conversation that asks for the tool `alpha.ping` of a
+///   fixture MCP server (`Fixtures/fixture-mcp-server.ts`, run with the repository's Bun, answers
+///   `pong-alpha-7391`). The test answers the plugin's `singularity.browser.server()` request with
+///   that server, in place of the app's `singularity-mcp`, so no app and no browser are involved.
+///   It expects a tool line that ends `done` and `7391` in the answer. (The plugin's request for the
+///   tab in front is answered with "none".)
 ///
 /// It uses the owner's plan (a few cents of usage) and leaves one short session in Claude's own
 /// folder (`~/.claude/projects/…`, named after the temporary data folder). A throwaway
@@ -30,13 +36,14 @@ private let repoRoot = URL(filePath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
 private let hostFolder = repoRoot.appending(path: "Resources/plugin-host", directoryHint: .isDirectory)
+private let fixtureServer = repoRoot.appending(path: "Tests/SingularityAppTests/Fixtures/fixture-mcp-server.ts")
 
 extension AppTests {
     @MainActor
     @Suite(.serialized, .enabled(if: realAssistantRequested, "opt-in: set SINGULARITY_REAL_ASSISTANT=1 (uses your real claude and your Claude plan)"))
     struct RealAssistantTests {
         @Test(.timeLimit(.minutes(5)))
-        func oneMessageWithTheRealClaude() async throws {
+        func twoMessagesWithTheRealClaude() async throws {
             guard FileManager.default.isExecutableFile(atPath: bunPath.path) else {
                 Issue.record("Vendor/bun/bun is missing (run scripts/fetch-bun.sh)")
                 return
@@ -85,6 +92,16 @@ extension AppTests {
             let seen = Seen()
             process.onReply = { id, payload in seen.reply(id, payload) }
             process.onPanelPost = { payload in seen.post(payload) }
+            // The plugin asks for the tab in front (none here) and for the browser's tool server: the
+            // fixture server, run with the repository's Bun.
+            process.onFrontRequest = { [weak process] id in process?.send(.reply(requestID: id, payload: .null)) }
+            process.onBrowserServerRequest = { [weak process] id in
+                process?.send(.reply(requestID: id, payload: .object([
+                    "command": .string(bunPath.path),
+                    "args": .array([.string(fixtureServer.path)]),
+                    "env": .object([:]),
+                ])))
+            }
             process.onLog = { level, message in print("real-assistant: log \(level): \(message)") }
             process.onExit = { _ in seen.exited() }
             try process.start()
@@ -134,6 +151,44 @@ extension AppTests {
             }.joined()
             print("real-assistant: answer \(answer.debugDescription)")
             #expect(!answer.isEmpty)
+
+            // The second message: a tool of the fixture server. The plugin's tool line must end
+            // "done" and the answer must hold the number the tool returned.
+            let postsBeforeTool = seen.postCount
+            process.send(.panelMessage(requestID: 4, payload: .object([
+                "type": .string("send"),
+                "text": .string("Call the browser tool alpha_ping (alpha.ping) once, with no arguments, then tell me the exact text it returned."),
+            ])))
+            let toolSent = try await seen.waitForReply(4, until: deadline)
+            #expect(Self.field(toolSent, "status") == .string("answering"), "send was answered with \(toolSent)")
+            _ = try await seen.waitFor("ready after the tool answer", until: deadline) { () -> Bool? in
+                let posts = seen.posts.dropFirst(postsBeforeTool)
+                guard let first = posts.firstIndex(where: { Self.field($0, "type") == .string("delta") }) else { return nil }
+                let readyAgain = posts[first...].contains {
+                    Self.field($0, "type") == .string("state") && Self.field($0, "status") == .string("ready")
+                }
+                return readyAgain ? true : nil
+            }
+            let toolPosts = Array(seen.posts.dropFirst(postsBeforeTool))
+            let toolAnswer = toolPosts.compactMap { post -> String? in
+                guard Self.field(post, "type") == .string("delta"), case .string(let text)? = Self.field(post, "text") else { return nil }
+                return text
+            }.joined()
+            print("real-assistant: tool answer \(toolAnswer.debugDescription)")
+            #expect(toolAnswer.contains("7391"), "the answer should hold the tool's text: \(toolAnswer)")
+            // The state posts carry the messages; some message has a tool line whose status is done.
+            let doneLines = toolPosts.flatMap { post -> [String] in
+                guard Self.field(post, "type") == .string("state"), case .array(let messages)? = Self.field(post, "messages") else { return [] }
+                return messages.flatMap { message -> [String] in
+                    guard case .array(let tools)? = Self.field(message, "tools") else { return [] }
+                    return tools.compactMap { tool in
+                        guard Self.field(tool, "status") == .string("done"), case .string(let text)? = Self.field(tool, "text") else { return nil }
+                        return text
+                    }
+                }
+            }
+            print("real-assistant: tool lines done \(doneLines)")
+            #expect(!doneLines.isEmpty, "no tool line ended done")
         }
 
         private static func field(_ value: JSONValue, _ name: String) -> JSONValue? {
