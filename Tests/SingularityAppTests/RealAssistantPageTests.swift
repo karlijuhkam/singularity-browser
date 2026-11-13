@@ -92,7 +92,7 @@ extension AppTests {
             }
 
             // The page renders: the empty chat, after its first `hello`.
-            let emptyChat = "Ask anything. In this version the Assistant can't see your pages or act for you yet."
+            let emptyChat = "Ask anything. The Assistant can look at the tab in front when you share it."
             let rendered = await wait("the empty chat") { await text(host, "p.empty") == emptyChat }
             print("real-page: empty chat shown: \(rendered); body: \(await text(host, "body").prefix(300).debugDescription)")
             if !rendered {

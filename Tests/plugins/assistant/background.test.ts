@@ -6,7 +6,9 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationFile } from "../../../Plugins/assistant/conversation.ts";
+import type { FrontTab } from "../../../Plugins/assistant/front.ts";
 import type { Provider, ProviderEvent } from "../../../Plugins/assistant/provider.ts";
+import { frontBlock } from "../../../Plugins/assistant/front.ts";
 import { createClaudeProvider } from "../../../Plugins/assistant/provider-claude.ts";
 import { fakeQuery, fakeSpawn, type Script } from "./fake-claude.ts";
 import { helloTurn, initializeResponse } from "./recording.ts";
@@ -37,13 +39,13 @@ plugin({
 const { createAssistant } = await import("../../../Plugins/assistant/background.ts");
 
 class FakeProvider implements Provider {
-  starts: { resume?: string; model?: string; configFolder?: string }[] = [];
+  starts: { resume?: string; model?: string; configFolder?: string; browser?: unknown }[] = [];
   sent: string[] = [];
   models: string[] = [];
   interrupts = 0;
   stops = 0;
   emit: (event: ProviderEvent) => void = () => {};
-  start(options: { resume?: string; model?: string; configFolder?: string }, emit: (event: ProviderEvent) => void) {
+  start(options: { resume?: string; model?: string; configFolder?: string; browser?: unknown }, emit: (event: ProviderEvent) => void) {
     this.starts.push(options);
     this.emit = emit;
   }
@@ -91,6 +93,10 @@ type MakeOptions = {
   conversationDelayMs?: number;
   /** How long after Stop the background waits for the end of the turn (default: its own 5 s). */
   stopWaitMs?: number;
+  /** The tab in front (what singularity.front() answers); leave out for a copy without that API. */
+  front?: { current: FrontTab | null | "fail" };
+  /** What singularity.browser.server() answers ("fail": it rejects). */
+  browser?: { command: string; args: string[]; env: Record<string, string> } | null | "fail";
 };
 
 async function make(
@@ -112,8 +118,30 @@ async function make(
   let getFailures = options.failFirstGet ? 1 : 0;
   const file = new ConversationFile(dir, { delayMs: options.conversationDelayMs ?? 10 });
   if (options.failDeletes) file.delete = async () => Promise.reject(new Error("disk says no"));
+  const frontHandlers: ((front: FrontTab | null) => void)[] = [];
+  const frontAPI = options.front
+    ? {
+        front: async () => {
+          if (options.front!.current === "fail") throw new Error("no front");
+          return options.front!.current as FrontTab | null;
+        },
+        onFrontChange: (handler: (front: FrontTab | null) => void) => void frontHandlers.push(handler),
+      }
+    : {};
+  const browserAPI = options.browser !== undefined
+    ? {
+        browser: {
+          server: async () => {
+            if (options.browser === "fail") throw new Error("no server");
+            return options.browser as { command: string; args: string[]; env: Record<string, string> } | null;
+          },
+        },
+      }
+    : {};
   const assistant = createAssistant({
     singularity: {
+      ...frontAPI,
+      ...browserAPI,
       panel: { post: (payload: unknown) => posts.push(payload) },
       storage: {
         get: async (key: string) => {
@@ -138,7 +166,8 @@ async function make(
   });
   const send = (payload: unknown) => assistant.handle(payload) as Promise<any>;
   const lastState = () => posts.filter((p) => p.type === "state").at(-1);
-  return { dir, storage, posts, provider, send, lastState, logs };
+  const changeFront = (front: FrontTab | null) => frontHandlers.forEach((h) => h(front));
+  return { dir, storage, posts, provider, send, lastState, logs, changeFront, file };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
@@ -589,4 +618,174 @@ test("a restart drops a message held for the billing notice", async () => {
   await second.send({ type: "retry" });
   await second.send({ type: "billingSeen" });
   expect(second.provider.sent).toEqual([]);
+});
+
+// ---- The tab in front and the browser's tools -------------------------------------------------
+
+const FRONT: FrontTab = {
+  space: { slug: "work", name: "Work" },
+  tab: { id: "T1", kind: "web", title: "Invoice 42", url: "https://example.com/invoices/42" },
+};
+const SERVER = { command: "/App/singularity-mcp", args: [], env: { SINGULARITY_MCP_SOCKET: "/x" } };
+
+async function readyAssistant(options: MakeOptions = {}) {
+  const made = await make({}, undefined, options);
+  await made.send({ type: "hello" });
+  made.provider.emit(ready());
+  return made;
+}
+
+test("the text sent to the provider starts with the block; the chat and the saved file keep only the user's text", async () => {
+  const front = { current: FRONT as FrontTab | null };
+  const { provider, send, file, dir } = await readyAssistant({ front });
+  const state = await send({ type: "send", text: "What is this?" });
+  expect(provider.sent.length).toBe(1);
+  expect(provider.sent[0].startsWith(frontBlock(FRONT))).toBe(true);
+  expect(provider.sent[0].endsWith("What is this?")).toBe(true);
+  expect(state.messages).toEqual([{ role: "user", text: "What is this?" }]);
+  await file.flush();
+  const saved = await Bun.file(dir + "/conversation.json").text();
+  expect(saved).toContain("What is this?");
+  expect(saved).not.toContain("untrusted-content");
+  expect(saved).not.toContain("Invoice 42");
+});
+
+test("each send asks for the tab in front again; nothing in front says so", async () => {
+  const front = { current: FRONT as FrontTab | null };
+  const { provider, send } = await readyAssistant({ front });
+  await send({ type: "send", text: "one" });
+  provider.emit({ type: "done" });
+  front.current = null;
+  await send({ type: "send", text: "two" });
+  expect(provider.sent[1]).toBe("Nothing in front is visible to you.\n\ntwo");
+  provider.emit({ type: "done" });
+  front.current = "fail";
+  await send({ type: "send", text: "three" });
+  expect(provider.sent[2]).toBe("Nothing in front is visible to you.\n\nthree");
+});
+
+test("a copy without the front API sends the text as it is", async () => {
+  const { provider, send } = await readyAssistant();
+  await send({ type: "send", text: "plain" });
+  expect(provider.sent).toEqual(["plain"]);
+});
+
+test("the chip: in the hello answer, and pushed when the tab in front changes", async () => {
+  const front = { current: FRONT as FrontTab | null };
+  const { send, posts, changeFront } = await make({}, undefined, { front });
+  const state = await send({ type: "hello" });
+  expect(state.chip).toBe("Invoice 42");
+  changeFront(null);
+  expect(posts.at(-1)).toEqual({ type: "front", chip: "Nothing shared from here" });
+  front.current = { ...FRONT, tab: { ...FRONT.tab, title: "Other" } };
+  changeFront(front.current);
+  expect(posts.at(-1)).toEqual({ type: "front", chip: "Other" });
+  expect((await send({ type: "hello" })).chip).toBe("Other");
+});
+
+test("the browser server is handed to the provider at every start; failing or none starts without tools", async () => {
+  const a = await make({}, undefined, { browser: SERVER });
+  await a.send({ type: "hello" });
+  await settle();
+  expect(a.provider.starts).toEqual([{ resume: undefined, model: undefined, configFolder: undefined, browser: SERVER }]);
+  await a.send({ type: "newChat" });
+  await settle();
+  expect(a.provider.starts.length).toBe(2);
+  expect(a.provider.starts[1].browser).toEqual(SERVER);
+
+  const b = await make({}, undefined, { browser: null });
+  await b.send({ type: "hello" });
+  await settle();
+  expect(b.provider.starts[0].browser).toBeNull();
+
+  const c = await make({}, undefined, { browser: "fail" });
+  const state = await c.send({ type: "hello" });
+  expect(state.status).toBe("starting");
+  await settle();
+  expect(c.provider.starts[0].browser).toBeNull();
+  expect(c.logs.some((line) => line.includes("browser"))).toBe(true);
+});
+
+test("tool events become lines in order with the text; results never appear; the file keeps the lines", async () => {
+  const front = { current: FRONT as FrontTab | null };
+  const { provider, send, lastState, file, dir } = await readyAssistant({ front });
+  await send({ type: "send", text: "Summarise" });
+  provider.emit({ type: "text", delta: "Let me read it." });
+  provider.emit({ type: "tool", id: "a", name: "work.read_page", input: { tab_id: "T1" }, status: "running" });
+  expect(lastState().messages.at(-1)).toEqual({
+    role: "assistant",
+    text: "Let me read it.",
+    tools: [{ text: "Read Invoice 42", status: "running" }],
+  });
+  provider.emit({ type: "tool", id: "a", name: "work.read_page", input: { tab_id: "T1" }, status: "done" });
+  provider.emit({ type: "tool", id: "b", name: "work.click", input: { tab_id: "T1", ref: 2 }, status: "running" });
+  provider.emit({ type: "tool", id: "b", name: "work.click", input: { tab_id: "T1", ref: 2 }, status: "failed" });
+  provider.emit({ type: "text", delta: "Done." });
+  provider.emit({ type: "done" });
+  const messages = lastState().messages;
+  expect(messages).toEqual([
+    { role: "user", text: "Summarise" },
+    {
+      role: "assistant",
+      text: "Let me read it.",
+      tools: [
+        { text: "Read Invoice 42", status: "done" },
+        { text: "Clicked on Invoice 42 — not done", status: "failed" },
+      ],
+    },
+    { role: "assistant", text: "Done." },
+  ]);
+  await file.flush();
+  const saved = JSON.parse(await Bun.file(dir + "/conversation.json").text());
+  expect(saved.messages[1].tools).toEqual(messages[1].tools);
+});
+
+test("a turn that ends with a tool still running leaves it as not done", async () => {
+  const front = { current: FRONT as FrontTab | null };
+  const { provider, send, lastState } = await readyAssistant({ front });
+  await send({ type: "send", text: "Go" });
+  provider.emit({ type: "tool", id: "a", name: "work.read_page", input: { tab_id: "T1" }, status: "running" });
+  provider.emit({ type: "done" });
+  expect(lastState().messages.at(-1).tools).toEqual([{ text: "Read Invoice 42 — not done", status: "failed" }]);
+});
+
+test("the tool lines use the tab that was in front at send, not the one in front now", async () => {
+  const front = { current: FRONT as FrontTab | null };
+  const { provider, send, lastState } = await readyAssistant({ front });
+  await send({ type: "send", text: "Go" });
+  front.current = { ...FRONT, tab: { ...FRONT.tab, id: "T2", title: "Else" } };
+  provider.emit({ type: "tool", id: "a", name: "work.read_page", input: { tab_id: "T1" }, status: "running" });
+  expect(lastState().messages.at(-1).tools[0].text).toBe("Read Invoice 42");
+});
+
+test("the real provider with a fake program: the sent text carries the block, a result's text goes nowhere", async () => {
+  const sent: any[] = [];
+  const script: Script = (program, line) => {
+    if (line.type === "control_request") program.answer(line, initializeResponse);
+    else if (line.type === "user") {
+      sent.push(line.message);
+      program.say(
+        { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "mcp__singularity__work_read_page", input: { tab_id: "T1" } }] }, parent_tool_use_id: null, session_id: "s" },
+        { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "SECRET PAGE TEXT" }] }, parent_tool_use_id: null, session_id: "s" },
+        ...helloTurn("s").slice(1),
+      );
+    }
+  };
+  const { spawn } = fakeSpawn([script]);
+  const provider = createClaudeProvider({ spawn, loadQuery: async () => fakeQuery });
+  const front = { current: FRONT as FrontTab | null };
+  const { send, lastState, file, dir } = await make({}, undefined, { provider, front, browser: SERVER });
+  await send({ type: "hello" });
+  for (let i = 0; i < 400 && lastState()?.status !== "ready"; i++) await new Promise((r) => setTimeout(r, 5));
+  await send({ type: "send", text: "Read it" });
+  for (let i = 0; i < 400 && !(sent.length > 0 && lastState()?.status === "ready" && lastState().messages.at(-1)?.text === "Hello there."); i++) await new Promise((r) => setTimeout(r, 5));
+  expect(sent[0].content.startsWith("Where the user is")).toBe(true);
+  expect(sent[0].content).toContain("Invoice 42");
+  const messages = lastState().messages;
+  expect(JSON.stringify(messages)).not.toContain("SECRET");
+  expect(messages[1].tools).toEqual([{ text: "Read Invoice 42", status: "done" }]);
+  expect(messages.at(-1)).toEqual({ role: "assistant", text: "Hello there." });
+  await file.flush();
+  expect(await Bun.file(dir + "/conversation.json").text()).not.toContain("SECRET");
+  provider.stop();
 });

@@ -34,16 +34,43 @@ Ways out when something hangs: Stop that brings no end of the answer within 5 se
 `claude` again (the conversation is kept); "Connecting to Claude…" gets Try Again after 15 seconds;
 and a page that couldn't reach the plugin at all has Try Again too.
 
-## What it can't do (yet)
+## The tab in front and the browser's tools
 
-- It can't see your pages, tabs or terminals, and it can't click, type, open or run anything.
-  It can only chat.
-- `claude` is started with none of its built-in tools, with no MCP servers at all (not even the
-  ones in your own Claude config), without your Claude settings files (so none of your hooks,
-  plugins or CLAUDE.md) and without skills (see `provider-claude.ts`). So all it can do is write
-  text. Two things stay as they are: settings your organisation manages for Claude, and a message
-  that starts with "/", which `claude` may read as one of its own commands (what it answers then is
-  shown as the answer).
+The Assistant can look at your browser, only where you allow it.
+
+- **What is sent, and when.** With every message you send, the Assistant asks Singularity which tab
+  is in front and puts a short note before your text in what goes to `claude`: the Space (name and
+  short name), the tab's id and kind, and its title and address. Title and address come from the
+  page, so they are marked as untrusted, and `<` and `>` in them are replaced so a page can't close
+  the mark. The chat and the saved conversation show only what you typed. Nothing is sent when no
+  tab is shared: the note then says nothing in front is visible. The line above the message box
+  (the chip) shows what the next message will carry.
+- **The switch.** The tab in front is shared only for a Space you switched the Assistant on for
+  (the button under the chat). The Assistant's browser
+  tools work the same way: the Spaces you opened to it, the Space's agent policy (read-only, ask,
+  allow all) and the approvals you already know from outside agents. It uses Singularity's own
+  agent door (`singularity-mcp`), so there is no second way into the browser, and every call is in
+  the Space's agent log. It can't see or use terminals.
+- **Switching off works forward only.** What was already sent stays in Claude's session for this
+  conversation; New Chat ends that.
+- **The per-site switch.** A site can be switched off for plugins in the site settings. A tab
+  already on such a site is not shared. A click or a redirect can carry a tab onto such a site
+  afterwards; the next call on it is then refused.
+- **Tool lines.** Each call shows as a small line in the chat ("Read Invoice 42", "Opened ...",
+  "Clicked on ..."), in order with the answer; "waiting for your OK" appears when an approval is
+  open. Lines are made from the call itself (its address, its search text, the title of the tab
+  that was in front). What a tool answered, such as page text, is never shown in a line or saved.
+- Without the app's browser door (a bare debug build) the Assistant is the plain chat it was in
+  version 0.1.
+
+## What it can't do
+
+- It can't see or use terminals.
+- `claude` is started with none of its built-in tools, with no MCP servers but Singularity's own
+  (not even the ones in your own Claude config), without your Claude settings files (so none of
+  your hooks, plugins or CLAUDE.md) and without skills (see `provider-claude.ts`). Two things stay
+  as they are: settings your organisation manages for Claude, and a message that starts with "/",
+  which `claude` may read as one of its own commands (what it answers then is shown as the answer).
 - Answers are shown as text (with simple formatting). Links are shown as their address, never as
   something to click, and HTML in an answer is shown as it is, never run.
 
@@ -53,7 +80,11 @@ and a page that couldn't reach the plugin at all has Try Again too.
   any website; it only talks to this plugin's background program.
 - **Keeps `claude` running and talks to it**: the one program it may start, found on your PATH
   when you approve the plugin (also a PATH set in `.zshrc`). That program is not sandboxed: it uses the internet and acts as you.
-  What keeps it harmless is how `provider-claude.ts` starts it (no tools); review that file.
+  What keeps it to the browser's tools is how `provider-claude.ts` starts it (no tools of its own,
+  one MCP server); review that file.
+- **Knows the tab in front**: its Space, title and address, in Spaces where you switched it on.
+- **Uses the browser's tools** (the ones outside agents have), in Spaces where you switched it on: read pages, and open,
+  click and type under each Space's agent policy and approvals.
 - **Passes these settings to it**: `CLAUDE_CONFIG_DIR` (only when you set a folder) and three
   names the Claude Agent SDK sets for its program (`CLAUDE_AGENT_SDK_VERSION`,
   `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SDK_READS_SESSION_STATE`). Singularity builds the rest of
@@ -67,6 +98,7 @@ and a page that couldn't reach the plugin at all has Try Again too.
 
 - `plugin.json` the manifest and permissions
 - `background.ts` the state, and the messages between the page and the provider
+- `front.ts` the note about the tab in front, the chip and the tool lines (pure, tested)
 - `provider.ts` the small interface any provider implements; `provider-claude.ts` the Claude one
   (everything that knows about `claude` and the SDK is in that one file)
 - `conversation.ts` the saved copy of the visible messages (`conversation.json` in the data folder)

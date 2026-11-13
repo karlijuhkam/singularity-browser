@@ -2,15 +2,20 @@
 // restart. (What Claude itself remembers is the program's own session file, in its config folder;
 // the plugin only keeps that session's id.)
 //
-// One file, <data folder>/conversation.json:  { "version": 1, "messages": [ { role, text, stale? } ] }
+// One file, <data folder>/conversation.json:  { "version": 1, "messages": [ { role, text, stale?, tools? } ] }
+// `tools` are the lines shown for the browser's tools that message used, { text, status }, in
+// order. They are built from the call's own input only (see front.ts); nothing a tool answered,
+// and nothing of the "where you are" note sent to Claude, is ever stored.
 // - written whole to a temporary file that is then renamed over the old one, so a crash leaves
 //   the old copy or the new one, never half a file;
 // - while an answer streams, at most once a second; at the end of an answer at once (`flush`);
 // - only the last 400 messages are kept;
 // - a file that can't be read counts as an empty conversation (and is replaced by the next write).
+import { FAILED_SUFFIX } from "./front.ts";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 
-export type Message = { role: "user" | "assistant"; text: string; stale?: boolean };
+export type ToolLine = { text: string; status: string };
+export type Message = { role: "user" | "assistant"; text: string; stale?: boolean; tools?: ToolLine[] };
 
 export const MAX_MESSAGES = 400;
 
@@ -31,6 +36,18 @@ function isMessage(value: unknown): value is Message {
     && (m.stale === undefined || typeof m.stale === "boolean");
 }
 
+/** The tool lines in a saved message; one still "running" can't be (the program is gone): not done. */
+function parseTools(value: unknown): ToolLine[] {
+  if (!Array.isArray(value)) return [];
+  const lines: ToolLine[] = [];
+  for (const item of value) {
+    const line = item as Partial<ToolLine> | null;
+    if (line === null || typeof line !== "object" || typeof line.text !== "string" || typeof line.status !== "string") continue;
+    lines.push(line.status === "running" ? { text: line.text + FAILED_SUFFIX, status: "failed" } : { text: line.text, status: line.status });
+  }
+  return lines;
+}
+
 /** The messages in a conversation.json's text; [] for anything that isn't one. */
 export function parseConversation(text: string): Message[] {
   let parsed: unknown;
@@ -42,7 +59,13 @@ export function parseConversation(text: string): Message[] {
   const messages = (parsed as { messages?: unknown } | null)?.messages;
   if (!Array.isArray(messages)) return [];
   return capMessages(
-    messages.filter(isMessage).map((m) => (m.stale ? { role: m.role, text: m.text, stale: true } : { role: m.role, text: m.text })),
+    messages.filter(isMessage).map((m) => {
+      const out: Message = { role: m.role, text: m.text };
+      if (m.stale) out.stale = true;
+      const tools = parseTools((m as { tools?: unknown }).tools);
+      if (tools.length > 0) out.tools = tools;
+      return out;
+    }),
   );
 }
 

@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConversationFile, MAX_MESSAGES, markStale, type Message } from "../../../Plugins/assistant/conversation.ts";
+import { ConversationFile, MAX_MESSAGES, markStale, type Message, parseConversation } from "../../../Plugins/assistant/conversation.ts";
 
 const folders: string[] = [];
 function folder(): string {
@@ -104,4 +104,19 @@ test("stale marking", async () => {
   file.update(markStale(two));
   await file.flush();
   expect((await file.load())[0].stale).toBe(true);
+});
+
+test("tool lines are kept in order with their message; a line that was running is not done", () => {
+  const text = JSON.stringify({
+    version: 1,
+    messages: [
+      { role: "user", text: "Hi" },
+      { role: "assistant", text: "Ok", tools: [{ text: "Read a tab", status: "done" }, { text: "Clicked on a tab", status: "running" }, { text: 5 }, "x"] },
+    ],
+  });
+  expect(parseConversation(text)[1]).toEqual({
+    role: "assistant",
+    text: "Ok",
+    tools: [{ text: "Read a tab", status: "done" }, { text: "Clicked on a tab — not done", status: "failed" }],
+  });
 });

@@ -12,17 +12,26 @@
 //   { type: "retry" }                    { type: "billingSeen" }
 // Pushed to the page (singularity.panel.post):
 //   { type: "delta", text, version }     a piece of the answer
+//   { type: "front", chip }              the tab in front changed (the chip above the input)
 //   { type: "state", ...state }          after every other change the provider causes
 // The state: { messages, status, model, models, billing, billingNoticeSeen, configFolder,
-// providerVersion, sdkVersion, error, version } (see view.ts, ViewState).
+// providerVersion, sdkVersion, error, chip, version } (see view.ts, ViewState).
+//
+// Where the user is: at every send the tab in front (singularity.front()) is put, as a note
+// (front.ts, frontBlock), before the user's text in what goes to the provider. The chat and
+// conversation.json keep only what the user typed. The browser's tools come from
+// singularity.browser.server(), asked at every start of the provider. Tool calls arrive as `tool`
+// events and become lines on the answer's message (front.ts, toolLine); a tool's answer never
+// reaches this file.
 //
 // Kept in singularity.storage: session (the conversation's id, to continue it after a restart),
 // model, configFolder, billing (the last one seen) and billingNoticeSeen. The visible messages are
 // in conversation.json (conversation.ts). Nothing here is secret: no tokens or keys pass through
 // this plugin; the claude program keeps its own sign-in.
 import { singularity } from "singularity";
-import { ConversationFile, markStale, type Message } from "./conversation.ts";
-import type { Provider, ProviderEvent } from "./provider.ts";
+import { ConversationFile, markStale, type Message, type ToolLine } from "./conversation.ts";
+import { chipText, frontBlock, type FrontTab, toolLine, FAILED_SUFFIX } from "./front.ts";
+import type { BrowserServer, Provider, ProviderEvent } from "./provider.ts";
 import { claudeSDKVersion, createClaudeProvider, type QueryFunction } from "./provider-claude.ts";
 import type { Status, ViewState } from "./view.ts";
 
@@ -40,7 +49,15 @@ type Storage = {
 };
 
 type Dependencies = {
-  singularity: { panel: { post(payload: unknown): void }; storage: Storage; log(...values: unknown[]): void };
+  singularity: {
+    panel: { post(payload: unknown): void };
+    storage: Storage;
+    log(...values: unknown[]): void;
+    /** Absent in a build without these abilities: the Assistant then is the plain chat of part 1. */
+    front?(): Promise<FrontTab | null>;
+    onFrontChange?(handler: (front: FrontTab | null) => void): void;
+    browser?: { server(): Promise<BrowserServer | null> };
+  };
   provider: Provider;
   conversation: ConversationFile;
   sdkVersion: string;
@@ -89,9 +106,18 @@ export function createAssistant(deps: Dependencies) {
   let error: string | null = null;
   let version = 0;
   let session: string | undefined;
+  /** The tab in front as last heard of (hello, a send, a change), for the chip. */
+  let latestFront: FrontTab | null = null;
+  /** The tab that was in front when the message being answered was sent (for its tool lines). */
+  let frontAtSend: FrontTab | null = null;
+  /** The tool lines still running, by the id `claude` gave the call. */
+  const runningTools = new Map<string, ToolLine>();
+  /** Counts the provider's starts, so a start waiting for the browser server can tell it was replaced. */
+  let startCount = 0;
 
-  /** A message sent while the billing notice waits for OK. */
+  /** A message sent while the billing notice waits for OK, and the tab in front when it was sent. */
   let held: string | null = null;
+  let heldFront: FrontTab | null = null;
   let started = false;
   let loading: Promise<void> | null = null;
   /** Counts the messages sent to the provider, so a late Stop timer knows its turn is over. */
@@ -166,6 +192,7 @@ export function createAssistant(deps: Dependencies) {
       providerVersion,
       sdkVersion: deps.sdkVersion,
       error,
+      chip: chipText(latestFront),
       version,
     };
   }
@@ -185,12 +212,27 @@ export function createAssistant(deps: Dependencies) {
   function startProvider(): void {
     status = "starting";
     error = null;
-    provider.start({ resume: session, model: chosenModel, configFolder: configFolder || undefined }, onEvent);
+    const mine = ++startCount;
+    const begin = (browser: BrowserServer | null | undefined) => {
+      if (mine !== startCount) return; // stopped or started again while waiting for the server
+      const options: Parameters<Provider["start"]>[0] = { resume: session, model: chosenModel, configFolder: configFolder || undefined };
+      if (browser !== undefined) options.browser = browser;
+      provider.start(options, onEvent);
+    };
+    const server = deps.singularity.browser?.server;
+    if (!server) return begin(undefined);
+    // No server (or one that can't be asked) means a chat without the browser's tools.
+    server().then(begin, (e: unknown) => {
+      log("couldn't get the browser's tools: " + String(e));
+      begin(null);
+    });
   }
 
   function restartProvider(): void {
     dropHeld();
     clearStopTimer();
+    startCount += 1;
+    runningTools.clear();
     provider.stop();
     startProvider();
   }
@@ -207,6 +249,17 @@ export function createAssistant(deps: Dependencies) {
     held = null;
   }
 
+  /** A turn is over: a tool line still running never got its end, so it says "not done". */
+  function settleTools(): void {
+    if (runningTools.size === 0) return;
+    for (const line of runningTools.values()) {
+      line.text += FAILED_SUFFIX;
+      line.status = "failed";
+    }
+    runningTools.clear();
+    conversation.update(messages);
+  }
+
   function onEvent(event: ProviderEvent): void {
     switch (event.type) {
       case "ready":
@@ -218,8 +271,10 @@ export function createAssistant(deps: Dependencies) {
         break;
       case "text": {
         const last = messages.at(-1);
-        if (last && last.role === "assistant" && !last.stale) messages[messages.length - 1] = { ...last, text: last.text + event.delta };
-        else messages.push({ role: "assistant", text: event.delta });
+        // Text after tool lines is a new answer, so lines and text stay in the order they came.
+        if (last && last.role === "assistant" && !last.stale && !last.tools?.length) {
+          messages[messages.length - 1] = { ...last, text: last.text + event.delta };
+        } else messages.push({ role: "assistant", text: event.delta });
         conversation.update(messages);
         changed();
         try {
@@ -229,12 +284,31 @@ export function createAssistant(deps: Dependencies) {
         }
         return;
       }
+      case "tool": {
+        let line = runningTools.get(event.id);
+        const text = toolLine(event.name, event.input, event.status, frontAtSend).text;
+        if (line) {
+          line.text = text;
+          line.status = event.status;
+          if (event.status !== "running") runningTools.delete(event.id);
+        } else {
+          line = { text, status: event.status };
+          if (event.status === "running") runningTools.set(event.id, line);
+          const last = messages.at(-1);
+          if (last && last.role === "assistant" && !last.stale) messages[messages.length - 1] = { ...last, tools: [...(last.tools ?? []), line] };
+          else messages.push({ role: "assistant", text: "", tools: [line] });
+        }
+        conversation.update(messages);
+        break;
+      }
       case "done":
+        settleTools();
         clearStopTimer();
         if (status === "answering") status = "ready";
         flush();
         break;
       case "error":
+        settleTools();
         clearStopTimer();
         if (event.resumeFailed) {
           // The earlier conversation can't be continued: the provider goes on with a new one.
@@ -279,11 +353,25 @@ export function createAssistant(deps: Dependencies) {
     store("billing", next);
   }
 
+  /** Asks for the tab in front; a failure or a build without the API means nothing is shared. */
+  async function currentFront(): Promise<FrontTab | null> {
+    if (!deps.singularity.front) return null;
+    try {
+      latestFront = (await deps.singularity.front()) ?? null;
+    } catch (e) {
+      log("couldn't ask for the tab in front: " + String(e));
+      latestFront = null;
+    }
+    return latestFront;
+  }
+
+  /** Sends to the provider: the note about the tab in front, when this build has one, then the text. */
   function sendNow(text: string): void {
     status = "answering";
     error = null;
     turn += 1;
-    provider.send(text);
+    frontAtSend = heldFront;
+    provider.send(deps.singularity.front ? frontBlock(frontAtSend) + "\n\n" + text : text);
   }
 
   async function handle(payload: unknown): Promise<unknown> {
@@ -292,6 +380,7 @@ export function createAssistant(deps: Dependencies) {
     await load();
     switch (message.type) {
       case "hello":
+        await currentFront();
         if (!started) {
           started = true;
           startProvider();
@@ -306,6 +395,10 @@ export function createAssistant(deps: Dependencies) {
         if (text.length > MAX_TEXT_LENGTH) return { error: "That message is too long." };
         if (held !== null) return { error: "Press OK on the note above first." };
         if (status !== "ready") return { error: "The Assistant isn't ready for a message." };
+        const front = await currentFront();
+        // Checked again: another request may have come in while the tab in front was asked for.
+        if (held !== null || status !== "ready") return { error: "The Assistant isn't ready for a message." };
+        heldFront = front;
         messages.push({ role: "user", text });
         conversation.update(messages);
         // Saved now: a quit right after sending must not lose it (Claude's session has it).
@@ -325,6 +418,7 @@ export function createAssistant(deps: Dependencies) {
 
       case "newChat":
         clearStopTimer();
+        runningTools.clear();
         provider.stop();
         // Until the new start: a message sent meanwhile is refused (visibly), not dropped.
         status = "starting";
@@ -390,6 +484,16 @@ export function createAssistant(deps: Dependencies) {
         return { error: "unknown request" };
     }
   }
+
+  // The chip follows the tab in front.
+  deps.singularity.onFrontChange?.((front) => {
+    latestFront = front;
+    try {
+      panel.post({ type: "front", chip: chipText(front) });
+    } catch (e) {
+      log("couldn't send the chip to the page: " + String(e));
+    }
+  });
 
   return { handle };
 }

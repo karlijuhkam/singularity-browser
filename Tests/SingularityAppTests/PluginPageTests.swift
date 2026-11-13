@@ -392,7 +392,7 @@ extension AppTests {
             return Self.readyState
         }
         defer { close(host, window) }
-        let emptyChat = "Ask anything. In this version the Assistant can't see your pages or act for you yet."
+        let emptyChat = "Ask anything. The Assistant can look at the tab in front when you share it."
         await wait("the empty chat") { await text(host, "p.empty") == emptyChat }
         #expect(await text(host, "p.empty") == emptyChat)
         #expect(received.first == .object(["type": .string("hello")]))
@@ -427,7 +427,7 @@ extension AppTests {
         await wait("the failed hello") { await text(host, ".notice.warn p") == failed }
         #expect(await text(host, ".notice.warn button") == "Try Again")
         _ = try await host.webView.evaluateJavaScript("document.querySelector('.notice.warn button').click(); 1")
-        let emptyChat = "Ask anything. In this version the Assistant can't see your pages or act for you yet."
+        let emptyChat = "Ask anything. The Assistant can look at the tab in front when you share it."
         await wait("the empty chat after Try Again") { await text(host, "p.empty") == emptyChat }
         #expect(hellos == 2)
     }

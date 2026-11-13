@@ -42,7 +42,7 @@ test("state texts, exactly", () => {
   expect(statusNotice(state({ status: "error", error: "Something odd" }))).toEqual({ text: "Something odd", retry: true });
   expect(statusNotice(state({ status: "ready" }))).toBeNull();
   expect(statusNotice(state({ status: "answering" }))).toBeNull();
-  expect(EMPTY_CHAT).toBe("Ask anything. In this version the Assistant can't see your pages or act for you yet.");
+  expect(EMPTY_CHAT).toBe("Ask anything. The Assistant can look at the tab in front when you share it.");
   expect(STALE_LINE).toBe("Earlier conversation. The Assistant no longer remembers it.");
 });
 
@@ -104,4 +104,18 @@ test("where the stale line goes", () => {
       { role: "user", text: "c" },
     ]),
   ).toBe(0);
+});
+
+test("a piece of text after tool lines starts a new answer; tool lines never take text", () => {
+  const withTools = state({
+    version: 5,
+    messages: [
+      { role: "user", text: "Hi" },
+      { role: "assistant", text: "Looking.", tools: [{ text: "Read a tab", status: "done" }] },
+    ],
+  });
+  const next = applyDelta(withTools, { text: "Done.", version: 6 })!;
+  expect(next.messages.at(-1)).toEqual({ role: "assistant", text: "Done." });
+  expect(next.messages[1].tools?.length).toBe(1);
+  expect(applyDelta(next, { text: " More", version: 7 })!.messages.at(-1)!.text).toBe("Done. More");
 });

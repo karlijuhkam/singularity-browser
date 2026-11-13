@@ -188,6 +188,28 @@ button.icon {
   white-space: pre;
 }
 
+/* What the Assistant did in the browser: small lines, quieter than the answer. */
+.tools {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tools .tool {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.tools .tool.failed {
+  font-style: italic;
+}
+
+.tools.stale {
+  opacity: 0.45;
+}
+
 /* Messages Claude no longer remembers after a restart. */
 .message.stale {
   opacity: 0.45;
@@ -242,6 +264,22 @@ button.icon {
   margin: 0 0 6px;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* The tab in front, which the next message carries. */
+.chip {
+  margin: 0 0 6px;
+  padding: 2px 8px;
+  max-width: 100%;
+  width: fit-content;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .compose {

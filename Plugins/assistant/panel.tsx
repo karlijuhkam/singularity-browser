@@ -8,7 +8,8 @@
 // talks to the background only through window.singularity.send / onMessage.
 import { Fragment, render } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import type { Message } from "./conversation.ts";
+import type { Message, ToolLine } from "./conversation.ts";
+import { chipText, WAITING_AFTER_MS, WAITING_SUFFIX } from "./front.ts";
 import { render as renderMarkdown } from "./markdown.ts";
 import {
   applyDelta,
@@ -106,6 +107,9 @@ function App() {
       if (m?.type === "state") {
         const { type: _type, ...rest } = m as Record<string, unknown>;
         if (isState(rest)) accept(rest);
+      } else if (m?.type === "front" && typeof (m as { chip?: unknown }).chip === "string") {
+        const chip = (m as { chip: string }).chip;
+        setState((current) => (current === null ? current : { ...current, chip }));
       } else if (m?.type === "delta" && typeof m.text === "string" && typeof m.version === "number") {
         const delta = { text: m.text, version: m.version };
         setState((current) => {
@@ -209,7 +213,29 @@ function Conversation({ messages }: { messages: Message[] }) {
 function MessageView({ message }: { message: Message }) {
   const classes = "message " + message.role + (message.stale ? " stale" : "");
   if (message.role === "user") return <div class={classes}>{message.text}</div>;
-  return <Answer classes={classes} text={message.text} />;
+  return (
+    <>
+      {message.text !== "" && <Answer classes={classes} text={message.text} />}
+      {message.tools && message.tools.length > 0 && (
+        <ul class={"tools" + (message.stale ? " stale" : "")}>
+          {message.tools.map((tool, i) => <ToolItem key={i} tool={tool} />)}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/** One tool line, as a text node. A call that runs for a while is probably waiting for the user's OK. */
+function ToolItem({ tool }: { tool: ToolLine }) {
+  const [waiting, setWaiting] = useState(false);
+  useEffect(() => {
+    setWaiting(false);
+    if (tool.status !== "running") return;
+    const timer = setTimeout(() => setWaiting(true), WAITING_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [tool.status]);
+  const shown = tool.status === "running" && waiting ? tool.text + WAITING_SUFFIX : tool.text;
+  return <li class={"tool " + tool.status}>{shown}</li>;
 }
 
 /** An answer, drawn by markdown.ts (DOM nodes only, never HTML). Preact leaves its children alone. */
@@ -286,6 +312,8 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
         </div>
       )}
       {problem && <p class="problem">{problem}</p>}
+      {/* What the next message will carry: the tab in front, or nothing. */}
+      <p class="chip">{state.chip ?? chipText(null)}</p>
       <div class="compose">
         <textarea
           ref={input}

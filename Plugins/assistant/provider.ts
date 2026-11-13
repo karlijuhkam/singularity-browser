@@ -31,12 +31,33 @@ export type ProviderEvent =
       message: string;
       resumeFailed?: true;
     }
+  /**
+   * A call of one of the browser's tools (see BrowserServer), as it starts (`running`) and as it
+   * ends (`done`, or `failed` when the tool answered with an error or the turn was interrupted).
+   * `name` is the tool as the agent door names it ("work.read_page", "list_spaces"); `input` is the
+   * call's own arguments. Nothing a tool answered is ever passed on.
+   */
+  | ToolEvent
   /** The id under which the program keeps this conversation; give it as `resume` to continue it. */
   | { type: "session"; id: string };
 
+export type ToolEvent = {
+  type: "tool";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  status: "running" | "done" | "failed";
+};
+
+/** The program that is the browser's tools: what `singularity.browser.server()` answers. */
+export type BrowserServer = { command: string; args: string[]; env: Record<string, string> };
+
 export interface Provider {
   /** Starts the program (ending one that runs). Events arrive through `emit` until `stop`. */
-  start(options: { resume?: string; model?: string; configFolder?: string }, emit: (e: ProviderEvent) => void): void;
+  start(
+    options: { resume?: string; model?: string; configFolder?: string; browser?: BrowserServer | null },
+    emit: (e: ProviderEvent) => void,
+  ): void;
   /** Sends the user's message; the answer arrives as `text` events, then `done`. */
   send(text: string): void;
   /** Asks the program to stop the answer it is writing. */

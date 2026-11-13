@@ -454,3 +454,77 @@ test("stop ends the program and nothing more is reported", async () => {
   await new Promise((resolve) => setTimeout(resolve, 1200));
   expect(events.length).toBe(before);
 });
+
+// ---- The browser's tools ----------------------------------------------------------------------
+
+const browser = { command: "/App/Contents/MacOS/singularity-mcp", args: [], env: { SINGULARITY_MCP_SOCKET: "/x/mcp.sock" } };
+
+function toolTurn(session: string, results: { is_error?: boolean; content: string }[]) {
+  const uses = results.map((_, i) => ({ type: "tool_use", id: "tu_" + i, name: i === 0 ? "mcp__singularity__my_work_read_page" : "mcp__singularity__list_spaces", input: i === 0 ? { tab_id: "T1" } : {} }));
+  return [
+    initMessage(session),
+    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Looking." }, ...uses] }, parent_tool_use_id: null, session_id: session },
+    {
+      type: "user",
+      message: { role: "user", content: results.map((r, i) => ({ type: "tool_result", tool_use_id: "tu_" + i, is_error: r.is_error, content: r.content })) },
+      parent_tool_use_id: null,
+      session_id: session,
+    },
+    result(session, { subtype: "success", is_error: false, result: "Done." }),
+  ];
+}
+
+test("with a browser server: exactly one MCP server, its tools allowed, nothing else changes", async () => {
+  const { provider, events, programs } = start([chat([helloTurn("sess-1")])], { browser } as any);
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  if (!realSDK) {
+    const options = seenOptions.at(-1)!;
+    expect(options.mcpServers).toEqual({ singularity: { type: "stdio", ...browser, timeout: 3_600_000 } });
+    expect(Object.keys(options.mcpServers)).toEqual(["singularity"]);
+    expect(options.allowedTools).toEqual(["mcp__singularity"]);
+    expect(options.tools).toEqual([]);
+    expect(options.settingSources).toEqual([]);
+    expect(options.strictMcpConfig).toBe(true);
+    expect(options.skills).toEqual([]);
+    expect(options.systemPrompt).toContain("list_spaces");
+    expect(options.systemPrompt).toContain("You cannot see or use terminals.");
+  }
+  provider.stop();
+  await waitFor(() => programs[0].ended, "the program to end");
+});
+
+test("without a browser server: no MCP server, no allowed tools, and the prompt says so", async () => {
+  for (const value of [null, undefined]) {
+    const { provider, events, programs } = start([chat([helloTurn("sess-1")])], { browser: value } as any);
+    await waitFor(() => of(events, "ready").length > 0, "ready");
+    if (!realSDK) {
+      const options = seenOptions.at(-1)!;
+      expect(options.mcpServers).toEqual({});
+      expect(options.allowedTools).toBeUndefined();
+      expect(options.systemPrompt).toContain("no browser tools");
+      expect(options.systemPrompt).not.toContain("list_spaces");
+    }
+    provider.stop();
+    await waitFor(() => programs[0].ended, "the program to end");
+  }
+});
+
+test("tool calls: running, then done or failed, with the door's name and the call's input only", async () => {
+  const { provider, events, programs } = start(
+    [chat([toolTurn("sess-1", [{ content: "SECRET PAGE TEXT" }, { is_error: true, content: "SECRET ERROR" }])])],
+    { browser } as any,
+  );
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  provider.send("Look");
+  await waitFor(() => of(events, "done").length > 0, "done");
+  const tools = of(events, "tool");
+  expect(tools).toEqual([
+    { type: "tool", id: "tu_0", name: "my_work.read_page", input: { tab_id: "T1" }, status: "running" },
+    { type: "tool", id: "tu_1", name: "list_spaces", input: {}, status: "running" },
+    { type: "tool", id: "tu_0", name: "my_work.read_page", input: { tab_id: "T1" }, status: "done" },
+    { type: "tool", id: "tu_1", name: "list_spaces", input: {}, status: "failed" },
+  ]);
+  expect(JSON.stringify(events)).not.toContain("SECRET");
+  provider.stop();
+  await waitFor(() => programs[0].ended, "the program to end");
+});

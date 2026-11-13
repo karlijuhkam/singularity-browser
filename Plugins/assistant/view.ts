@@ -16,11 +16,13 @@ export type ViewState = {
   sdkVersion: string;
   /** The program's own words for a failure of kind "other" (status "error"). */
   error: string | null;
+  /** What the chip above the input says (front.ts, chipText); absent in an older background. */
+  chip?: string;
   /** Counts every change; a `delta` carries the number it makes. */
   version: number;
 };
 
-export const EMPTY_CHAT = "Ask anything. In this version the Assistant can't see your pages or act for you yet.";
+export const EMPTY_CHAT = "Ask anything. The Assistant can look at the tab in front when you share it.";
 export const STALE_LINE = "Earlier conversation. The Assistant no longer remembers it.";
 export const STARTING = "Connecting to Claude…";
 /** How long "Connecting to Claude…" may take before it gets a Try Again button. */
@@ -92,8 +94,10 @@ export function applyDelta(state: ViewState, delta: { text: string; version: num
   if (delta.version !== state.version + 1) return null;
   const messages = state.messages.slice();
   const last = messages.at(-1);
-  if (last && last.role === "assistant" && !last.stale) messages[messages.length - 1] = { ...last, text: last.text + delta.text };
-  else messages.push({ role: "assistant", text: delta.text });
+  // Text after tool lines is a new answer, so the lines and the text stay in the order they came.
+  if (last && last.role === "assistant" && !last.stale && !last.tools?.length) {
+    messages[messages.length - 1] = { ...last, text: last.text + delta.text };
+  } else messages.push({ role: "assistant", text: delta.text });
   return { ...state, messages, version: delta.version };
 }
 
