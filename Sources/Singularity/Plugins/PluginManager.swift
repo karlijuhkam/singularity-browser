@@ -884,6 +884,19 @@ final class PluginManager {
         return id
     }
 
+    /// Replaces an installed plugin's folder with the shipped one (`PluginInstaller.update`) and
+    /// rescans it; the scan then reports it as changed and the approval sheet asks again.
+    func updatePlugin(_ id: String, from folder: URL) async throws {
+        let pluginsDirectory = paths.pluginsDirectory
+        let result = await Task.detached {
+            Result { () throws(PluginInstaller.AddError) in
+                try PluginInstaller.update(id: id, from: folder, pluginsDirectory: pluginsDirectory)
+            }
+        }.value
+        if case .failure(let error) = result { throw PluginManagerError.addFailed(error) }
+        try? await enqueue(id) { [weak self] in await self?.refresh(id, filesChanged: true) }.value
+    }
+
     /// Stops the plugin, moves its folder and its data folder to the Trash, and forgets its
     /// approval. (The UI asks for confirmation first.)
     func remove(_ id: String) async throws {

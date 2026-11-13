@@ -56,6 +56,24 @@ public enum PluginInstaller {
         let destination = pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
         if exists(destination) { throw .alreadyInstalled(id) }
 
+        let (staging, staged) = try stage(source: source, id: id, pluginsDirectory: pluginsDirectory)
+        defer { try? fm.removeItem(at: staging) }
+
+        if exists(destination) { throw .alreadyInstalled(id) }
+        // moveItem refuses to overwrite, so a plugin that appeared meanwhile is kept.
+        do { try fm.moveItem(at: staged, to: destination) } catch {
+            if exists(destination) { throw .alreadyInstalled(id) }
+            throw .copyFailed(error.localizedDescription)
+        }
+        return id
+    }
+
+    /// Copies `source` into a staging folder on the same disk as `pluginsDirectory` (as
+    /// `<staging>/<id>`) and checks the copy again: its manifest (the folder name matches the id
+    /// now) and its files. The caller removes `staging`, whatever happens next.
+    private static func stage(source: URL, id: String, pluginsDirectory: URL)
+        throws(AddError) -> (staging: URL, staged: URL) {
+        let fm = FileManager.default
         let staging: URL
         do {
             try fm.createDirectory(at: pluginsDirectory, withIntermediateDirectories: true)
@@ -65,20 +83,50 @@ public enum PluginInstaller {
         } catch {
             throw .copyFailed(error.localizedDescription)
         }
-        defer { try? fm.removeItem(at: staging) }
         let staged = staging.appending(path: id, directoryHint: .isDirectory)
-        do { try fm.copyItem(at: source, to: staged) } catch { throw .copyFailed(error.localizedDescription) }
-
-        do { _ = try PluginManifest.load(from: staged) } catch { throw .invalid(error) }
-        try checkFiles(staged)
-
-        if exists(destination) { throw .alreadyInstalled(id) }
-        // moveItem refuses to overwrite, so a plugin that appeared meanwhile is kept.
-        do { try fm.moveItem(at: staged, to: destination) } catch {
-            if exists(destination) { throw .alreadyInstalled(id) }
+        do {
+            try fm.copyItem(at: source, to: staged)
+            do { _ = try PluginManifest.load(from: staged) } catch { throw AddError.invalid(error) }
+            try checkFiles(staged)
+        } catch {
+            try? fm.removeItem(at: staging)
+            if let error = error as? AddError { throw error }
             throw .copyFailed(error.localizedDescription)
         }
-        return id
+        return (staging, staged)
+    }
+
+    /// Replaces the installed `<pluginsDirectory>/<id>` with the shipped folder `source`
+    /// (Settings → Plugins → Update). Same checks as `add`: valid manifest with this id, only
+    /// regular files and folders. The new folder is staged beside the old one and swapped in with
+    /// one atomic call (`replaceItemAt`), so any failure leaves the old folder exactly as it was.
+    /// The plugin's data folder is not touched. Nothing is approved: the new files no longer match
+    /// the approval, so the normal scan marks the plugin as changed.
+    public static func update(id: String, from source: URL, pluginsDirectory: URL) throws(AddError) {
+        let fm = FileManager.default
+        do {
+            let manifestID: String
+            do { manifestID = try PluginManifest.load(from: source).id } catch { throw AddError.invalid(error) }
+            guard manifestID == id else {
+                throw AddError.copyFailed("the shipped plugin is “\(manifestID)”, not “\(id)”")
+            }
+        } catch let error as AddError { throw error } catch { throw .copyFailed(error.localizedDescription) }
+        try checkFiles(source)
+
+        let destination = pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
+        // Only a real folder is replaced (never a symbolic link, which would be swapped for what it points to).
+        guard let kind = try? fm.attributesOfItem(atPath: destination.path)[.type] as? FileAttributeType,
+              kind == .typeDirectory else {
+            throw .copyFailed("“\(id)” is not installed")
+        }
+
+        let (staging, staged) = try stage(source: source, id: id, pluginsDirectory: pluginsDirectory)
+        defer { try? fm.removeItem(at: staging) }
+        do {
+            _ = try fm.replaceItemAt(destination, withItemAt: staged)
+        } catch {
+            throw .copyFailed(error.localizedDescription)
+        }
     }
 
     /// Creates a plugin's data folder (and its parent) readable by this user only (0700).

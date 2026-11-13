@@ -37,6 +37,7 @@ struct PluginSettings: View {
                 ForEach(state.plugins.plugins) { plugin in
                     PluginRow(plugin: plugin,
                               review: { reviewing = PluginRef(id: plugin.id) },
+                              updated: { reviewing = PluginRef(id: plugin.id) },
                               remove: { removing = PluginRef(id: plugin.id) })
                 }
             }
@@ -133,7 +134,26 @@ private struct PluginRow: View {
     @Environment(AppState.self) private var state
     let plugin: InstalledPlugin
     let review: () -> Void
+    /// Called after an update was copied in: opens the normal approval sheet.
+    let updated: () -> Void
     let remove: () -> Void
+
+    @State private var updating = false
+    @State private var updateError: String?
+
+    /// The shipped copy to offer, when this one is older or newer and untouched (see `BundledPlugins.updateOffer`).
+    /// "Its files are the approved ones" = approved, or never approved; changed or widened files are not offered.
+    private var updateOffer: BundledPlugin? {
+        guard let manifest = plugin.validManifest else { return nil }
+        let matches: Bool
+        switch plugin.status {
+        case .approved, .new: matches = true
+        case .changed, .permissionsWidened, .invalid: matches = false
+        }
+        return BundledPlugins.updateOffer(installedID: plugin.id, installedVersion: manifest.version,
+                                          developmentMode: plugin.approval?.developmentMode ?? false,
+                                          filesMatchApproval: matches, bundled: state.bundledPlugins)
+    }
 
     var body: some View {
         let manifest = plugin.validManifest
@@ -182,6 +202,25 @@ private struct PluginRow: View {
                     .textSelection(.enabled)
             }
 
+            if let offer = updateOffer {
+                HStack {
+                    Text(verbatim: "Update available (" + PluginText.line(offer.version, max: 20) + ")")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    if updating {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Update") { update(offer) }
+                    }
+                    Spacer()
+                }
+                if let updateError {
+                    Text(verbatim: PluginText.line(updateError, max: 300))
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
             if let approval = plugin.approval {
                 // Not for a panel plugin without a page script (see PluginApprovalSheet).
                 if manifest.map(PluginApprovalSheet.showsSpaceSwitches) ?? true {
@@ -208,6 +247,21 @@ private struct PluginRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+
+    /// Copies the shipped folder over this one, then shows the approval sheet. Nothing is approved here.
+    private func update(_ offer: BundledPlugin) {
+        updateError = nil
+        updating = true
+        Task {
+            defer { updating = false }
+            do {
+                try await state.plugins.updatePlugin(plugin.id, from: offer.folder)
+                updated()
+            } catch {
+                updateError = error.localizedDescription
+            }
+        }
     }
 
     /// One checkbox per Space; ticking writes the approval at once (no new review).

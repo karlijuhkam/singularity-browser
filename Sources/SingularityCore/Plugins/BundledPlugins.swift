@@ -11,8 +11,12 @@ public struct BundledPlugin: Equatable, Identifiable, Sendable {
     public let folder: URL
     /// The manifest's `panel.title`; nil for a plugin without its own page.
     public let panelTitle: String?
+    /// The manifest's `version` (what an installed copy is compared with for "Update available").
+    public let version: String
 
-    public init(id: String, name: String, summary: String, folder: URL, panelTitle: String? = nil) {
+    public init(id: String, name: String, summary: String, folder: URL, panelTitle: String? = nil,
+                version: String = "") {
+        self.version = version
         self.id = id
         self.name = name
         self.summary = summary
@@ -48,7 +52,8 @@ public enum BundledPlugins {
             guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
                   let manifest = try? PluginManifest.load(from: entry) else { continue }
             plugins.append(BundledPlugin(id: manifest.id, name: manifest.name, summary: manifest.description,
-                                         folder: entry, panelTitle: manifest.panel?.title))
+                                         folder: entry, panelTitle: manifest.panel?.title,
+                                         version: manifest.version))
         }
         return plugins.sorted {
             let order = $0.name.localizedStandardCompare($1.name)
@@ -60,6 +65,15 @@ public enum BundledPlugins {
     /// what Settings → Plugins offers under "Included with Singularity".
     public static func notInstalled(_ bundled: [BundledPlugin], installedIDs: Set<String>) -> [BundledPlugin] {
         bundled.filter { !installedIDs.contains($0.id) }
+    }
+
+    /// The shipped plugin to offer as an update for an installed one: same id, different `version`,
+    /// and the installed copy is not in development mode and its files are the approved ones (or it
+    /// was never approved). Edited files must never be overwritten by an update.
+    public static func updateOffer(installedID: String, installedVersion: String, developmentMode: Bool,
+                                   filesMatchApproval: Bool, bundled: [BundledPlugin]) -> BundledPlugin? {
+        guard !developmentMode, filesMatchApproval else { return nil }
+        return bundled.first { $0.id == installedID && !$0.version.isEmpty && $0.version != installedVersion }
     }
 
     /// The page title of the first shipped plugin with a panel ("Assistant"), which View →
