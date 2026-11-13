@@ -8,6 +8,9 @@ import { Readable, Writable } from "node:stream";
 
 type Line = Record<string, any>;
 
+/** How long a killed fake program takes to exit. */
+export const KILL_DELAY_MS = 40;
+
 /** What the fake program does with each line the SDK writes to it. */
 export type Script = (program: FakeProgram, line: Line) => void;
 
@@ -68,7 +71,8 @@ export class FakeProgram {
     if (this.#ended) return false;
     this.killed = true;
     this.killSignals.push(signal);
-    setTimeout(() => this.exit(null, signal), 1);
+    // Like the app: the program takes a moment to go after SIGTERM.
+    setTimeout(() => this.exit(null, signal), KILL_DELAY_MS);
     return true;
   }
 
@@ -101,17 +105,25 @@ export class FakeProgram {
   }
 }
 
-/** A fake singularity.spawn: each call makes a program run by the next script. */
+/**
+ * A fake singularity.spawn: each call makes a program run by the next script. Like the app, it
+ * runs one program at a time: a start while an earlier program hasn't exited is refused with
+ * "a program is already running" (such refused starts are in `refused`, not in `programs`).
+ */
 export function fakeSpawn(scripts: Script[], options: { refuse?: string } = {}) {
   const programs: FakeProgram[] = [];
+  const refused: FakeProgram[] = [];
   const spawn = (program: string, args: string[], spawnOptions: { env: Record<string, string> }) => {
+    const running = programs.some((p) => !p.ended);
     const script = scripts[programs.length] ?? scripts[scripts.length - 1];
     const fake = new FakeProgram(program, args, spawnOptions.env, script);
-    programs.push(fake);
-    if (options.refuse) setTimeout(() => fake.refuse(options.refuse!), 1);
+    const reason = running ? "a program is already running" : options.refuse;
+    if (running) refused.push(fake);
+    else programs.push(fake);
+    if (reason) setTimeout(() => fake.refuse(reason), 1);
     return fake;
   };
-  return { spawn, programs };
+  return { spawn, programs, refused };
 }
 
 // ---- A small fake of the SDK's query() ----------------------------------------------------------
@@ -127,7 +139,9 @@ export function fakeQuery(params: { prompt: AsyncIterable<unknown>; options: Rec
   // Written the way the SDK writes them.
   if (options.model) args.push("--model=" + options.model);
   if (options.resume) args.push("--resume=" + options.resume);
-  args.push("--permission-prompt-tool=stdio", "--tools=", "--setting-sources=", "--include-partial-messages");
+  // As the real SDK writes them for these options (no --permission-prompt-tool: that needs canUseTool).
+  if (options.strictMcpConfig) args.push("--strict-mcp-config");
+  args.push("--tools=", "--setting-sources=", "--include-partial-messages");
   const program = options.spawnClaudeCodeProcess({
     command: options.pathToClaudeCodeExecutable,
     args,
@@ -190,7 +204,7 @@ export function fakeQuery(params: { prompt: AsyncIterable<unknown>; options: Rec
     wake?.();
   });
 
-  const initialization = request({ subtype: "initialize", hooks: null });
+  const initialization = request({ subtype: "initialize", hooks: null, skills: options.skills });
   initialization.catch(() => {});
   void (async () => {
     try {

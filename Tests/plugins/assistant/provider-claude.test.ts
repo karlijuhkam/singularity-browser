@@ -9,7 +9,12 @@
 //   ASSISTANT_SDK=/path/to/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs Vendor/bun/bun test Tests/plugins/assistant
 import { expect, test } from "bun:test";
 import type { ProviderEvent } from "../../../Plugins/assistant/provider.ts";
-import { createClaudeProvider, programEnvironment } from "../../../Plugins/assistant/provider-claude.ts";
+import {
+  billingFrom,
+  billingFromAccount,
+  createClaudeProvider,
+  programEnvironment,
+} from "../../../Plugins/assistant/provider-claude.ts";
 import { type FakeProgram, fakeQuery, fakeSpawn, type Script, seenOptions } from "./fake-claude.ts";
 import {
   helloTurn,
@@ -91,6 +96,12 @@ test("a turn on a Claude plan: ready, text, done", async () => {
   for (const name of Object.keys(program.env)) {
     expect(["CLAUDE_CONFIG_DIR", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SDK_READS_SESSION_STATE"]).toContain(name);
   }
+  // No MCP servers at all: not the user's own either (with the real SDK too, this is its argument).
+  expect(program.args).toContain("--strict-mcp-config");
+  expect(program.args.some((arg) => arg.startsWith("--mcp-config"))).toBe(false);
+  // No skills listed in the program's prompt (sent with `initialize`).
+  expect(program.received[0].request?.subtype).toBe("initialize");
+  expect(program.received[0].request?.skills).toEqual([]);
   const user = program.received.find((line) => line.type === "user");
   expect(user?.message).toEqual({ role: "user", content: "Hi" });
   if (!realSDK) {
@@ -99,6 +110,9 @@ test("a turn on a Claude plan: ready, text, done", async () => {
     expect(options.tools).toEqual([]);
     expect(options.settingSources).toEqual([]);
     expect(options.mcpServers).toEqual({});
+    expect(options.strictMcpConfig).toBe(true);
+    expect(options.skills).toEqual([]);
+    expect(options.canUseTool).toBeUndefined();
     expect(options.includePartialMessages).toBe(true);
     expect(options.systemPrompt).toContain("Singularity");
     expect(options.resume).toBeUndefined();
@@ -125,6 +139,81 @@ test("the program's environment", () => {
     CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
     CLAUDE_CONFIG_DIR: "/Users/a/.claude-b",
   });
+});
+
+test("billing fails closed: only \"none\" is a plan", () => {
+  expect(billingFrom("none")).toBe("plan");
+  for (const source of [undefined, null, "", "ANTHROPIC_API_KEY", "/login managed key", "apiKeyHelper", "oauth"]) {
+    expect(billingFrom(source)).toBe("api");
+  }
+  // The account in the answer to initialize (before any turn says more).
+  expect(billingFromAccount({ apiKeySource: "none" })).toBe("plan");
+  expect(billingFromAccount({ subscriptionType: "max", tokenSource: "claude.ai", apiProvider: "firstParty" })).toBe("plan");
+  expect(billingFromAccount({ subscriptionType: "pro" })).toBe("plan");
+  expect(billingFromAccount({ apiKeySource: "ANTHROPIC_API_KEY", subscriptionType: "max" })).toBe("api");
+  expect(billingFromAccount({ subscriptionType: "max", apiProvider: "bedrock" })).toBe("api");
+  expect(billingFromAccount({ apiKeySource: null })).toBe("api");
+  expect(billingFromAccount({})).toBe("api");
+  expect(billingFromAccount(undefined)).toBe("api");
+  expect(billingFromAccount(null)).toBe("api");
+});
+
+test("a turn whose init message has no apiKeySource (absent or null) is API billing", async () => {
+  for (const source of [undefined, null]) {
+    const turn = helloTurn("sess-1");
+    turn[0] = { ...initMessage("sess-1"), apiKeySource: source } as ReturnType<typeof initMessage>;
+    const { provider, events } = start([chat([turn])]);
+    await waitFor(() => of(events, "ready").length > 0, "ready");
+    expect(of(events, "ready")[0].billing).toBe("plan");
+    provider.send("Hi");
+    await waitFor(() => of(events, "done").length > 0, "done");
+    expect(of(events, "ready").at(-1)?.billing).toBe("api");
+    provider.stop();
+  }
+});
+
+test("an account without apiKeySource or a plan is API billing from the start", async () => {
+  const { provider, events } = start([chat([], { ...initializeResponse, account: { apiProvider: "vertex" } })]);
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  expect(of(events, "ready")[0].billing).toBe("api");
+  provider.stop();
+});
+
+test("stop, then start: the new program starts only after the old one has ended", async () => {
+  const { spawn, programs, refused } = fakeSpawn([chat([]), chat([helloTurn("sess-1")])]);
+  const provider = createClaudeProvider({ spawn, loadQuery });
+  const first: ProviderEvent[] = [];
+  provider.start({}, (event) => first.push(event));
+  await waitFor(() => of(first, "ready").length > 0, "ready");
+
+  provider.stop();
+  const second: ProviderEvent[] = [];
+  provider.start({ resume: "s1" }, (event) => second.push(event));
+  await waitFor(() => of(second, "ready").length > 0, "the second ready");
+  expect(refused).toEqual([]);
+  expect(of(second, "error")).toEqual([]);
+  expect(programs.length).toBe(2);
+  expect(programs[0].ended).toBe(true);
+  expect(programs[1].args).toContain("--resume=s1");
+  // Nothing more from the first start.
+  expect(first.filter((e) => e.type !== "ready")).toEqual([]);
+
+  // start() again without stop() waits the same way.
+  const third: ProviderEvent[] = [];
+  provider.start({ resume: "s1" }, (event) => third.push(event));
+  await waitFor(() => of(third, "ready").length > 0, "the third ready");
+  expect(refused).toEqual([]);
+  expect(programs.length).toBe(3);
+  provider.stop();
+});
+
+test("a refused start while resuming is an ordinary error, not a failed resume", async () => {
+  const { provider, events, programs } = start([chat([])], { resume: "s1" }, "the program was not found");
+  await waitFor(() => of(events, "error").length > 0, "an error");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  expect(of(events, "error")).toEqual([{ type: "error", kind: "other", message: "the program was not found" }]);
+  expect(programs.length).toBe(1);
+  provider.stop();
 });
 
 test("API billing", async () => {
@@ -192,7 +281,7 @@ test("a failed resume: one error, then a new conversation without resume", async
   await waitFor(() => of(events, "ready").length > 0, "ready");
   expect(events[0].type).toBe("error");
   expect(of(events, "error").length).toBe(1);
-  expect(of(events, "error")[0].kind).toBe("other");
+  expect(of(events, "error")[0]).toMatchObject({ kind: "other", resumeFailed: true });
   expect(programs.length).toBe(2);
   expect(programs[0].args).toContain("--resume=old-session");
   expect(programs[1].args.some((arg) => arg.startsWith("--resume"))).toBe(false);

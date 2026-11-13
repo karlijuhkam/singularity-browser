@@ -27,8 +27,11 @@ greyed out and a new conversation starts.
 
 - It can't see your pages, tabs or terminals, and it can't click, type, open or run anything.
   It can only chat.
-- `claude` is started with no tools at all and without your own Claude settings, hooks, plugins or
-  MCP servers (see `provider-claude.ts`), so all it can do is write text.
+- `claude` is started with none of its built-in tools, with no MCP servers at all (not even the
+  ones in your own Claude config), without your Claude settings files (so none of your hooks,
+  plugins or CLAUDE.md) and without skills (see `provider-claude.ts`). So all it can do is write
+  text. Two things stay as they are: settings your organisation manages for Claude, and a message
+  that starts with "/", which `claude` may read as one of its own commands.
 - Answers are shown as text (with simple formatting). Links are shown as their address, never as
   something to click, and HTML in an answer is shown as it is, never run.
 

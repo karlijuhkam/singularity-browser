@@ -22,10 +22,15 @@ export type ProviderEvent =
    * comes until `start` is called again. A turn ends with either `done` or `error`, never both.
    *
    * If the conversation given as `resume` can't be continued, the provider sends exactly one
-   * `error` of kind `other` *before its first `ready`*, then goes on by itself with a new
-   * conversation (a new `session` follows with the first answer).
+   * `error` of kind `other` with `resumeFailed: true`, then goes on by itself with a new
+   * conversation (a new `session` follows with the first answer). No other error has that flag.
    */
-  | { type: "error"; kind: "signedOut" | "limit" | "programEnded" | "programsOff" | "other"; message: string }
+  | {
+      type: "error";
+      kind: "signedOut" | "limit" | "programEnded" | "programsOff" | "other";
+      message: string;
+      resumeFailed?: true;
+    }
   /** The id under which the program keeps this conversation; give it as `resume` to continue it. */
   | { type: "session"; id: string };
 

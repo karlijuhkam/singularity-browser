@@ -84,9 +84,6 @@ export function createAssistant(deps: Dependencies) {
   let version = 0;
   let session: string | undefined;
 
-  /** The session this start asked to continue, until the provider is ready. */
-  let resuming: string | undefined;
-  let readySinceStart = false;
   /** A message sent while the billing notice waits for OK. */
   let held: string | null = null;
   let started = false;
@@ -100,8 +97,10 @@ export function createAssistant(deps: Dependencies) {
     storage.delete(key).catch((e: unknown) => log("storage: couldn't remove " + key + ": " + String(e)));
   };
 
+  /** Reads the saved state once. A failed read is not kept: the next request tries again. */
   function load(): Promise<void> {
-    loading ??= (async () => {
+    if (loading !== null) return loading;
+    const attempt = (async () => {
       messages = await conversation.load();
       const text = async (key: string) => {
         const value = await storage.get(key);
@@ -114,7 +113,11 @@ export function createAssistant(deps: Dependencies) {
       storedBilling = lastBilling === "plan" || lastBilling === "api" ? lastBilling : undefined;
       billingNoticeSeen = (await storage.get("billingNoticeSeen")) !== false;
     })();
-    return loading;
+    loading = attempt;
+    attempt.catch(() => {
+      if (loading === attempt) loading = null;
+    });
+    return attempt;
   }
 
   function state(): ViewState {
@@ -148,8 +151,6 @@ export function createAssistant(deps: Dependencies) {
   function startProvider(): void {
     status = "starting";
     error = null;
-    resuming = session;
-    readySinceStart = false;
     provider.start({ resume: session, model: chosenModel, configFolder: configFolder || undefined }, onEvent);
   }
 
@@ -161,8 +162,6 @@ export function createAssistant(deps: Dependencies) {
   function onEvent(event: ProviderEvent): void {
     switch (event.type) {
       case "ready":
-        readySinceStart = true;
-        resuming = undefined;
         models = event.models;
         providerModel = event.model;
         providerVersion = event.providerVersion;
@@ -187,10 +186,10 @@ export function createAssistant(deps: Dependencies) {
         void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
         break;
       case "error":
-        if (event.kind === "other" && resuming !== undefined && !readySinceStart) {
+        if (event.resumeFailed) {
           // The earlier conversation can't be continued: the provider goes on with a new one.
-          // Keep what the user saw, greyed out, and forget the old session.
-          resuming = undefined;
+          // Keep what the user saw, greyed out, and forget the old session. (Only this flag means
+          // that; any other error keeps the session and the messages as they are.)
           messages = markStale(messages);
           session = undefined;
           unstore("session");
@@ -200,7 +199,13 @@ export function createAssistant(deps: Dependencies) {
         }
         status = statusFor[event.kind];
         error = event.kind === "other" ? event.message.slice(0, 2000) : null;
-        held = null;
+        if (held !== null) {
+          // Never sent (it waited for the billing notice): take it out again.
+          const last = messages.at(-1);
+          if (last && last.role === "user" && last.text === held) messages.pop();
+          conversation.update(messages);
+          held = null;
+        }
         void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
         log("provider error: " + event.kind);
         break;
@@ -269,11 +274,17 @@ export function createAssistant(deps: Dependencies) {
         held = null;
         messages = [];
         session = undefined;
-        await conversation.delete();
-        await storage.delete("session");
-        started = true;
-        startProvider();
-        changed();
+        try {
+          await conversation.delete();
+          await storage.delete("session");
+        } catch (e) {
+          log("New Chat couldn't remove the old conversation: " + String(e));
+        } finally {
+          // Whatever happened above, the provider must run again.
+          started = true;
+          startProvider();
+          changed();
+        }
         return state();
 
       case "setModel": {
@@ -300,7 +311,8 @@ export function createAssistant(deps: Dependencies) {
       }
 
       case "retry":
-        if (["signedOut", "limit", "programEnded", "programsOff", "error"].includes(status)) {
+        // Any time no answer is on its way (also while "starting", in case a start never finishes).
+        if (status !== "ready" && status !== "answering") {
           restartProvider();
           changed();
         }

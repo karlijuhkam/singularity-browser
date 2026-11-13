@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConversationFile } from "../../../Plugins/assistant/conversation.ts";
 import type { Provider, ProviderEvent } from "../../../Plugins/assistant/provider.ts";
+import { createClaudeProvider } from "../../../Plugins/assistant/provider-claude.ts";
+import { fakeQuery, fakeSpawn, type Script } from "./fake-claude.ts";
+import { helloTurn, initializeResponse } from "./recording.ts";
 
 // background.ts imports the API as the module "singularity", which only Singularity's plugin host
 // defines. Define it here the same way, before background.ts is loaded. Its own wiring at the
@@ -77,7 +80,20 @@ const ready = (billing: "plan" | "api" = "plan"): ProviderEvent => ({
   providerVersion: "2.1.323",
 });
 
-async function make(stored: Record<string, unknown> = {}, messages?: { role: "user" | "assistant"; text: string }[]) {
+type MakeOptions = {
+  /** Another provider than the FakeProvider (the real Claude provider with a fake program). */
+  provider?: Provider;
+  /** storage.get rejects the first time. */
+  failFirstGet?: boolean;
+  /** conversation.delete and storage.delete reject. */
+  failDeletes?: boolean;
+};
+
+async function make(
+  stored: Record<string, unknown> = {},
+  messages?: { role: "user" | "assistant"; text: string }[],
+  options: MakeOptions = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), "assistant-background-"));
   folders.push(dir);
   const conversation = new ConversationFile(dir, { delayMs: 10 });
@@ -88,23 +104,36 @@ async function make(stored: Record<string, unknown> = {}, messages?: { role: "us
   const storage = new Map<string, unknown>(Object.entries(stored));
   const posts: any[] = [];
   const provider = new FakeProvider();
+  const logs: string[] = [];
+  let getFailures = options.failFirstGet ? 1 : 0;
+  const file = new ConversationFile(dir, { delayMs: 10 });
+  if (options.failDeletes) file.delete = async () => Promise.reject(new Error("disk says no"));
   const assistant = createAssistant({
     singularity: {
       panel: { post: (payload: unknown) => posts.push(payload) },
       storage: {
-        get: async (key: string) => storage.get(key),
+        get: async (key: string) => {
+          if (getFailures > 0) {
+            getFailures--;
+            throw new Error("storage is unreadable");
+          }
+          return storage.get(key);
+        },
         set: async (key: string, value: unknown) => void storage.set(key, value),
-        delete: async (key: string) => storage.delete(key),
+        delete: async (key: string) => {
+          if (options.failDeletes) throw new Error("disk says no");
+          return storage.delete(key);
+        },
       },
-      log() {},
+      log: (...values: unknown[]) => void logs.push(values.join(" ")),
     },
-    provider,
-    conversation: new ConversationFile(dir, { delayMs: 10 }),
+    provider: options.provider ?? provider,
+    conversation: file,
     sdkVersion: "0.3.323",
   });
   const send = (payload: unknown) => assistant.handle(payload) as Promise<any>;
   const lastState = () => posts.filter((p) => p.type === "state").at(-1);
-  return { dir, storage, posts, provider, send, lastState };
+  return { dir, storage, posts, provider, send, lastState, logs };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
@@ -262,7 +291,7 @@ test("a failed resume marks the old messages stale and keeps the new session", a
   const { dir, provider, send, storage, lastState } = await make({ session: "gone" }, old);
   await send({ type: "hello" });
   expect(provider.starts[0].resume).toBe("gone");
-  provider.emit({ type: "error", kind: "other", message: "That conversation couldn't be continued." });
+  provider.emit({ type: "error", kind: "other", message: "That conversation couldn't be continued.", resumeFailed: true });
   expect(lastState().messages).toEqual(old.map((m) => ({ ...m, stale: true })));
   expect(lastState().status).toBe("starting");
   expect(storage.has("session")).toBe(false);
@@ -304,4 +333,142 @@ test("unknown or malformed messages are refused", async () => {
   expect((await send({ type: "nonsense" })).error).toBeString();
   expect((await send(null)).error).toBeString();
   expect((await send({ type: "send", text: 5 })).error).toBeString();
+});
+
+test("any other error before ready keeps the session and the messages, and Try Again works", async () => {
+  const old = [{ role: "user" as const, text: "old question" }];
+  const { provider, send, storage, lastState } = await make({ session: "s1" }, old);
+  await send({ type: "hello" });
+  // For example the SDK failing to load, or the app refusing the start.
+  provider.emit({ type: "error", kind: "other", message: "a program is already running" });
+  expect(lastState()).toMatchObject({ status: "error", error: "a program is already running", messages: old });
+  expect(storage.get("session")).toBe("s1");
+  const retried = await send({ type: "retry" });
+  expect(retried.status).toBe("starting");
+  expect(provider.starts.at(-1)?.resume).toBe("s1");
+});
+
+test("Try Again is taken whenever no answer is on its way, also while starting", async () => {
+  const { provider, send } = await make();
+  await send({ type: "hello" });
+  await send({ type: "retry" });
+  expect(provider.starts.length).toBe(2);
+  provider.emit(ready());
+  await send({ type: "retry" });
+  expect(provider.starts.length).toBe(2);
+});
+
+test("a message held for the billing notice is taken out again when an error comes first", async () => {
+  const { dir, provider, send, lastState } = await make({}, [{ role: "user", text: "earlier" }]);
+  await send({ type: "hello" });
+  provider.emit(ready("api"));
+  const held = await send({ type: "send", text: "Hi" });
+  expect(held.messages.at(-1)).toEqual({ role: "user", text: "Hi" });
+  provider.emit({ type: "error", kind: "programEnded", message: "x" });
+  expect(lastState().messages).toEqual([{ role: "user", text: "earlier" }]);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(await new ConversationFile(dir).load()).toEqual([{ role: "user", text: "earlier" }]);
+  // And OK later sends nothing.
+  await send({ type: "billingSeen" });
+  expect(provider.sent).toEqual([]);
+});
+
+test("a failed first read of storage is tried again on the next request", async () => {
+  const { send, provider } = await make({ session: "s1" }, undefined, { failFirstGet: true });
+  await expect(send({ type: "hello" })).rejects.toThrow("storage is unreadable");
+  const state = await send({ type: "hello" });
+  expect(state.status).toBe("starting");
+  expect(provider.starts).toEqual([{ resume: "s1", model: undefined, configFolder: undefined }]);
+});
+
+test("New Chat starts the provider again even when removing the old conversation fails", async () => {
+  const { send, provider, logs } = await make({ session: "s1" }, undefined, { failDeletes: true });
+  await send({ type: "hello" });
+  provider.emit(ready());
+  const state = await send({ type: "newChat" });
+  expect(state.status).toBe("starting");
+  expect(provider.stops).toBe(1);
+  expect(provider.starts.length).toBe(2);
+  expect(provider.starts.at(-1)?.resume).toBeUndefined();
+  expect(logs.some((line) => line.includes("disk says no"))).toBe(true);
+});
+
+// ---- With the real Claude provider and a fake program (one program at a time, as in the app) --
+
+/** A program that answers initialize and plays the hello turn for every message. */
+const chatting: Script = (program, line) => {
+  if (line.type === "control_request") {
+    if (line.request?.subtype === "initialize") program.answer(line, initializeResponse);
+    else program.answer(line);
+  } else if (line.type === "user") {
+    program.say(...helloTurn("sess-1"));
+  }
+};
+
+async function withClaude(stored: Record<string, unknown> = {}) {
+  const fake = fakeSpawn([chatting]);
+  const made = await make(stored, [{ role: "user", text: "kept" }], {
+    provider: createClaudeProvider({ spawn: fake.spawn, loadQuery: async () => fakeQuery }),
+  });
+  /** Waits for a state with `status` pushed after the first `since` posts. */
+  const waitForStatus = async (status: string, since = 0) => {
+    for (let i = 0; i < 400; i++) {
+      if (made.posts.slice(since).some((p) => p.type === "state" && p.status === status)) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(`timed out waiting for ${status}; last state: ${JSON.stringify(made.lastState())}`);
+  };
+  /** Sends a message, then waits for a pushed state with `status`. */
+  const act = async (payload: object, status: string) => {
+    const since = made.posts.length;
+    await made.send(payload);
+    await waitForStatus(status, since);
+  };
+  return { ...made, fake, waitForStatus, act };
+}
+
+test("restarts wait for the old program: New Chat, Try Again and Save config folder", async () => {
+  const { act, fake, lastState, storage } = await withClaude({ session: "s1" });
+  await act({ type: "hello" }, "ready");
+
+  // Save config folder: stop, then start again resuming the session.
+  await act({ type: "setConfigFolder", path: "/Users/someone/.claude-b" }, "ready");
+  expect(fake.programs.length).toBe(2);
+  expect(fake.programs[0].ended).toBe(true);
+  expect(fake.programs[1].env.CLAUDE_CONFIG_DIR).toBe("/Users/someone/.claude-b");
+  expect(fake.programs[1].args).toContain("--resume=s1");
+
+  // Try Again after the program ended.
+  fake.programs[1].exit(1);
+  for (let i = 0; i < 400 && lastState().status !== "programEnded"; i++) await new Promise((r) => setTimeout(r, 5));
+  expect(lastState().status).toBe("programEnded");
+  await act({ type: "retry" }, "ready");
+  expect(fake.programs.length).toBe(3);
+
+  // New Chat while the program runs.
+  await act({ type: "newChat" }, "ready");
+  expect(fake.programs.length).toBe(4);
+  expect(fake.programs[3].args.some((arg) => arg.startsWith("--resume"))).toBe(false);
+
+  // Never refused, never mistaken for a failed resume.
+  expect(fake.refused).toEqual([]);
+  expect(lastState().messages).toEqual([]);
+  expect(storage.has("session")).toBe(false);
+
+  await act({ type: "send", text: "Hi" }, "ready");
+  expect(lastState().messages).toEqual([
+    { role: "user", text: "Hi" },
+    { role: "assistant", text: "Hello there." },
+  ]);
+  expect(storage.get("session")).toBe("sess-1");
+});
+
+test("Save config folder with a stored session keeps the conversation", async () => {
+  const { act, fake, lastState, storage } = await withClaude({ session: "s1" });
+  await act({ type: "hello" }, "ready");
+  await act({ type: "setConfigFolder", path: "" }, "ready");
+  expect(fake.refused).toEqual([]);
+  expect(fake.programs.length).toBe(2);
+  expect(lastState().messages).toEqual([{ role: "user", text: "kept" }]);
+  expect(storage.get("session")).toBe("s1");
 });

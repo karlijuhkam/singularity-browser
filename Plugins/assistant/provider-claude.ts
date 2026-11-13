@@ -7,10 +7,14 @@
 // - The SDK doesn't start the program itself. `spawnClaudeCodeProcess` hands the start to
 //   Singularity (`singularity.spawn`), which runs `claude` outside this plugin's sandbox, at the
 //   path pinned when the plugin was approved, with an environment the app builds.
-// - The program gets no tools (`tools: []`), none of the user's settings, hooks, plugins or MCP
-//   servers (`settingSources: []`, `mcpServers: {}`), and a short system prompt of our own. So it
-//   can only write text. Reviewers: this is what keeps the Assistant harmless; the app doesn't
-//   enforce it.
+// - The program gets no built-in tools (`tools: []`); none of the user's settings files, so none
+//   of their hooks, plugins, permission rules or CLAUDE.md (`settingSources: []`); no MCP servers
+//   at all (`strictMcpConfig: true` → `--strict-mcp-config`: only servers passed in `mcpServers`,
+//   and we pass none; without it the user's own servers, including Singularity's, would start);
+//   no skills in its prompt (`skills: []`); and a short system prompt of our own. So it can only
+//   write text. Reviewers: this is what keeps the Assistant harmless; the app doesn't enforce it.
+//   Not closable by an option (SDK 0.3.323): a message typed as a "/command" may still be read
+//   by the program as one of its own commands, and organisation-managed settings still apply.
 // - Of the environment the SDK wants to pass, only its own three names go through, plus
 //   CLAUDE_CONFIG_DIR from the Assistant's setting (plugin.json's `programEnv` lists exactly these).
 //
@@ -74,9 +78,26 @@ export function programEnvironment(sdkEnv: Record<string, string | undefined>, c
   return env;
 }
 
-/** "none" means no API key is used: a Claude plan sign-in (Claude's own word for it). */
-function billingFrom(apiKeySource: unknown): "plan" | "api" {
-  return apiKeySource === undefined || apiKeySource === null || apiKeySource === "none" ? "plan" : "api";
+/**
+ * A turn's init message: "none" means no API key is used, a Claude plan sign-in. Anything else,
+ * absent included (a third-party provider's account), counts as API billing: when in doubt, say
+ * that the chat may cost money.
+ */
+export function billingFrom(apiKeySource: unknown): "plan" | "api" {
+  return apiKeySource === "none" ? "plan" : "api";
+}
+
+/**
+ * The account in the program's answer to `initialize`, before any turn's init message: a plan
+ * only with "none", or with no API key named but a Claude subscription on Anthropic's own service.
+ * Everything else is API billing.
+ */
+export function billingFromAccount(account: unknown): "plan" | "api" {
+  const a = (account ?? {}) as { apiKeySource?: unknown; subscriptionType?: unknown; apiProvider?: unknown };
+  if (a.apiKeySource === "none") return "plan";
+  if (a.apiKeySource !== undefined && a.apiKeySource !== null) return "api";
+  const firstParty = a.apiProvider === undefined || a.apiProvider === "firstParty";
+  return firstParty && typeof a.subscriptionType === "string" && a.subscriptionType !== "" ? "plan" : "api";
 }
 
 type Failure = { kind: "signedOut" | "limit" | "other"; message: string };
@@ -246,6 +267,8 @@ class Run {
       tools: [],
       settingSources: [],
       mcpServers: {},
+      strictMcpConfig: true,
+      skills: [],
       includePartialMessages: true,
       systemPrompt: SYSTEM_PROMPT,
       spawnClaudeCodeProcess: (o: { args: string[]; env: Record<string, string | undefined>; signal?: AbortSignal }) =>
@@ -289,7 +312,7 @@ class Run {
           name: typeof m.displayName === "string" && m.displayName !== "" ? m.displayName : m.value,
           resolved: typeof m.resolvedModel === "string" ? m.resolvedModel : undefined,
         }));
-      this.#billing = billingFrom(info?.account?.apiKeySource);
+      this.#billing = billingFromAccount(info?.account);
       if (typeof info?.claude_code_version === "string") this.#providerVersion = info.claude_code_version;
       this.#emitReady();
     } catch {
@@ -389,8 +412,14 @@ class Run {
       const kind = this.#spawnError.includes("programs are off in a test copy") ? "programsOff" : "other";
       this.#fail({ kind, message: this.#spawnError });
     } else if (this.options.resume && !this.#initialized) {
-      // `claude --resume <id>` ends at once when it can't find that conversation (or can't read it).
-      this.#emit({ type: "error", kind: "other", message: "The earlier conversation couldn't be continued, so a new one was started." });
+      // The program started (no refusal) but ended before it answered: `claude --resume <id>`
+      // does that when it can't find or read that conversation.
+      this.#emit({
+        type: "error",
+        kind: "other",
+        message: "The earlier conversation couldn't be continued, so a new one was started.",
+        resumeFailed: true,
+      });
       this.#finished = true;
       this.restartWithoutResume();
     } else {
@@ -444,12 +473,22 @@ type ProviderEventKind = Extract<ProviderEvent, { type: "error" }>["kind"];
 export function createClaudeProvider(deps: Dependencies): Provider {
   let run: Run | null = null;
   let chosenModel: string | undefined;
+  /**
+   * When the last program ended. Kept across stop(): Singularity runs one program per plugin and
+   * refuses a second start while the first is still ending, so every start waits for this.
+   */
+  let lastExit: Promise<void> = Promise.resolve();
+
+  function endRun(): void {
+    if (run === null) return;
+    run.end();
+    lastExit = run.exited;
+    run = null;
+  }
 
   function begin(options: StartOptions, emit: (event: ProviderEvent) => void): void {
-    const previous = run;
-    previous?.end();
-    const previousExit = previous ? previous.exited : Promise.resolve();
-    run = new Run(deps, options, () => chosenModel, emit, () => begin({ ...options, resume: undefined }, emit), previousExit);
+    endRun();
+    run = new Run(deps, options, () => chosenModel, emit, () => begin({ ...options, resume: undefined }, emit), lastExit);
   }
 
   return {
@@ -468,8 +507,7 @@ export function createClaudeProvider(deps: Dependencies): Provider {
       run?.setModel(id);
     },
     stop() {
-      run?.end();
-      run = null;
+      endRun();
     },
   };
 }
