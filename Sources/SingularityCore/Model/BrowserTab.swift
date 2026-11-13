@@ -11,6 +11,9 @@ public enum TabKind: Codable, Hashable, Sendable {
     /// (e.g. "report/index.html"). It is served by the Space's local server, never via file://;
     /// the server's port changes on every launch, so only the path is stored.
     case artifact(path: String)
+    /// A plugin's own page (its manifest `panel`), shown as a tab. Only the plugin's id is stored;
+    /// the page itself is found again from the plugin folder at launch.
+    case plugin(pluginID: String)
 }
 
 /// A tab belongs to exactly one Space. Its position in the sidebar is determined by
@@ -62,18 +65,23 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
         BrowserTab(kind: .artifact(path: path))
     }
 
+    /// A tab for a plugin's page. `title` is the manifest's panel title when it is known.
+    public static func plugin(pluginID: String, title: String = "") -> BrowserTab {
+        BrowserTab(kind: .plugin(pluginID: pluginID), title: title)
+    }
+
     /// The page URL for web tabs; nil for other kinds.
     public var url: URL? {
         switch kind {
         case .web(let url): return url
-        case .terminal, .artifact: return nil
+        case .terminal, .artifact, .plugin: return nil
         }
     }
 
     /// The directory for terminal tabs; nil for other kinds.
     public var workingDirectory: String? {
         switch kind {
-        case .web, .artifact: return nil
+        case .web, .artifact, .plugin: return nil
         case .terminal(let directory): return directory
         }
     }
@@ -82,18 +90,26 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
     public var artifactPath: String? {
         switch kind {
         case .artifact(let path): return path
-        case .web, .terminal: return nil
+        case .web, .terminal, .plugin: return nil
         }
+    }
+
+    /// The plugin's id for plugin tabs; nil for other kinds.
+    public var pluginID: String? {
+        if case .plugin(let id) = kind { return id }
+        return nil
     }
 
     public var isTerminal: Bool { workingDirectory != nil }
     public var isArtifact: Bool { artifactPath != nil }
+    public var isPlugin: Bool { pluginID != nil }
 
     /// Title to show in the UI: the page title, else the host, else the raw URL.
     public var displayTitle: String {
         if !title.isEmpty { return title }
         if isTerminal { return "Terminal" }
         if let artifactPath { return (artifactPath as NSString).lastPathComponent }
+        if let pluginID { return pluginID }
         if let host = url?.host(), !host.isEmpty { return host }
         return url?.absoluteString ?? "New Tab"
     }

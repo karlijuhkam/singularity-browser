@@ -994,6 +994,8 @@ final class AppState {
             _ = web.controller(for: tab, in: space)
         case .terminal:
             _ = terminals.session(for: tab, in: space)
+        case .plugin:
+            break // Assistant plan, Task 6 fills this in
         case .artifact(let path):
             guard web.existingController(tab.id) == nil else { return }
             // The page can only load once the Space's server runs.
@@ -1180,7 +1182,7 @@ final class AppState {
         case .artifact(let path):
             guard let host = await ensureArtifactHost(space), let request = host.request(for: path) else { return nil }
             return web.existingController(tabID) ?? web.artifactController(for: tab, in: space, host: host, request: request)
-        case .terminal:
+        case .terminal, .plugin: // Assistant plan, Task 6 fills this in
             return nil
         }
     }

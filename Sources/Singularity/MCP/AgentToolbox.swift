@@ -215,6 +215,7 @@ final class AgentToolbox {
             case .web(let url): entry["kind"] = "web"; entry["url"] = url.absoluteString
             case .terminal(let directory): entry["kind"] = "terminal"; entry["directory"] = directory
             case .artifact(let path): entry["kind"] = "artifact"; entry["path"] = path
+            case .plugin: entry["kind"] = "plugin" // Assistant plan, Task 6 finishes the rules
             }
             switch tab.section {
             case .pinned: entry["section"] = "pinned"

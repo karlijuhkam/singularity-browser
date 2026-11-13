@@ -54,6 +54,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// View → Hide Sidebar. Hidden, it slides out at the window's left edge (`SidebarPeek`).
     public var sidebarHidden: Bool = false
 
+    /// The plugin whose page the panel beside the page shows; nil = the panel is closed.
+    public var pluginPanel: String?
+    /// The panel's width in points (see `PluginPanelLayout`).
+    public var pluginPanelWidth: Double = PluginPanelLayout.defaultWidth
+
     public init() {}
 
     public init(from decoder: Decoder) throws {
@@ -73,6 +78,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         launchers = Launcher.decodeList(from: container, forKey: .launchers) ?? defaults.launchers
         sidebarWidth = SidebarLayout.clamp((try? container.decodeIfPresent(Double.self, forKey: .sidebarWidth)) ?? defaults.sidebarWidth)
         sidebarHidden = (try? container.decodeIfPresent(Bool.self, forKey: .sidebarHidden)) ?? defaults.sidebarHidden
+        pluginPanel = (try? container.decodeIfPresent(String.self, forKey: .pluginPanel)) ?? nil
+        pluginPanelWidth = PluginPanelLayout.clamp((try? container.decodeIfPresent(Double.self, forKey: .pluginPanelWidth)) ?? defaults.pluginPanelWidth)
     }
 
     /// The search template in effect. A custom template that isn't an http(s) URL containing `%s`
