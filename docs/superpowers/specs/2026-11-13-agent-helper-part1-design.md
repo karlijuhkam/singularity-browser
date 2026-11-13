@@ -21,7 +21,7 @@ order, each with its own design:
 
 1. **Part 1 (this document): the ground floor.** A plugin can show its own page in a panel at the
    right of the window or in a tab, and can keep one approved program running and talk to it. The
-   Claude plugin uses both to give a plain chat on the user's own Claude Code sign-in. It cannot see
+   Agent plugin uses both to give a plain chat on the user's own Claude Code sign-in. It cannot see
    pages or act yet.
 2. **Part 2: browse with the helper.** It knows the page in front, reads it and acts in the browser,
    through the door agents already use (`singularity-mcp`), under each Space's policy, approvals and
