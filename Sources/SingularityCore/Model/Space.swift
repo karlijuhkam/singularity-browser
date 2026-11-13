@@ -35,6 +35,9 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     public var projects: [Project]
     /// The project last chosen in the "New terminal in" picker; it is listed first there.
     public var lastProjectID: UUID?
+    /// One emoji shown in the Space's circle in the rail instead of the first letter of its name
+    /// (Edit Space). Nil = the letter. Only for show: the slug and tool names don't depend on it.
+    public var icon: String?
 
     public init(
         id: UUID = UUID(),
@@ -51,7 +54,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         agentInspection: Bool = false,
         siteSettings: [String: SiteSettings] = [:],
         projects: [Project] = [],
-        lastProjectID: UUID? = nil
+        lastProjectID: UUID? = nil,
+        icon: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -68,6 +72,7 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         self.siteSettings = siteSettings
         self.projects = projects
         self.lastProjectID = lastProjectID
+        self.icon = icon
     }
 
     /// Decoding by hand so that space.json files written before a field existed still load
@@ -89,6 +94,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         siteSettings = (try? container.decodeIfPresent([String: SiteSettings].self, forKey: .siteSettings)) ?? [:]
         projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
         lastProjectID = try container.decodeIfPresent(UUID.self, forKey: .lastProjectID)
+        // Kept to one emoji whatever the file says; anything else reads as "no icon".
+        icon = (try? container.decodeIfPresent(String.self, forKey: .icon)).flatMap { $0 }.flatMap(Emoji.single)
     }
 
     // MARK: - Reading

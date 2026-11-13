@@ -46,6 +46,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var agentApprovalTimeoutSeconds: Int = 120
     /// Check for updates by itself (only copies that `UpdatePolicy` allows to update).
     public var checksForUpdates: Bool = true
+    /// The launcher buttons in the sidebar's bottom row (Settings → Terminal → Launchers). A file
+    /// without this key gets Claude Code and Codex; an empty list stays empty.
+    public var launchers: [Launcher] = Launcher.defaults
+    /// The sidebar's width in points, one for all Spaces (see `SidebarLayout`).
+    public var sidebarWidth: Double = SidebarLayout.defaultWidth
+    /// View → Hide Sidebar. Hidden, it slides out at the window's left edge (`SidebarPeek`).
+    public var sidebarHidden: Bool = false
 
     public init() {}
 
@@ -63,6 +70,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         agentApprovalTimeoutSeconds = (try? container.decodeIfPresent(Int.self, forKey: .agentApprovalTimeoutSeconds))
             ?? defaults.agentApprovalTimeoutSeconds
         checksForUpdates = (try? container.decodeIfPresent(Bool.self, forKey: .checksForUpdates)) ?? defaults.checksForUpdates
+        launchers = Launcher.decodeList(from: container, forKey: .launchers) ?? defaults.launchers
+        sidebarWidth = SidebarLayout.clamp((try? container.decodeIfPresent(Double.self, forKey: .sidebarWidth)) ?? defaults.sidebarWidth)
+        sidebarHidden = (try? container.decodeIfPresent(Bool.self, forKey: .sidebarHidden)) ?? defaults.sidebarHidden
     }
 
     /// The search template in effect. A custom template that isn't an http(s) URL containing `%s`
