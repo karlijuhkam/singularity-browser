@@ -71,8 +71,9 @@ The Assistant can look at your browser, only where you allow it.
 - `claude` is started with none of its built-in tools, with no MCP servers but Singularity's own
   (not even the ones in your own Claude config), without your Claude settings files (so none of
   your hooks, plugins or CLAUDE.md) and without skills (see `provider-claude.ts`). Two things stay
-  as they are: settings your organisation manages for Claude, and, only in a build with
-  no browser door (no note is sent there), a message that starts with "/", which `claude` may read
+  as they are: settings your organisation manages for Claude, and, only when the chat
+  runs without the browser's tools (a build with no browser door, or when they couldn't start; no
+  note is sent then), a message that starts with "/", which `claude` may read
   as one of its own commands (what it answers then is shown as the answer). With the browser's
   tools, every message starts with the note about the tab in front, so this does not apply.
 - Answers are shown as text (with simple formatting). Links are shown as their address, never as

@@ -65,8 +65,8 @@ const TOOLS = [
 const PREFIX = "mcp__singularity__";
 
 /**
- * The name the door gives a tool, from the name `claude` reports: "mcp__singularity__my_work_read_page"
- * is "my_work.read_page". The app's slugs hold only a-z, 0-9 and "-" (never "_"), but tool
+ * The name the door gives a tool, from the name `claude` reports: "mcp__singularity__my-work_read_page"
+ * is "my-work.read_page". The app's slugs hold only a-z, 0-9 and "-" (never "_"), but tool
  * names hold underscores, so the name is split at its last known tool name, never at the first
  * "_". null for a tool that isn't the door's.
  */

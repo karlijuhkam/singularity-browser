@@ -472,7 +472,7 @@ Where this section and the design above disagree, this section is what the code 
   find, screenshot, the summary after open/navigate/click/type, and the navigation guard). Switched off
   meanwhile, it ends with the plain "Unknown tool" answer and returns nothing from the page.
 - **A `blob:` page counts as the site inside its address** for the per-site switch.
-- **A plugin's `list_tabs` gives a terminal tab's id, kind and section only:** no title, folder or
+- **A plugin's `list_tabs` gives a terminal tab's id, kind, section and the selected/visible flags only:** no title, folder or
   project (terminals are part 3). Outside agents get what they got before.
 - **"Show Tab" on a card in the page area** opens the inbox panel (without the keyboard) when showing the
   tab took the plugin's page off screen.
@@ -487,6 +487,12 @@ Where this section and the design above disagree, this section is what the code 
   and the title and address inside `<untrusted-content source="tab in front">`, with whitespace
   collapsed and `<` and `>` replaced. It is never shown and never saved: the chat and
   `conversation.json` keep only what the user typed, plus tool lines, which may name the front tab's title or address.
+  The block is sent only when the provider was given the browser server; without it (no launcher, or
+  the server couldn't be asked for) the text goes alone and the chip says "Nothing shared from here".
+  Control and format characters are stripped, and the title and address are cut to 300 and 2000
+  characters again in the plugin. The system prompt's sentence for nothing visible is: "If nothing is
+  visible to you, say so; if the user expected you to see a page, you may be switched off for this
+  Space or site (Singularity shows a button under the chat when the Space is off)."
 - **The chip** above the input says the tab's title, else its address, else "Untitled tab", and
   "Nothing shared from here" when there is no front tab (the design said "Nothing shared from this
   Space" / "this site" / "No page in view"; the plugin is not told why). It follows `onFrontChange`.
@@ -504,7 +510,7 @@ Where this section and the design above disagree, this section is what the code 
   " — not done" like any failed call.
 - **"The browser tools couldn't start."** with Try Again, above the input: when
   `singularity.browser.server()` rejects (the chat then starts without tools), or when Claude's init
-  message shows the `singularity` server with a status other than connected. No line when the answer is
+  message shows the `singularity` server as `failed`, `needs-auth` or `disabled` (`connected` clears the line; `pending` or an unknown status changes nothing). No line when the answer is
   `null` (a copy with no launcher: the chat simply has no tools).
 - The empty chat now says "Ask anything. The Assistant can look at the tab in front when you share it."
   (the part 1 text was no longer true).
