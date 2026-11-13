@@ -206,6 +206,70 @@ struct PluginFrontTests {
         #expect(later.last == .null)
     }
 
+    /// What the plugin has been told so far, as tab ids (nil for a null).
+    private func told(_ rig: Rig) async -> [String?] {
+        let reply = await rig.manager.sendFromPanel(pluginID: FrontWorkspace.id, payload: .string("changes"))
+        guard case .object(let fields)? = reply, case .array(let list)? = fields["changes"] else { return [] }
+        return list.map { value in
+            guard case .object(let front) = value, case .object(let tab)? = front["tab"], case .string(let id)? = tab["id"] else { return nil }
+            return id
+        }
+    }
+
+    private func settle() async throws { try await Task.sleep(for: .milliseconds(700)) }
+
+    @Test(.timeLimit(.minutes(1))) func closingOrOpeningATabTellsThePlugin() async throws {
+        let rig = try await makeRig()
+        defer { tearDown(rig) }
+        let id = FrontWorkspace.id
+        try await settle()
+        #expect(await told(rig) == [rig.b.id.uuidString.lowercased()])
+
+        // Closing the tab in front: the neighbour is in front, and the plugin is told.
+        rig.state.closeTab(rig.b.id, in: rig.spaceID, confirmIfBusy: false)
+        #expect(frontTab(rig.state.pluginFront(id))?.tab.id == rig.a.id.uuidString.lowercased())
+        try await settle()
+        #expect(await told(rig).last == rig.a.id.uuidString.lowercased())
+
+        // A new tab (no selectTab call on that path).
+        rig.state.openInNewTab(URL(string: "https://c.example/")!)
+        let c = try #require(rig.state.selectedTab)
+        try await settle()
+        #expect(await told(rig).last == c.id.uuidString.lowercased())
+    }
+
+    @Test(.timeLimit(.minutes(1))) func theWelcomeFlowHidesTheFrontTab() async throws {
+        let rig = try await makeRig()
+        defer { tearDown(rig) }
+        let id = FrontWorkspace.id
+        try await settle()
+        rig.state.showWelcome()
+        #expect(rig.state.pluginFront(id) == .hidden(.nothing))
+        try await settle()
+        #expect(await told(rig).last == .some(nil)) // null
+        rig.state.closeWelcome()
+        try await settle()
+        #expect(await told(rig).last == rig.b.id.uuidString.lowercased())
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aSplitMadeBySplitTabReachesTheLastFocusedPaneAndNeverThePluginsOwnTab() async throws {
+        let rig = try await makeRig()
+        defer { tearDown(rig) }
+        let id = FrontWorkspace.id
+        rig.state.openPluginPageAsTab(id)
+        let pluginTab = try #require(rig.state.selectedTab)
+        try await settle()
+        // b joins a (b is focused last), then the plugin tab joins; it is selected and no selectTab follows.
+        rig.state.splitTab(rig.b.id, beside: rig.a.id, edge: .right)
+        rig.state.splitTab(pluginTab.id, beside: rig.a.id, edge: .left)
+        #expect(rig.state.selectedTab?.id == pluginTab.id)
+        #expect(frontTab(rig.state.pluginFront(id))?.tab.id == rig.b.id.uuidString.lowercased())
+        try await settle()
+        let sent = await told(rig)
+        #expect(sent.last == rig.b.id.uuidString.lowercased())
+        #expect(!sent.contains(pluginTab.id.uuidString.lowercased()), "got \(sent)")
+    }
+
     @Test(.timeLimit(.minutes(1))) func aPluginWithoutTheFrontTabPermissionIsRefused() async throws {
         let rig = try await makeRig(frontTab: false)
         defer { tearDown(rig) }

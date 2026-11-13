@@ -387,6 +387,7 @@ final class AppState {
         onboarding = OnboardingFlow()
         palette = nil
         welcomePluginReview = nil
+        plugins.frontDidChange() // nothing is in front while the flow covers the window
     }
 
     /// Step 4's Review…, or a finished Add: shows the plugin's approval sheet, but only while the
@@ -403,6 +404,7 @@ final class AppState {
         onboarding = nil
         firstRunPlaceholderID = nil
         welcomePluginReview = nil
+        plugins.frontDidChange()
     }
 
     /// File → Close Tab (⌘W). On the welcome flow it closes the flow, never the tab hidden behind
@@ -613,9 +615,6 @@ final class AppState {
             previousTabBySpace[spaceID] = current
         }
         mutateSpace(spaceID) { $0.selectedTabID = tabID }
-        if let space = space(spaceID), let group = space.splitGroup(containing: tabID), space.tab(tabID)?.isPlugin == false {
-            lastOtherPaneByGroup[group.id] = tabID
-        }
         loadSelectedTab()
         inboxNoteVisibleTabs()
         plugins.frontDidChange()
@@ -1067,7 +1066,10 @@ final class AppState {
     /// Called by WebTabController when the page title or URL changes.
     func webTabDidChange(tabID: UUID, spaceID: UUID, title: String?, url: URL?) {
         let host = artifacts.host(spaceID)
-        defer { plugins.frontDidChange() } // the front tab's title or address may be what changed
+        // The front tab's title or address may be what changed: only a pane on screen can be.
+        defer {
+            if spaceID == selectedSpaceID, selectedSpace?.visibleTabIDs.contains(tabID) == true { plugins.frontDidChange() }
+        }
         mutateSpace(spaceID) { space in
             space.updateTab(tabID) { tab in
                 if let title { tab.title = title }
@@ -1165,6 +1167,14 @@ final class AppState {
         if let selected = space.selectedTab, selected.isTerminal {
             activeTerminalBySpace[space.id] = selected.id
         }
+        // Every path that changes the selected tab or Space ends here (select, new tab, close,
+        // split, drop, delete Space), so this is the one place that notes the last focused
+        // non-plugin pane of a split and tells plugins what is in front. Repeats cost nothing:
+        // the manager only sends a changed answer.
+        if let selected = space.selectedTab, !selected.isPlugin, let group = space.splitGroup(containing: selected.id) {
+            lastOtherPaneByGroup[group.id] = selected.id
+        }
+        plugins.frontDidChange()
     }
 
     private func loadTab(_ tab: BrowserTab, in space: Space) {
