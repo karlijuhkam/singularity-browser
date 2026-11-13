@@ -395,6 +395,11 @@ struct PluginDoorTests {
         let log = AgentLogStore(file: rig.state.paths.agentLogFile(rig.space.slug)).loadRecent()
         #expect(log.last?.client == DoorWorkspace.title, "got \(log)")
         #expect(log.last?.tool == rig.tool("list_tabs"))
+
+        // A plugin's connection has no file tools: list_spaces gives it no path on this Mac.
+        let spaces = try await plugin.call("list_spaces")
+        #expect(!spaces.isError && spaces.text.contains(rig.space.slug), "got \(spaces.text)")
+        #expect(!spaces.text.contains("artifacts_folder"), "got \(spaces.text)")
     }
 
     @Test(.timeLimit(.minutes(1))) func theProgramOfAPluginWithoutBrowserIsAnOutsideAgent() async throws {

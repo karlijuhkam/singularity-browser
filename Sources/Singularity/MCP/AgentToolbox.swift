@@ -222,11 +222,17 @@ final class AgentToolbox {
     // MARK: - Tools
 
     private func listSpaces(_ caller: AgentCaller, program: pid_t?) throws -> String {
-        guard state != nil else { throw ToolError("Browser is shutting down.") }
+        guard let state else { throw ToolError("Browser is shutting down.") }
         let spaces = spaces(for: caller, program: program).map { space -> [String: Any] in
-            ["slug": space.slug, "name": space.name, "tabs": space.tabs.filter { tabIsVisible($0, in: space, to: caller) }.count,
-             "policy": space.agentPolicy.rawValue,
-             "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
+            var entry: [String: Any] = [
+                "slug": space.slug, "name": space.name,
+                "tabs": space.tabs.filter { tabIsVisible($0, in: space, to: caller) }.count,
+                "policy": space.agentPolicy.rawValue,
+                "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
+            // Where an agent writes an artifact: a new HTML page here gets a tab by itself. Only for
+            // outside agents: a plugin's connection has no file tools, and isn't told paths on this Mac.
+            if caller == .outside { entry["artifacts_folder"] = state.paths.artifactsDirectory(space.slug).path }
+            return entry
         }
         if spaces.isEmpty {
             if case .plugin(_, let title) = caller { return AgentCaller.noSpaces(title: title) }
