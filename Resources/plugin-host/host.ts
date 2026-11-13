@@ -258,7 +258,9 @@ const storage = Object.freeze({
 //
 // Backpressure: the app sends at most about 1 MB of output that the plugin hasn't read yet. stdout
 // reports what its reader has taken (in _read), and the app reads the program further only then,
-// so a slow reader slows the program down instead of filling memory.
+// so a slow reader slows the program down instead of filling memory. The other way round there is
+// none: stdin.write never pushes back, and a writer that outruns the program hits the app's 16 MB
+// cap on waiting input, after which the program is ended.
 
 /** Most bytes of program input in one message (the app takes lines of at most 1 MB; base64 adds a third). */
 const PROGRAM_INPUT_CHUNK = 512 * 1024;

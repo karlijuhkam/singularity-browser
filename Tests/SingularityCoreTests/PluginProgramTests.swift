@@ -304,7 +304,24 @@ struct PluginProgramTests {
         _ = try await waitFor("the program and its child to end", timeout: .seconds(5)) {
             pids.contains(where: alive) ? nil : true
         }
-        #expect(ContinuousClock.now - begun < .seconds(3))
+        // At app quit there is no time for SIGTERM and a wait: terminateNow kills at once.
+        #expect(ContinuousClock.now - begun < (ending == .terminateNow ? .seconds(1) : .seconds(3)))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func whatAProgramLeavesBehindEndsWithIt() async throws {
+        let (process, recorder, ws) = try started()
+        defer { ws.remove() }
+        defer { process.stop() }
+        process.send(message(1, .string("leave-child")))
+        let reply = try await recorder.reply(1)
+        guard case .string(let text)? = field(reply, "pid"), let pid = Int32(text) else {
+            Issue.record("no pid: \(reply)")
+            return
+        }
+        #expect(field(reply, "code") == .number(0))
+        // The child held the program's stdout open; it was killed when the program ended, so
+        // the exit came without waiting out the 2 s grace, and the child is gone.
+        _ = try await waitFor("the child to end", timeout: .seconds(1)) { alive(pid) ? nil : true }
     }
 
     @Test(.timeLimit(.minutes(1))) func refusedStarts() async throws {

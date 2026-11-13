@@ -68,6 +68,8 @@ public final class PluginProcess: @unchecked Sendable {
     private var process: Process?
     private var started = false
     private var stopping = false
+    /// `terminateNow()` was called (the app is quitting): a program still starting is killed at once.
+    private var terminating = false
     private var exitReported = false
     private var inputOverflowed = false
     private var runningCommands = 0
@@ -240,6 +242,7 @@ public final class PluginProcess: @unchecked Sendable {
     public func terminateNow() {
         let process: Process? = lock.withLock {
             stopping = true
+            terminating = true
             return self.process
         }
         input.close()
@@ -423,14 +426,16 @@ public final class PluginProcess: @unchecked Sendable {
             lock.withLock { program = nil }
             return refuse(error.reason)
         }
-        let stoppedMeanwhile: Bool = lock.withLock {
+        let (stoppedMeanwhile, terminatedMeanwhile): (Bool, Bool) = lock.withLock {
             program = (programID, name, running)
-            return stopping
+            return (stopping, terminating)
         }
+        // stop() or terminateNow() came while it was starting and couldn't see it yet.
+        if terminatedMeanwhile { running.killNow() }
         // Announced before any output can be read (`begin`), so the plugin hears of it first.
         send(.programStarted(programID: programID))
         running.begin()
-        if stoppedMeanwhile { running.end(drain: true) }
+        if stoppedMeanwhile && !terminatedMeanwhile { running.end(drain: true) }
     }
 
     private func programEvent(_ event: RunningProgram.Event, programID: Int, name: String) {

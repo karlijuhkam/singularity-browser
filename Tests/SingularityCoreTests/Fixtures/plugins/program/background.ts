@@ -73,6 +73,12 @@ singularity.onPageMessage(async ({ tabID, frameHost, payload }) => {
     return { text: result.data.toString() };
   }
 
+  // A program that exits by itself and leaves a child behind: answers with the child's pid.
+  if (p === "leave-child") {
+    const result = await runProgram("fixture", ["leave-child"]);
+    return { pid: result.data.toString().trim(), code: result.code };
+  }
+
   if (p === "stderr") {
     const result = await runProgram("fixture", ["stderr"]);
     return { code: result.code };

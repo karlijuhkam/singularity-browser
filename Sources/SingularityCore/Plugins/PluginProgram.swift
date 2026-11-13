@@ -136,9 +136,15 @@ final class RunningProgram: @unchecked Sendable {
                                      onEvent: onEvent)
         program.stdoutSource = program.makeSource(spawned.stdout) { $0.readStdout() }
         program.stderrSource = program.makeSource(spawned.stderr) { $0.readStderr() }
-        // waitpid on a thread of its own: it blocks until the program ends, then reaps it.
+        // A thread of its own blocks until the program ends, then reaps it.
         let pid = spawned.pid
         Thread.detachNewThread {
+            // First wait without reaping (WNOWAIT): while the ended program is not reaped, its pid
+            // (= its group's id) can't be given to anyone else, so SIGKILL to the group reaches only
+            // what it started and left behind. Nothing it started outlives it.
+            var info = siginfo_t()
+            while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1 && errno == EINTR {}
+            kill(-pid, SIGKILL)
             var status: Int32 = 0
             while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
             // The wait status: low 7 bits = the signal that ended it (0: it exited), next 8 bits = exit status.
@@ -313,12 +319,13 @@ final class RunningProgram: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + 2) { self.killGroup() }
     }
 
-    /// SIGKILL to the program's process group at once (for app termination).
+    /// SIGKILL to the program's process group at once (for app termination). The signal is sent
+    /// right here, not queued: the app may exit before a queued block would run.
     func killNow() {
+        kill(-pid, SIGKILL)   // `pid` is a constant; see killGroup for why the group's id is safe
         queue.async {
             self.draining = true
             if self.paused { self.resumeStdout() }
-            self.killGroup()
         }
     }
 

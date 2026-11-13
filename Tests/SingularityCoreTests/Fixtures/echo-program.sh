@@ -20,5 +20,11 @@ case "$1" in
     echo "$$ $!"
     while :; do /bin/sleep 1; done
     ;;
+  # Starts a child (which keeps stdout open), prints its pid and exits at once, leaving it behind.
+  leave-child)
+    /bin/sleep 300 &
+    echo "$!"
+    exit 0
+    ;;
   *) echo "unknown mode: $1" >&2; exit 2 ;;
 esac
