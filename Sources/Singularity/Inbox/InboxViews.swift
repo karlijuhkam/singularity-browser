@@ -288,6 +288,11 @@ struct InboxQuestionPicks: Equatable {
         picked[question] = labels
     }
 
+    /// How many questions have at least one choice.
+    var answeredCount: Int {
+        questions.indices.filter { !(picked[$0] ?? []).isEmpty }.count
+    }
+
     var isComplete: Bool {
         questions.indices.allSatisfy { !(picked[$0] ?? []).isEmpty }
     }
@@ -327,35 +332,60 @@ private struct InboxQuestionBody: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
-                VStack(alignment: .leading, spacing: 4) {
-                    if let header = question.header {
-                        Text(verbatim: InboxText.clean(header, limit: 80))
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                // A line between questions: with several on one card they must not run together.
+                if index > 0 { Divider() }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        if let header = question.header {
+                            Text(verbatim: InboxText.clean(header, limit: 80))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                        if questions.count > 1 {
+                            Text(verbatim: "\(index + 1) of \(questions.count)")
+                                .font(.system(size: 10).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Text(verbatim: InboxText.clean(question.question, limit: InboxText.messageLimit))
-                        .font(.system(size: 12))
+                        .font(.system(size: 12, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    ForEach(question.options, id: \.self) { label in
-                        option(label, question: index, multiSelect: question.multiSelect)
+                    if question.multiSelect {
+                        Text("Choose any that apply.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(question.options, id: \.self) { label in
+                            option(label, question: index, multiSelect: question.multiSelect)
+                        }
                     }
                 }
             }
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if !picks.answersAtOnce {
                     Button("Send") { onAction(.answerQuestion(entry.id, picks.answers)) }
                         .disabled(!picks.isComplete)
                 }
                 Button("Other…") { onAction(.goTo(entry)) }
+                if questions.count > 1 && !picks.isComplete {
+                    Text(verbatim: "\(picks.answeredCount) of \(questions.count) answered")
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
-            .controlSize(.small)
+            .padding(.top, 2)
         }
     }
 
+    /// One option: a full-width row, not a system button (those are grey on the card's grey).
+    /// Picked rows are filled with the accent colour, so the choice is readable at a glance.
     private func option(_ label: String, question index: Int, multiSelect: Bool) -> some View {
         let picked = picks.isPicked(index, label)
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
         return Button {
             if let action = InboxQuestionPicks.answerAtOnce(entry: entry, question: index, label: label) {
                 onAction(action)
@@ -363,19 +393,30 @@ private struct InboxQuestionBody: View {
                 picks.toggle(index, label)
             }
         } label: {
-            HStack(spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
                 if !picks.answersAtOnce {
                     Image(systemName: multiSelect ? (picked ? "checkmark.square.fill" : "square")
                                                   : (picked ? "largecircle.fill.circle" : "circle"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(picked ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
                         .accessibilityHidden(true)
                 }
                 Text(verbatim: InboxText.clean(label, limit: InboxText.messageLimit))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                    .font(.system(size: 12, weight: picked ? .medium : .regular))
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(picked ? AnyShapeStyle(Color.accentColor.opacity(0.22))
+                               : AnyShapeStyle(Color(nsColor: .controlBackgroundColor)), in: shape)
+            .overlay(shape.strokeBorder(picked ? Color.accentColor : Color.primary.opacity(0.18), lineWidth: 1))
+            .contentShape(shape)
         }
-        .controlSize(.small)
+        .buttonStyle(.plain)
         .accessibilityAddTraits(picked ? .isSelected : [])
     }
 }

@@ -217,6 +217,38 @@ extension AppTests {
         }
     }
 
+    /// Not a check: with SG_SNAPSHOT_DIR=<folder> it writes pictures of a card with several questions
+    /// (light and dark), to look at contrast and spacing.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SG_SNAPSHOT_DIR"] != nil))
+    func snapshotOfAMultiQuestionCard() throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        var inbox = Inbox()
+        _ = inbox.hold(.question([
+            InboxQuestion(question: "Which database should the service use?", header: "Database",
+                          options: ["SQLite (one file, no server)", "Postgres", "Keep the current MySQL"]),
+            InboxQuestion(question: "Which checks should run before every commit?", header: "Checks",
+                          options: ["Unit tests", "Lint", "Type check", "A long option that needs a second line to be read in full"],
+                          multiSelect: true),
+            InboxQuestion(question: "Ship behind a feature flag?", header: "Rollout", options: ["Yes", "No"]),
+        ]), tab: tab(f.space.id), agent: "Claude Code", now: Date())
+        f.center.replaceInboxForTesting(inbox)
+        let folder = URL(filePath: ProcessInfo.processInfo.environment["SG_SNAPSHOT_DIR"]!)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for (name, file) in [(NSAppearance.Name.aqua, "inbox-questions-light"), (.darkAqua, "inbox-questions-dark")] {
+            let controller = NSHostingController(rootView: InboxListView(center: f.center, onAction: { _ in })
+                .background(Color(nsColor: .windowBackgroundColor)))
+            controller.view.appearance = NSAppearance(named: name)
+            let size = controller.sizeThatFits(in: CGSize(width: InboxPanelController.width, height: 100_000))
+            let view = controller.view
+            view.frame = NSRect(origin: .zero, size: CGSize(width: InboxPanelController.width, height: size.height))
+            view.layoutSubtreeIfNeeded()
+            let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try #require(rep.representation(using: .png, properties: [:])).write(to: folder.appending(path: "\(file).png"))
+        }
+    }
+
     @Test func panelHeightIsCappedAndTheListScrolls() async throws {
         let f = try makeFixture(windowHeight: 500)
         defer { tearDown(f) }
