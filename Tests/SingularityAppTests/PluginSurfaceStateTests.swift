@@ -53,6 +53,62 @@ extension AppTests {
         #expect(pluginTabs(state).isEmpty)
     }
 
+    /// Someone who updated never saw the welcome flow's step 4: with no panel plugin installed, the
+    /// toggle offers a shipped one ("Show Assistant") and opens Settings → Plugins, which lists it.
+    @Test func withNoPanelPluginTheToggleOffersTheShippedOne() async throws {
+        MainRunLoopGuard.start
+        let root = TestAppState.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let state = TestAppState.make(root: root)
+        defer { TestAppState.shutDown(state) }
+        state.closeWelcome()
+        try await waitUntil("the first scan") { state.plugins.firstScanDone }
+        #expect(state.plugins.panelPlugins().isEmpty)
+        let folder = URL(fileURLWithPath: "/nonexistent")
+        let onePassword = BundledPlugin(id: "1password", name: "1Password", summary: "", folder: folder)
+        let assistant = BundledPlugin(id: "assistant", name: "Assistant", summary: "", folder: folder, panelTitle: "Assistant")
+
+        // A bare debug binary ships nothing: the generic item, off.
+        state.bundledPlugins = []
+        #expect(state.pluginPanelCommandTitle == "Show Plugin Panel")
+        #expect(!state.pluginPanelCommandEnabled)
+        // Shipped plugins, none with a panel: the same.
+        state.bundledPlugins = [onePassword]
+        #expect(state.pluginPanelCommandTitle == "Show Plugin Panel")
+        #expect(!state.pluginPanelCommandEnabled)
+
+        // The Assistant is shipped: "Show Assistant", on, and it opens Settings → Plugins.
+        state.bundledPlugins = [onePassword, assistant]
+        #expect(state.bundledPanelOffer == "Assistant")
+        #expect(state.pluginPanelCommandTitle == "Show Assistant")
+        #expect(state.pluginPanelCommandEnabled)
+        state.settingsTab = .general
+        state.togglePluginPanel()
+        #expect(state.settingsTab == .plugins)
+        #expect(state.settings.pluginPanel == nil)
+        // Settings → Plugins offers both, as nothing is installed.
+        #expect(BundledPlugins.notInstalled(state.bundledPlugins, installedIDs: Set(state.plugins.plugins.map(\.id)))
+                    .map(\.id) == ["1password", "assistant"])
+        // Not while the welcome flow covers the window.
+        state.showWelcome()
+        #expect(!state.pluginPanelCommandEnabled)
+    }
+
+    /// With a panel plugin installed, the toggle is about that one, whatever the app ships.
+    @Test func anInstalledPanelPluginWinsOverTheOffer() async throws {
+        let ws = try PanelWorkspace()
+        defer { ws.remove() }
+        let state = try await makeState(ws)
+        defer { TestAppState.shutDown(state) }
+        state.bundledPlugins = [BundledPlugin(id: "assistant", name: "Assistant", summary: "",
+                                              folder: URL(fileURLWithPath: "/nonexistent"), panelTitle: "Assistant")]
+        #expect(state.bundledPanelOffer == nil)
+        #expect(state.pluginPanelCommandTitle == "Show Fixture Panel")
+        state.togglePluginPanel()
+        #expect(state.pluginPanelCommandTitle == "Hide Fixture Panel")
+        #expect(state.settings.pluginPanel == id)
+    }
+
     @Test func openAsTabMakesOneTabAndClosesThePanel() async throws {
         let ws = try PanelWorkspace()
         defer { ws.remove() }

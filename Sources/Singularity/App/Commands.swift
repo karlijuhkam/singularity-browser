@@ -113,9 +113,10 @@ struct SingularityCommands: Commands {
                 .keyboardShortcut("s")
                 .disabled(covered || littleInFront)
             // A plugin's page in the right-hand panel (or its tab, when the page is a tab).
-            Button(pluginPanelTitle) { inMainWindow { state.togglePluginPanel() } }
+            // With none installed, "Show Assistant" opens Settings → Plugins, which offers it.
+            Button(state.pluginPanelCommandTitle) { inMainWindow { state.togglePluginPanel() } }
                 .keyboardShortcut("j", modifiers: [.control, .command])
-                .disabled(covered || (state.shownPanelPlugin == nil && state.pluginPanelTarget == nil))
+                .disabled(!state.pluginPanelCommandEnabled)
             Divider()
             Button("Split with Previous Tab") { state.splitWithPrevious() }
                 .keyboardShortcut("\\")
@@ -170,13 +171,6 @@ struct SingularityCommands: Commands {
 
     /// A little window has the keyboard (see the type's comment).
     private var littleInFront: Bool { state.little.frontWindow != nil }
-
-    /// "Hide <Title>" while the panel is open, else "Show <Title>" for the plugin the toggle opens.
-    private var pluginPanelTitle: String {
-        if let shown = state.shownPanelPlugin { return "Hide \(state.pluginTitle(shown))" }
-        if let target = state.pluginPanelTarget { return "Show \(state.pluginTitle(target))" }
-        return "Show Plugin Panel"
-    }
 
     private var openInSpaceTitle: String {
         guard let key = state.little.frontWindow,

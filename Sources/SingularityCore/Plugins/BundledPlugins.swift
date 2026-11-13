@@ -1,6 +1,7 @@
 import Foundation
 
-/// A ready-made plugin that ships inside the app bundle (the welcome flow offers to add it).
+/// A ready-made plugin that ships inside the app bundle (the welcome flow and Settings → Plugins
+/// offer to add it).
 public struct BundledPlugin: Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
@@ -8,12 +9,15 @@ public struct BundledPlugin: Equatable, Identifiable, Sendable {
     public let summary: String
     /// The plugin's folder inside the app bundle (what "Add" copies from).
     public let folder: URL
+    /// The manifest's `panel.title`; nil for a plugin without its own page.
+    public let panelTitle: String?
 
-    public init(id: String, name: String, summary: String, folder: URL) {
+    public init(id: String, name: String, summary: String, folder: URL, panelTitle: String? = nil) {
         self.id = id
         self.name = name
         self.summary = summary
         self.folder = folder
+        self.panelTitle = panelTitle
     }
 }
 
@@ -43,13 +47,27 @@ public enum BundledPlugins {
         for entry in entries {
             guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
                   let manifest = try? PluginManifest.load(from: entry) else { continue }
-            plugins.append(BundledPlugin(id: manifest.id, name: manifest.name,
-                                         summary: manifest.description, folder: entry))
+            plugins.append(BundledPlugin(id: manifest.id, name: manifest.name, summary: manifest.description,
+                                         folder: entry, panelTitle: manifest.panel?.title))
         }
         return plugins.sorted {
             let order = $0.name.localizedStandardCompare($1.name)
             return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
         }
+    }
+
+    /// The ones not installed yet (no folder with that id in the plugins folder), in list order:
+    /// what Settings → Plugins offers under "Included with Singularity".
+    public static func notInstalled(_ bundled: [BundledPlugin], installedIDs: Set<String>) -> [BundledPlugin] {
+        bundled.filter { !installedIDs.contains($0.id) }
+    }
+
+    /// The page title of the first shipped plugin with a panel ("Assistant"), which View →
+    /// Show <title> (⌃⌘J) offers while no installed plugin has a panel: it opens Settings →
+    /// Plugins, where the plugin can be added. nil when none has a panel (a bare debug binary
+    /// ships none at all).
+    public static func offeredPanelTitle(_ bundled: [BundledPlugin]) -> String? {
+        bundled.lazy.compactMap(\.panelTitle).first
     }
 
     /// The prompt the user copies into their agent. The guide path is given in full (it is inside

@@ -65,6 +65,33 @@ private let onePasswordFolder = URL(filePath: #filePath)
         #expect(BundledPlugins.list(in: missing).isEmpty)
     }
 
+    @Test func theAssistantIsListedWithItsPanelTitle() throws {
+        let root = try tempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repo = onePasswordFolder.deletingLastPathComponent()
+        try FileManager.default.copyItem(at: onePasswordFolder, to: root.appending(path: "1password"))
+        try FileManager.default.copyItem(at: repo.appending(path: "assistant"), to: root.appending(path: "assistant"))
+        // A copy may carry packages someone installed by hand; the list doesn't need them.
+        try? FileManager.default.removeItem(at: root.appending(path: "assistant/node_modules"))
+
+        let plugins = BundledPlugins.list(in: root)
+        #expect(plugins.map(\.id) == ["1password", "assistant"])
+        #expect(plugins.map(\.panelTitle) == [nil, "Assistant"])
+        #expect(BundledPlugins.offeredPanelTitle(plugins) == "Assistant")
+        #expect(BundledPlugins.offeredPanelTitle(Array(plugins.prefix(1))) == nil)
+        #expect(BundledPlugins.offeredPanelTitle([]) == nil)
+    }
+
+    @Test func notInstalledLeavesOutWhatIsInThePluginsFolder() {
+        let folder = URL(fileURLWithPath: "/x")
+        let bundled = [BundledPlugin(id: "1password", name: "1Password", summary: "", folder: folder),
+                       BundledPlugin(id: "assistant", name: "Assistant", summary: "", folder: folder, panelTitle: "Assistant")]
+        #expect(BundledPlugins.notInstalled(bundled, installedIDs: []).map(\.id) == ["1password", "assistant"])
+        #expect(BundledPlugins.notInstalled(bundled, installedIDs: ["assistant", "mine"]).map(\.id) == ["1password"])
+        #expect(BundledPlugins.notInstalled(bundled, installedIDs: ["assistant", "1password"]).isEmpty)
+        #expect(BundledPlugins.notInstalled([], installedIDs: ["assistant"]).isEmpty)
+    }
+
     @Test func folders() {
         let resources = URL(fileURLWithPath: "/Applications/Singularity.app/Contents/Resources")
         #expect(BundledPlugins.pluginsFolder(resources: resources).path

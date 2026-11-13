@@ -3,7 +3,8 @@ import SingularityCore
 import SwiftUI
 
 /// Settings → Plugins: one row per plugin folder in ~/Singularity/plugins, with its status, the
-/// Spaces it is on in, development mode, Review…, Remove… and its log.
+/// Spaces it is on in, development mode, Review…, Remove… and its log; then the plugins shipped
+/// with the app that aren't added yet ("Included with Singularity", each with Add).
 ///
 /// Everything a plugin supplies (name, author, description, log lines, error texts) is shown with
 /// `Text(verbatim:)`: plain text, never read as Markdown or links. (A string *literal* passed to
@@ -18,6 +19,8 @@ struct PluginSettings: View {
 
     @State private var reviewing: PluginRef?
     @State private var removing: PluginRef?
+    /// Shipped plugins being copied right now (their rows show a spinner).
+    @State private var adding: Set<String> = []
     @State private var message: (text: String, isError: Bool)?
 
     var body: some View {
@@ -35,6 +38,18 @@ struct PluginSettings: View {
                     PluginRow(plugin: plugin,
                               review: { reviewing = PluginRef(id: plugin.id) },
                               remove: { removing = PluginRef(id: plugin.id) })
+                }
+            }
+
+            // Shipped inside the app, not in the plugins folder yet: the same Add as the welcome
+            // flow's step 4 (copy, then the approval sheet). Empty for a bare debug binary.
+            let included = BundledPlugins.notInstalled(state.bundledPlugins,
+                                                       installedIDs: Set(state.plugins.plugins.map(\.id)))
+            if !included.isEmpty {
+                Section("Included with Singularity") {
+                    ForEach(included) { plugin in
+                        BundledPluginRow(plugin: plugin, adding: $adding, review: { reviewing = PluginRef(id: $0) })
+                    }
                 }
             }
 

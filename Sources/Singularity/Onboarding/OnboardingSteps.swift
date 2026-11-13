@@ -103,35 +103,16 @@ struct AgentsStep: View {
 
 // MARK: - 4. Plugins
 
-/// What a bundled plugin's row in step 4 shows on its right.
-enum PluginRowAction: Equatable {
-    case adding  // a spinner while it is being copied
-    case add     // not in ~/Singularity/plugins yet
-    case review  // copied but not approved, or changed since ("Review…")
-    case added   // approved
-
-    /// `installedNeedsReview`: nil when the plugin is not installed, else its `needsReview`.
-    static func of(adding: Bool, installedNeedsReview: Bool?) -> PluginRowAction {
-        if adding { return .adding }
-        guard let needsReview = installedNeedsReview else { return .add }
-        return needsReview ? .review : .added
-    }
-}
-
 struct PluginsStep: View {
     @Environment(AppState.self) private var state
 
-    /// The plugins shipped inside the app (`Contents/Resources/Plugins`). Read once: the bundle
-    /// doesn't change while the app runs. Empty for a bare debug binary.
-    private static let bundled: [BundledPlugin] = BundledPlugins.list(in: BundledPlugins.pluginsFolder(resources: resources))
-    private static var resources: URL { Bundle.main.resourceURL ?? Bundle.main.bundleURL }
+    /// The plugins shipped inside the app. Empty for a bare debug binary.
+    private static var bundled: [BundledPlugin] { BundledPlugins.inApp }
 
     /// Plugins being copied right now; owned by `OnboardingView`, which keeps the buttons that
     /// leave this step off meanwhile (so the approval sheet that follows can't be lost).
     @Binding var adding: Set<String>
 
-    /// Plugin id → why adding it failed.
-    @State private var errors: [String: String] = [:]
     @State private var copied = false
 
     var body: some View {
@@ -141,7 +122,10 @@ struct PluginsStep: View {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(Self.bundled) { plugin in
                             if plugin.id != Self.bundled.first?.id { Divider() }
-                            row(plugin)
+                            // Add copies it, then the approval sheet below (`reviewWelcomePlugin`).
+                            BundledPluginRow(plugin: plugin, adding: $adding,
+                                             review: { state.reviewWelcomePlugin($0) },
+                                             nameFont: StepFont.name, captionFont: StepFont.caption)
                         }
                     }
                     .padding(10)
@@ -185,62 +169,7 @@ struct PluginsStep: View {
     }
 
     private var prompt: String {
-        BundledPlugins.authoringPrompt(guide: BundledPlugins.guideFolder(resources: Self.resources),
+        BundledPlugins.authoringPrompt(guide: BundledPlugins.guideFolder(resources: BundledPlugins.appResources),
                                        pluginsDirectory: state.paths.pluginsDirectory)
-    }
-
-    private func row(_ plugin: BundledPlugin) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(verbatim: PluginText.line(plugin.name, max: 60))
-                        .font(StepFont.name)
-                    Text(verbatim: PluginText.line(plugin.summary, max: 200))
-                        .font(StepFont.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 12)
-                action(plugin)
-            }
-            if let error = errors[plugin.id] {
-                Text(verbatim: PluginText.line(error, max: 300))
-                    .font(StepFont.caption)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func action(_ plugin: BundledPlugin) -> some View {
-        switch PluginRowAction.of(adding: adding.contains(plugin.id),
-                                  installedNeedsReview: state.plugins.plugin(plugin.id)?.needsReview) {
-        case .adding:
-            ProgressView().controlSize(.small)
-        case .add:
-            Button("Add") { add(plugin) }
-        case .review:
-            Button("Review…") { state.reviewWelcomePlugin(plugin.id) }
-        case .added:
-            Text("Added").foregroundStyle(.secondary)
-        }
-    }
-
-    /// Copies the bundled folder into the plugins folder (as Add Plugin… does), then brings up the
-    /// approval sheet. Nothing runs until the user approves it there.
-    private func add(_ plugin: BundledPlugin) {
-        errors[plugin.id] = nil
-        adding.insert(plugin.id)
-        Task {
-            defer { adding.remove(plugin.id) }
-            do {
-                let id = try await state.plugins.addPlugin(from: plugin.folder)
-                state.reviewWelcomePlugin(id) // nothing if the flow was left meanwhile
-            } catch {
-                // `PluginManagerError.addFailed` describes itself with the installer's `userMessage`.
-                errors[plugin.id] = error.localizedDescription
-            }
-        }
     }
 }

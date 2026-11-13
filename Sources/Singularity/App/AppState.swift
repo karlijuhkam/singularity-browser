@@ -908,6 +908,31 @@ final class AppState {
         return ids.first
     }
 
+    /// The plugins shipped inside the app (`BundledPlugins.inApp`; empty for a bare debug binary).
+    /// A `var` so tests can give a list of their own.
+    @ObservationIgnored var bundledPlugins: [BundledPlugin] = BundledPlugins.inApp
+
+    /// With no installed plugin that has a panel: the page title of one shipped with the app
+    /// ("Assistant"). The toggle then says "Show Assistant" and opens Settings → Plugins, where it
+    /// can be added (someone who updated never saw the welcome flow's step 4). nil otherwise.
+    var bundledPanelOffer: String? {
+        pluginPanelTarget == nil ? BundledPlugins.offeredPanelTitle(bundledPlugins) : nil
+    }
+
+    /// View → "Hide <Title>" while the panel is open, else "Show <Title>" for the plugin the toggle
+    /// opens, or for the shipped one it offers; "Show Plugin Panel" (off) when there is neither.
+    var pluginPanelCommandTitle: String {
+        if let shown = shownPanelPlugin { return "Hide \(pluginTitle(shown))" }
+        if let target = pluginPanelTarget { return "Show \(pluginTitle(target))" }
+        if let offer = bundledPanelOffer { return "Show \(offer)" }
+        return "Show Plugin Panel"
+    }
+
+    /// Whether View → Show/Hide (⌃⌘J) can do anything now.
+    var pluginPanelCommandEnabled: Bool {
+        !welcomeCoversWindow && (shownPanelPlugin != nil || pluginPanelTarget != nil || bundledPanelOffer != nil)
+    }
+
     /// The name of a plugin's page: the manifest's panel title, else `fallback` (a tab's stored
     /// title), else the id.
     func pluginTitle(_ id: String, fallback: String = "") -> String {
@@ -915,14 +940,17 @@ final class AppState {
     }
 
     /// View → Show / Hide (⌃⌘J) and the palette. Closed: opens the panel for `pluginPanelTarget`, or
-    /// selects its tab when its page is a tab. Open: closes it. Nothing while the welcome flow covers
-    /// the window.
+    /// selects its tab when its page is a tab. Open: closes it. With no panel plugin installed but
+    /// one shipped with the app (`bundledPanelOffer`): opens Settings → Plugins, where it is offered.
+    /// Nothing while the welcome flow covers the window.
     func togglePluginPanel() {
         guard !welcomeCoversWindow else { return }
         if shownPanelPlugin != nil {
             closePluginPanel()
         } else if let id = pluginPanelTarget {
             showPluginPanel(id)
+        } else if bundledPanelOffer != nil {
+            showPluginSettings()
         }
     }
 
