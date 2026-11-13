@@ -43,6 +43,7 @@ private func settingBinding<Value>(_ state: AppState, _ keyPath: WritableKeyPath
 
 private struct GeneralSettings: View {
     @Environment(AppState.self) private var state
+    @State private var defaultBrowser = DefaultBrowser()
 
     var body: some View {
         Form {
@@ -66,9 +67,49 @@ private struct GeneralSettings: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+            // Links clicked in other apps open in a little window (see `LittleWindows`) when
+            // Singularity is the default browser. Only the installed release can be.
+            Section("Default browser") {
+                Text(defaultBrowser.status.text)
+                    .font(defaultBrowser.status == .isDefault ? .body : .caption)
+                    .foregroundStyle(defaultBrowser.status == .isDefault ? .primary : .secondary)
+                    .textSelection(.enabled)
+                if defaultBrowser.status.canMakeDefault {
+                    Button("Make Default…") { defaultBrowser.makeDefault() }
+                }
+            }
+            .onAppear { defaultBrowser.refresh() }
+            // The answer comes from a macOS dialog or from System Settings: look again on return.
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                defaultBrowser.refresh()
+            }
+            Section("Updates") {
+                let canUpdate = state.updates.hasUpdater
+                Toggle("Check for updates automatically", isOn: settingBinding(state, \.checksForUpdates))
+                    .disabled(!canUpdate)
+                LabeledContent("Version") {
+                    Text(Self.versionText)
+                        .textSelection(.enabled)
+                }
+                Button("Check Now") { state.updates.checkNow() }
+                    .disabled(!state.updates.canCheck)
+                if case .unavailable(let reason) = state.updates.availability {
+                    Text(reason.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    /// "0.1.0 (1)": the version people see, then the build number.
+    private static var versionText: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
     }
 }
 

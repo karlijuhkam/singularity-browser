@@ -257,7 +257,9 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         // untouched. Here the sender is checked against the owner's two switches as they are now.
         guard message.frameInfo.isMainFrame, let json = message.body as? String,
               let state, let webView = message.webView, let tabID = state.web.tabID(for: webView),
-              let controller = state.web.existingController(tabID), !controller.isArtifact,
+              // A little window's page is in no Space's tab list: no agent could read what is
+              // captured for it, so nothing is kept.
+              let controller = state.web.existingController(tabID), !controller.isArtifact, !controller.isLittle,
               let space = state.space(controller.spaceID) else { return }
         let origin = message.frameInfo.securityOrigin
         var components = URLComponents()

@@ -46,7 +46,7 @@ extension AppTests {
         @Test func bothInstalledNoConfigFilesMeansNotConnected() async throws {
             _ = MainRunLoopGuard.start
             let shell = FakeShell()
-            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: shell)
+            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: shell, separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.notConnected))
             #expect(connector.rows[.codex] == .status(.notConnected))
@@ -58,7 +58,7 @@ extension AppTests {
             _ = MainRunLoopGuard.start
             let home = try makeHome()
             try writeClaudeConfig(home: home, command: launcher)
-            let connector = AgentConnector(launcher: launcher, home: home, shell: FakeShell())
+            let connector = AgentConnector(launcher: launcher, home: home, shell: FakeShell(), separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.connected))
         }
@@ -71,7 +71,7 @@ extension AppTests {
                 if line == add { try? writeCodexConfig(home: home, command: launcher) }
                 return (0, "", false)
             }
-            let connector = AgentConnector(launcher: launcher, home: home, shell: shell)
+            let connector = AgentConnector(launcher: launcher, home: home, shell: shell, separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.codex] == .status(.notConnected))
 
@@ -92,7 +92,7 @@ extension AppTests {
                 if line == add { try? writeClaudeConfig(home: home, command: launcher) }
                 return (0, "", false)
             }
-            let connector = AgentConnector(launcher: launcher, home: home, shell: shell)
+            let connector = AgentConnector(launcher: launcher, home: home, shell: shell, separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.otherCopy(other)))
 
@@ -107,7 +107,7 @@ extension AppTests {
             let shell = FakeShell { line in
                 line.hasPrefix("command -v") ? (0, "", false) : (1, "boom\n", false)
             }
-            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: shell)
+            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: shell, separateDataFolder: false)
             await connector.refresh()
             await connector.connect(.claudeCode)
             #expect(connector.rows[.claudeCode] == .failed("boom"))
@@ -115,7 +115,7 @@ extension AppTests {
 
         @Test func addThatLeavesTheFileUnchangedFails() async throws {
             _ = MainRunLoopGuard.start
-            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: FakeShell())
+            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: FakeShell(), separateDataFolder: false)
             await connector.refresh()
             await connector.connect(.codex)
             #expect(connector.rows[.codex] == .failed(
@@ -129,7 +129,7 @@ extension AppTests {
             let home = try makeHome()
             let other = "/Users/someone/Singularity-Browser/build/Singularity.app/Contents/MacOS/singularity-mcp"
             try writeClaudeConfig(home: home, command: other)
-            let connector = AgentConnector(launcher: launcher, home: home, shell: FakeShell())
+            let connector = AgentConnector(launcher: launcher, home: home, shell: FakeShell(), separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.otherCopy(other)))
 
@@ -143,7 +143,7 @@ extension AppTests {
             _ = MainRunLoopGuard.start
             let home = try makeHome()
             let shell = FakeShell()
-            let connector = AgentConnector(launcher: launcher, home: home, shell: shell)
+            let connector = AgentConnector(launcher: launcher, home: home, shell: shell, separateDataFolder: false)
             #expect(connector.rows[.claudeCode] == .checking) // no check has run yet
             await connector.connect(.claudeCode)
             #expect(await shell.lines.isEmpty)
@@ -161,7 +161,7 @@ extension AppTests {
         @Test func timedOutLookupMeansNotInstalled() async throws {
             _ = MainRunLoopGuard.start
             let shell = FakeShell { _ in (-1, "", true) }
-            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: shell)
+            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: shell, separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.notInstalled))
             #expect(connector.rows[.codex] == .status(.notInstalled))
@@ -171,7 +171,7 @@ extension AppTests {
             _ = MainRunLoopGuard.start
             let shell = FakeShell()
             let translocated = "/private/var/folders/ab/xyz/T/AppTranslocation/1234-5678/d/Singularity.app/Contents/MacOS/singularity-mcp"
-            let connector = AgentConnector(launcher: translocated, home: try makeHome(), shell: shell)
+            let connector = AgentConnector(launcher: translocated, home: try makeHome(), shell: shell, separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.translocated))
             #expect(connector.rows[.codex] == .status(.translocated))
@@ -180,6 +180,20 @@ extension AppTests {
             await connector.connect(.codex)
             #expect(await shell.lines.isEmpty)
             #expect(connector.rows[.claudeCode] == .status(.translocated))
+        }
+
+        @Test func separateDataFolderNeverRunsACommand() async throws {
+            _ = MainRunLoopGuard.start
+            let shell = FakeShell()
+            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: shell, separateDataFolder: true)
+            await connector.refresh()
+            #expect(connector.rows[.claudeCode] == .status(.separateDataFolder))
+            #expect(connector.rows[.codex] == .status(.separateDataFolder))
+
+            await connector.connect(.claudeCode)
+            await connector.connect(.codex)
+            #expect(await shell.lines.isEmpty)
+            #expect(connector.rows[.claudeCode] == .status(.separateDataFolder))
         }
 
         /// Both Copy buttons (an agent row's command, step 4's prompt) go through `CopyText.copy`,
@@ -191,7 +205,7 @@ extension AppTests {
             pasteboard.clearContents()
             pasteboard.setString("<b>old</b>", forType: .html)
 
-            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: FakeShell())
+            let connector = AgentConnector(launcher: launcher, home: try makeHome(), shell: FakeShell(), separateDataFolder: false)
             let command = connector.command(for: .claudeCode)
             CopyText.copy(command, to: pasteboard)
             #expect(pasteboard.string(forType: .string) == command)

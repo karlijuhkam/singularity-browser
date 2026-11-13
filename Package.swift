@@ -21,6 +21,9 @@ let package = Package(
         .package(url: "https://github.com/swhitty/FlyingFox.git", from: "0.27.1"),
         // The official MCP Swift SDK (pre-1.0: read release notes before raising the minor version).
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
+        // Self-updating (Sparkle 2). Pinned exactly: the bundle scripts sign its inner helpers one by
+        // one (scripts/embed-sparkle.sh), and that order depends on the framework's layout.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
         // Pure Swift: models, persistence, palette logic. No AppKit/WebKit, so it is unit-testable.
@@ -35,6 +38,12 @@ let package = Package(
                 .product(name: "FlyingFox", package: "FlyingFox"),
                 .product(name: "FlyingSocks", package: "FlyingFox"),
                 .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            // Sparkle is a dynamic framework; the bundle scripts copy it to Contents/Frameworks, and
+            // this tells the executable to look for it there (next to Contents/MacOS).
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
             ]
         ),
 

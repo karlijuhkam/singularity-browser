@@ -119,7 +119,7 @@ extension AppTests {
         @Test func bothAgentsAreFoundAndNotConnected() async throws {
             _ = MainRunLoopGuard.start
             guard let home = await throwawayHome() else { return }
-            let connector = AgentConnector(launcher: launcher(in: home), home: home, shell: AgentLoginShell())
+            let connector = AgentConnector(launcher: launcher(in: home), home: home, shell: AgentLoginShell(), separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[.claudeCode] == .status(.notConnected))
             #expect(connector.rows[.codex] == .status(.notConnected))
@@ -130,7 +130,7 @@ extension AppTests {
             _ = MainRunLoopGuard.start
             guard let home = await throwawayHome() else { return }
             let path = launcher(in: home)
-            let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell())
+            let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell(), separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[agent] == .status(.notConnected))
 
@@ -164,7 +164,7 @@ extension AppTests {
                     .write(to: AgentConnect.configFile(.codex, home: home), atomically: true, encoding: .utf8)
             }
             let path = launcher(in: home)
-            let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell())
+            let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell(), separateDataFolder: false)
             await connector.refresh()
             #expect(connector.rows[agent] == .status(.otherCopy(other)))
 
@@ -180,7 +180,7 @@ extension AppTests {
             guard let home = await throwawayHome() else { return }
             let path = launcher(in: home, app: "Test's Copy.app")
             #expect(path.contains(" ") && path.contains("'"))
-            let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell())
+            let connector = AgentConnector(launcher: path, home: home, shell: AgentLoginShell(), separateDataFolder: false)
             await connector.refresh()
             await connector.connect(agent)
             show(agent, home: home)

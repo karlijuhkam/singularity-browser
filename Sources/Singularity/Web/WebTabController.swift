@@ -24,6 +24,19 @@ final class WebTabController: NSObject {
     @ObservationIgnored private weak var state: AppState?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
+    /// True while the page lives in a little window (a link from another app; see `LittleWindows`).
+    /// No tab with `tabID` exists in the Space then, so the page leaves nothing behind: no history
+    /// entry, no favicon file, no change to the Space. Links that ask for a new tab load right here.
+    /// `joinSpace()` switches it off when the page is opened in its Space.
+    @ObservationIgnored private(set) var isLittle = false
+    /// Closes the little window (the page called `window.close()`, or the link was a download).
+    @ObservationIgnored var onLittleClose: (() -> Void)?
+    /// True once any page has started arriving. A link that turns out to be a download never gets here.
+    @ObservationIgnored private(set) var hasCommittedPage = false
+    /// Title and address of the page, mirrored for the little window's title bar.
+    private(set) var pageTitle = ""
+    private(set) var pageURL: URL?
+
     /// Set while an agent's click or type runs on this tab. Every main-frame navigation during
     /// that time is checked: it gets the URL and whether it is a form submission, and returns
     /// whether it may go ahead (it may ask the user first). Catches JavaScript-driven submits and
@@ -45,7 +58,7 @@ final class WebTabController: NSObject {
     private(set) var findFailed = false
 
     /// The URL whose load failed, while the error page for it is showing (so Reload retries it).
-    @ObservationIgnored private var failedURL: URL?
+    @ObservationIgnored private(set) var failedURL: URL?
     /// The load of the error page itself, from asking for it until it finishes or fails.
     @ObservationIgnored private var errorNavigation: WKNavigation?
     @ObservationIgnored private var errorNavigationURL: URL?
@@ -82,6 +95,31 @@ final class WebTabController: NSObject {
 
     func load(_ url: URL) {
         webView.load(URLRequest(url: url))
+    }
+
+    // MARK: - Little windows
+
+    /// Marks the page as a little window's page. Called once, before the first load.
+    func makeLittle() {
+        isLittle = true
+    }
+
+    /// The address whose load failed, also while its error page is still being put up.
+    var failedAddress: URL? {
+        failedURL ?? (errorNavigation != nil ? errorNavigationURL : nil)
+    }
+
+    /// The page was opened in its Space: a tab with `tabID` exists now. From here on it is an
+    /// ordinary tab, and the page it shows gets the history entry and favicon it skipped.
+    func joinSpace() {
+        guard isLittle else { return }
+        isLittle = false
+        onLittleClose = nil
+        titleOrURLChanged()
+        // A page that is still loading is recorded when it finishes (`didFinish`), as in any tab.
+        guard failedAddress == nil, !webView.isLoading, let url = webView.url else { return }
+        state?.recordVisit(spaceID: spaceID, url: url, title: webView.title ?? "")
+        Task { await fetchFavicon() }
     }
 
     // MARK: - Console and network capture
@@ -251,6 +289,11 @@ final class WebTabController: NSObject {
         // The error page's title is not the page's name: keep the saved one (pinned tabs offline).
         let showingError = failedURL != nil || errorNavigation != nil
         let title = showingError ? nil : webView.title.flatMap { $0.isEmpty ? nil : $0 }
+        if !showingError { pageTitle = title ?? "" } // an untitled page (a PDF, an image) has none
+        if let url = webView.url { pageURL = url }
+        // A little window's page is no tab: telling the Space would find nothing to update and
+        // still mark it changed, rewriting space.json for a page that should leave no trace.
+        guard !isLittle else { return }
         // `url` is briefly nil during some navigations; keep the last known URL then.
         state?.webTabDidChange(tabID: tabID, spaceID: spaceID, title: title, url: webView.url)
     }
@@ -324,11 +367,30 @@ extension WebTabController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        download.delegate = self
+        downloadStarted(download)
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        downloadStarted(download)
+    }
+
+    private func downloadStarted(_ download: WKDownload) {
         download.delegate = self
+        // WKDownload holds its delegate weakly, and a download outlives its tab or little window.
+        // Stay alive until it ends, or it would stop without a place to save to.
+        Self.downloading[ObjectIdentifier(download)] = self
+        // A link from another app that is a file, not a page: the little window would stay
+        // empty, so it closes. The download goes on and shows in the main window's list.
+        if isLittle, !hasCommittedPage { onLittleClose?() }
+    }
+
+    /// Controllers with a running download, by download (see `downloadStarted`).
+    private static var downloading: [ObjectIdentifier: WebTabController] = [:]
+
+    /// A download is over, however it ended. `DownloadCenter` calls this for a cancelled one,
+    /// which WebKit reports to neither delegate method.
+    static func downloadEnded(_ download: WKDownload) {
+        downloading[ObjectIdentifier(download)] = nil
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -338,7 +400,7 @@ extension WebTabController: WKNavigationDelegate {
             failedURL = errorNavigationURL
             return
         }
-        guard !isArtifact else { return }
+        guard !isArtifact, !isLittle else { return } // a little window's page is not recorded
         if let url = webView.url {
             state?.recordVisit(spaceID: spaceID, url: url, title: webView.title ?? "")
         }
@@ -358,6 +420,7 @@ extension WebTabController: WKNavigationDelegate {
     /// Content of a new page started arriving: the error page (if any) is gone.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if navigation !== errorNavigation { failedURL = nil }
+        hasCommittedPage = true
         // The tab left the site its console and network entries belong to: they go.
         if captureSite != nil, SiteInfo.site(of: webView.url) != captureSite { clearCapture() }
     }
@@ -434,11 +497,21 @@ extension WebTabController: WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        state?.openPopup(from: tabID, spaceID: spaceID, configuration: configuration, url: navigationAction.request.url)
+        // In a little window there is no tab list to add a pop-up to: the address loads in the
+        // same window. (A sign-in that needs a pop-up talking back to its opener won't complete
+        // here; open the page in a Space for that.)
+        if isLittle {
+            // Only real addresses: `window.open('')` and about:blank pop-ups (filled in by script
+            // afterwards) would replace the page with an empty one.
+            if let url = navigationAction.request.url, LittleWindowRules.accepts(url) { webView.load(navigationAction.request) }
+            return nil
+        }
+        return state?.openPopup(from: tabID, spaceID: spaceID, configuration: configuration, url: navigationAction.request.url)
     }
 
     /// The page called `window.close()`.
     func webViewDidClose(_ webView: WKWebView) {
+        if isLittle { onLittleClose?(); return }
         state?.closeTab(tabID, in: spaceID)
     }
 
@@ -547,10 +620,12 @@ extension WebTabController: WKDownloadDelegate {
     }
 
     func downloadDidFinish(_ download: WKDownload) {
+        Self.downloading[ObjectIdentifier(download)] = nil
         state?.downloads.finished(download)
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        Self.downloading[ObjectIdentifier(download)] = nil
         NSLog("Singularity: download failed: \(error.localizedDescription)")
         state?.downloads.failed(download, error: error)
     }
