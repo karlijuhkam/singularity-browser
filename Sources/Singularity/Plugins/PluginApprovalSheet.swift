@@ -151,18 +151,25 @@ struct PluginApprovalSheet: View {
                 }
             }
 
-            section("On in these Spaces") {
-                ForEach(state.spaces) { space in
-                    Toggle(isOn: Binding(
-                        get: { enabledSpaces.contains(space.id) },
-                        set: { on in if on { enabledSpaces.insert(space.id) } else { enabledSpaces.remove(space.id) } }
-                    )) {
-                        HStack(spacing: 6) {
-                            Circle().fill(Color(hex: space.colorHex)).frame(width: 8, height: 8)
-                            Text(verbatim: space.name)
+            if Self.showsSpaceSwitches(manifest) {
+                section("On in these Spaces") {
+                    ForEach(state.spaces) { space in
+                        Toggle(isOn: Binding(
+                            get: { enabledSpaces.contains(space.id) },
+                            set: { on in if on { enabledSpaces.insert(space.id) } else { enabledSpaces.remove(space.id) } }
+                        )) {
+                            HStack(spacing: 6) {
+                                Circle().fill(Color(hex: space.colorHex)).frame(width: 8, height: 8)
+                                Text(verbatim: space.name)
+                            }
                         }
+                        .toggleStyle(.checkbox)
                     }
-                    .toggleStyle(.checkbox)
+                }
+            } else {
+                // A panel plugin without a page script: the switches would mean nothing.
+                section("Spaces") {
+                    Text("Its panel is available in every Space.")
                 }
             }
 
@@ -174,6 +181,14 @@ struct PluginApprovalSheet: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The per-Space switches say where a plugin's page script runs (`showsSpaceSwitches`). A plugin
+    /// with neither a page script nor a panel keeps them too: for it they decide whether its
+    /// background runs at all (`PluginLaunch.decide`), so hiding them would leave no way to switch
+    /// it on or off. Settings → Plugins uses the same rule.
+    static func showsSpaceSwitches(_ manifest: PluginManifest) -> Bool {
+        manifest.showsSpaceSwitches || manifest.panel == nil
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -226,7 +241,8 @@ struct PluginApprovalSheet: View {
     private func approve() {
         guard case .ready(let review) = phase else { return }
         approving = true
-        let spaces = enabledSpaces.intersection(state.spaces.map(\.id))
+        // Hidden switches record no Space, rather than the one ticked by default.
+        let spaces = Self.showsSpaceSwitches(review.manifest) ? enabledSpaces.intersection(state.spaces.map(\.id)) : []
         Task {
             defer { approving = false }
             do {

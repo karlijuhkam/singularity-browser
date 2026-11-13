@@ -32,13 +32,19 @@ public enum CommandBroker {
     ///
     /// Blocks up to ~6 s (runs the login shell). Never call on the main actor.
     public static func resolve(_ name: String, loginShell: String) -> String? {
-        guard CommandPolicy.isValidName(name), !CommandPolicy.isRefused(name) else { return nil }
-        // A fixed script: nothing from the plugin goes into it. The marker line lets us skip
+        guard CommandPolicy.isValidName(name), !CommandPolicy.isRefused(name),
+              let path = loginPath(loginShell: loginShell) else { return nil }
+        return find(name, inPath: path)
+    }
+
+    /// The PATH a login shell sets up (what a terminal would use); nil when the shell fails or
+    /// takes longer than 5 s. Blocks while the shell runs: never call on the main actor.
+    public static func loginPath(loginShell: String) -> String? {
+        // A fixed script: nothing from a plugin goes into it. The marker line lets us skip
         // whatever rc files print first; `printenv` (not `echo $PATH`) also works in fish.
         let script = "echo \(pathMarker); /usr/bin/printenv PATH"
-        guard let output = runShortProcess(loginShell, ["-l", "-c", script], timeout: 5),
-              let path = loginPath(fromShellOutput: output) else { return nil }
-        return find(name, inPath: path)
+        guard let output = runShortProcess(loginShell, ["-l", "-c", script], timeout: 5) else { return nil }
+        return loginPath(fromShellOutput: output)
     }
 
     static let pathMarker = "__SINGULARITY_PATH__"

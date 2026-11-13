@@ -74,13 +74,16 @@ enum PluginManagerError: LocalizedError, Equatable {
 /// and file-change events are debounced per plugin, so a burst of edits can't cause overlapping
 /// restarts.
 ///
-/// When a plugin runs: its status is `.approved`, it is on in at least one Space, and every
-/// command path pinned at approval is still an executable file and not a refused program
-/// (`PluginLaunch.decide`). That is
+/// When a plugin runs: its status is `.approved`, it is on in at least one Space or has a panel
+/// (a panel belongs to no Space), and every command path pinned at approval is still an executable
+/// file and not a refused program (`PluginLaunch.decide`). That is
 /// checked again, with a fresh fingerprint, right before every launch, crash restarts included
 /// (inside the supervisor's `makeProcess`). A file can still change between that scan and Bun
 /// reading it; that gap can't be closed from outside, and the file watcher catches the change
 /// and pauses (or, in development mode, restarts) the plugin right after.
+///
+/// A plugin's own page (`panel.page`, see `pageHost(for:)`) exists only while its background runs,
+/// so only the files of an approved, unchanged plugin (or one in development mode) are ever served.
 @MainActor
 @Observable
 final class PluginManager {
@@ -119,6 +122,12 @@ final class PluginManager {
     @ObservationIgnored private var nextRequestID = 1
     /// Set when the app quits: nothing is launched after that.
     @ObservationIgnored private var terminated = false
+    /// Whether plugins may start their programs, and the environment those get.
+    @ObservationIgnored private let programs: ProgramLaunchSettings
+    /// Each panel plugin's page, while its background runs (`pageHost(for:)`). Ignored by
+    /// Observation: a view that shows a page also reads the plugin's row (through `pageHost`), and
+    /// the row changes whenever a page is torn down.
+    @ObservationIgnored private var pageHosts: [String: PluginPageHost] = [:]
 
     private struct PendingRequest {
         let pluginID: String
@@ -131,10 +140,12 @@ final class PluginManager {
     ///   - paths: where `plugins/`, `plugins-data/` and `plugins-state.json` live (tests: a temp folder).
     ///   - runtime: the Bun executable (`Contents/Helpers/bun` in the app).
     ///   - host: `plugin-host/host.ts` (in the app's Resources).
-    init(paths: Paths, runtime: URL, host: URL) {
+    ///   - programs: what plugins' programs get (`ProgramLaunchSettings.live()` in the app).
+    init(paths: Paths, runtime: URL, host: URL, programs: ProgramLaunchSettings = .live()) {
         self.paths = paths
         self.runtime = runtime
         self.host = host
+        self.programs = programs
         self.store = PluginStateStore(file: paths.pluginStateFile)
         let loaded = store.loadSettingAsideCorrupt()
         self.approvals = loaded.approvals
@@ -174,6 +185,7 @@ final class PluginManager {
         watcher = nil
         for supervisor in supervisors.values { supervisor.terminateNow() }
         supervisors = [:]
+        for id in Array(pageHosts.keys) { tearDownPage(id) }
     }
 
     /// Folder names in the plugins folder that could be plugins (folders, and links so they can
@@ -304,7 +316,14 @@ final class PluginManager {
         guard !terminated else { return }
         let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
         let dataFolder = paths.pluginsDataDirectory(id)
-        let runtime = runtime, host = host, approvals = launchApprovals
+        let runtime = runtime, host = host, approvals = launchApprovals, programs = programs
+        // Asking the login shell for its PATH takes seconds: start now, so the plugin's first
+        // program start doesn't wait for it (the answer is kept for the rest of the app run).
+        if programs.allowed, scans[id]?.validManifest?.permissions.programs.isEmpty == false {
+            Task.detached(priority: .utility) { _ = programs.loginPath() }
+        }
+        // The supervisor, for the callbacks below, which can only be set up once it exists.
+        let ref = SupervisorRef()
         // Called for every launch, crash restarts included, on a background thread: re-checks the
         // plugin with a fresh scan and the current approval, and builds the process from that scan.
         let supervisor = PluginSupervisor { [weak self] in
@@ -318,9 +337,15 @@ final class PluginManager {
                 throw LaunchRefused(description: "it changed or lost its approval just before starting")
             }
             try PluginInstaller.makeDataFolder(dataFolder)
-            return PluginProcess(manifest: manifest, folder: folder, dataFolder: dataFolder, runtime: runtime,
-                                 host: host, commandPaths: approval.commandPaths)
+            // The real policy and environment: PluginProcess's defaults refuse every program.
+            let process = PluginProcess(manifest: manifest, folder: folder, dataFolder: dataFolder, runtime: runtime,
+                                        host: host, commandPaths: approval.commandPaths,
+                                        programsAllowed: programs.allowed,
+                                        programEnvironment: programs.environment(allowed: manifest.permissions.programEnv))
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.processLaunching(id, ref) } }
+            return process
         }
+        ref.supervisor = supervisor
         // The callbacks come from background threads. DispatchQueue.main keeps them in order
         // (log lines must not be shuffled); `MainActor.assumeIsolated` tells the compiler we are
         // on the main thread now.
@@ -330,13 +355,26 @@ final class PluginManager {
         supervisor.onReply = { [weak self] requestID, payload in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.finishRequest(requestID, pluginID: id, payload) } }
         }
+        supervisor.onPanelPost = { [weak self, weak supervisor] payload in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let supervisor, self.supervisors[id] === supervisor else { return }
+                    // Dropped when no page is open: the page asks for what it needs when it loads.
+                    self.pageHosts[id]?.post(payload)
+                }
+            }
+        }
         supervisor.onStateChange = { [weak self, weak supervisor] state in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, let supervisor, self.supervisors[id] === supervisor else { return }
                     self.update(id) { $0.runState = state }
                     if state == .running { self.appendLog(id, "info", "started") }
-                    if state != .running { self.failRequests(of: id) }
+                    if state != .running {
+                        self.failRequests(of: id)
+                        // Crashed for good or couldn't start: no background, so no page.
+                        self.tearDownPage(id)
+                    }
                 }
             }
         }
@@ -346,7 +384,21 @@ final class PluginManager {
         await Task.detached { supervisor.start() }.value
     }
 
+    /// A background process of the current supervisor is about to start (`makeProcess`). On a
+    /// restart after a crash, the old process's requests can't be answered any more, and the page
+    /// is loaded again so it starts over with the new process.
+    private func processLaunching(_ id: String, _ ref: SupervisorRef) {
+        guard let supervisor = ref.supervisor, supervisors[id] === supervisor else { return }
+        ref.launches += 1
+        guard ref.launches > 1 else { return }
+        failRequests(of: id)
+        pageHosts[id]?.reload()
+    }
+
+    /// Stops the plugin's background (for any reason: paused, changed, removed, re-approved,
+    /// restarted in development mode) and tears its page down with it.
     private func stopSupervisor(_ id: String, reason: String?) {
+        tearDownPage(id)
         guard let supervisor = supervisors.removeValue(forKey: id) else { return }
         supervisor.stop()
         update(id) { $0.runState = .stopped }
@@ -365,6 +417,26 @@ final class PluginManager {
         guard let plugin = plugin(pluginID), plugin.status == .approved,
               plugin.approval?.enabledSpaces.contains(space) == true,
               let supervisor = supervisors[pluginID], supervisor.state == .running else { return nil }
+        return await request(pluginID, supervisor) { requestID in
+            .pageMessage(requestID: requestID, tabID: tabID, frameHost: frameHost, payload: payload)
+        }
+    }
+
+    /// Sends a message from the plugin's own page (its panel or tab) to its background and waits
+    /// for the reply, as `send` does for page scripts. No Space check: the page belongs to no
+    /// Space, and it only exists while the plugin runs. The background sees it with tabID "panel".
+    func sendFromPanel(pluginID: String, payload: JSONValue) async -> JSONValue? {
+        guard let plugin = plugin(pluginID), plugin.status == .approved,
+              let supervisor = supervisors[pluginID], supervisor.state == .running else { return nil }
+        return await request(pluginID, supervisor) { requestID in
+            .panelMessage(requestID: requestID, payload: payload)
+        }
+    }
+
+    /// Sends `message(requestID)` to the plugin and waits for the `.reply` with that id; nil after
+    /// `requestTimeout`, or when the plugin stops meanwhile.
+    private func request(_ pluginID: String, _ supervisor: PluginSupervisor,
+                         _ message: (Int) -> PluginWire) async -> JSONValue? {
         let requestID = nextRequestID
         nextRequestID += 1
         return await withCheckedContinuation { continuation in
@@ -374,7 +446,7 @@ final class PluginManager {
                 self?.finishRequest(requestID, pluginID: pluginID, nil)
             }
             pendingRequests[requestID] = PendingRequest(pluginID: pluginID, continuation: continuation, timeout: timeout)
-            supervisor.send(.pageMessage(requestID: requestID, tabID: tabID, frameHost: frameHost, payload: payload))
+            supervisor.send(message(requestID))
         }
     }
 
@@ -390,6 +462,51 @@ final class PluginManager {
         for (requestID, request) in pendingRequests where request.pluginID == pluginID {
             finishRequest(requestID, pluginID: pluginID, nil)
         }
+    }
+
+    // MARK: - A plugin's own page (panel or tab)
+
+    /// Plugins with a valid manifest that has a `panel`, sorted by the panel's title.
+    func panelPlugins() -> [InstalledPlugin] {
+        plugins.filter { $0.validManifest?.panel != nil }.sorted {
+            let (a, b) = ($0.validManifest?.panel?.title ?? "", $1.validManifest?.panel?.title ?? "")
+            return a == b ? $0.id < $1.id : a.localizedStandardCompare(b) == .orderedAscending
+        }
+    }
+
+    /// The panel's title from the plugin's manifest; nil when it has none (or isn't installed).
+    func panelTitle(_ id: String) -> String? {
+        plugin(id)?.validManifest?.panel?.title
+    }
+
+    /// Why there is no page for the plugin: its status line (`PluginStatusText.describe`), or
+    /// "This plugin isn't installed." for an id with no folder.
+    func notRunningReason(_ id: String) -> String {
+        plugin(id)?.statusLine.text ?? "This plugin isn't installed."
+    }
+
+    /// The plugin's own page, while its background runs; nil otherwise (then show
+    /// `notRunningReason`). Made on first use and kept: one page per plugin, wherever it is shown.
+    /// It is torn down the moment the background stops for any reason, so the next call after a
+    /// restart makes a new one; after a crash restart the same page is loaded again.
+    ///
+    /// The page server serves any file of the plugin's folder: tying the page to the running
+    /// background is what keeps unapproved files from being served.
+    func pageHost(for id: String) -> PluginPageHost? {
+        // Reading the row (observed) lets a view that shows the page follow it.
+        guard let plugin = plugin(id), plugin.status == .approved, plugin.runState == .running,
+              let manifest = plugin.validManifest, manifest.panel != nil,
+              let supervisor = supervisors[id], supervisor.state == .running else { return nil }
+        if let host = pageHosts[id] { return host }
+        let host = PluginPageHost(pluginID: id, folder: plugin.folder, manifest: manifest) { [weak self] payload in
+            await self?.sendFromPanel(pluginID: id, payload: payload)
+        }
+        pageHosts[id] = host
+        return host
+    }
+
+    private func tearDownPage(_ id: String) {
+        pageHosts.removeValue(forKey: id)?.tearDown()
     }
 
     // MARK: - Approval
@@ -701,6 +818,58 @@ final class PluginManager {
         let extra = plugins[index].logs.count - Self.keptLogLines
         if extra > 0 { plugins[index].logs.removeFirst(extra) }
     }
+}
+
+/// One supervisor, for its own `makeProcess` closure (which has to exist before the supervisor
+/// does), and how many processes it has launched. `@unchecked Sendable`: only touched on the main
+/// thread (set right after the supervisor is made; read in blocks queued on the main queue).
+private final class SupervisorRef: @unchecked Sendable {
+    weak var supervisor: PluginSupervisor?
+    var launches = 0
+}
+
+/// What plugins' programs (`permissions.programs`) get: whether they may start at all, and the
+/// environment the app builds for them (`ProgramEnvironment`). Nothing comes from the app's own
+/// environment except through these fields.
+struct ProgramLaunchSettings: Sendable {
+    /// False in a test or development copy (`ProgramPolicy.spawnAllowed`).
+    let allowed: Bool
+    let home: String
+    let user: String
+    let tmpdir: String
+    /// Singularity's version, for `CLAUDE_AGENT_SDK_CLIENT_APP`.
+    let appVersion: String
+    /// The login shell's PATH. May block for seconds the first time: never call on the main actor.
+    let loginPath: @Sendable () -> String
+
+    /// The real values: the user's home folder and name, the login shell's PATH (asked once per app
+    /// run), the bundle's short version. `environment` is the app's own (it decides `allowed`).
+    static func live(environment: [String: String] = ProcessInfo.processInfo.environment,
+                     loginPath: @escaping @Sendable () -> String = { LoginShellPATH.value }) -> ProgramLaunchSettings {
+        ProgramLaunchSettings(
+            allowed: ProgramPolicy.spawnAllowed(environment: environment),
+            home: FileManager.default.homeDirectoryForCurrentUser.path,
+            user: NSUserName(),
+            tmpdir: NSTemporaryDirectory(),
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+            loginPath: loginPath)
+    }
+
+    /// `PluginProcess`'s `programEnvironment` for a plugin whose manifest lists `names` in
+    /// `programEnv`. Called on a background thread when a program starts.
+    func environment(allowed names: [String]) -> @Sendable ([String: String]) -> [String: String] {
+        { [self] requested in
+            ProgramEnvironment.make(home: home, user: user, loginPath: loginPath(), tmpdir: tmpdir,
+                                    appVersion: appVersion, requested: requested, allowed: names)
+        }
+    }
+}
+
+/// The PATH the user's login shell sets up, as a terminal tab would have it (a Dock-started app
+/// gets a minimal one). Asked once per app run, when first read; a `static let` is set up once and
+/// thread-safely, and other readers wait for it. Blocks up to ~5 s: never read on the main actor.
+enum LoginShellPATH {
+    static let value: String = CommandBroker.loginPath(loginShell: LoginShell.path()) ?? "/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
 /// Plugin id -> approval behind a lock, for the supervisors' background threads.

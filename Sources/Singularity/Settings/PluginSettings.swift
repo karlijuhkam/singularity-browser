@@ -168,7 +168,10 @@ private struct PluginRow: View {
             }
 
             if let approval = plugin.approval {
-                spaces(approval)
+                // Not for a panel plugin without a page script (see PluginApprovalSheet).
+                if manifest.map(PluginApprovalSheet.showsSpaceSwitches) ?? true {
+                    spaces(approval)
+                }
                 developmentMode(approval)
             }
 
