@@ -95,6 +95,10 @@ final class RunningProgram: @unchecked Sendable {
     static let maxPendingInput = 16 << 20
 
     let pid: pid_t
+    /// Set by the reaper thread once the program has ended, *before* it is reaped: while this is
+    /// false the pid can't have been handed to another process.
+    private let endedLock = NSLock()
+    private var ended = false
     private let maxUnread: Int
     private let chunk: Int
     private let onEvent: @Sendable (Event) -> Void
@@ -144,6 +148,8 @@ final class RunningProgram: @unchecked Sendable {
             // what it started and left behind. Nothing it started outlives it.
             var info = siginfo_t()
             while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1 && errno == EINTR {}
+            // Ended, not yet reaped: from now on `livePID` is nil, before the pid can be reused.
+            program.endedLock.withLock { program.ended = true }
             kill(-pid, SIGKILL)
             var status: Int32 = 0
             while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
@@ -153,6 +159,11 @@ final class RunningProgram: @unchecked Sendable {
             program.queue.async { program.programEnded(ended) }
         }
         return program
+    }
+
+    /// The program's pid while it runs; nil once it has ended (then the pid may soon be reused).
+    var livePID: pid_t? {
+        endedLock.withLock { ended ? nil : pid }
     }
 
     /// Starts reading stdout and stderr.

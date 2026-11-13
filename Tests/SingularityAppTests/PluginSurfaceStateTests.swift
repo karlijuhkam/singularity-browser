@@ -271,13 +271,13 @@ extension AppTests {
         let slug = try #require(state.space(spaceID)?.slug)
         let toolbox = AgentToolbox(state: state)
 
-        let list = await toolbox.call("\(slug).list_tabs", arguments: [:], client: "test")
+        let list = await toolbox.call("\(slug).list_tabs", arguments: [:], client: "test", caller: .outside)
         #expect(list.isError != true)
         #expect(!text(list).contains(tab.id.uuidString.lowercased()))
 
         for tool in ["read_page", "screenshot", "close", "read_console"] {
             let result = await toolbox.call("\(slug).\(tool)", arguments: ["tab_id": .string(tab.id.uuidString.lowercased())],
-                                            client: "test")
+                                            client: "test", caller: .outside)
             #expect(result.isError == true, "\(tool)")
             #expect(text(result).contains("not a web page"), "\(tool): \(text(result))")
         }

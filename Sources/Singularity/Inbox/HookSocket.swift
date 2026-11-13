@@ -37,7 +37,8 @@ final class HookSocket: @unchecked Sendable {
     private let listener: MCPSocketListener
 
     init(path: String, idleLimit: Duration = defaultIdleLimit, onRequest: @escaping Handler) {
-        listener = MCPSocketListener(path: path) { fd in
+        // The connection reads its peer's pid itself (`HookConnection.peerPID`).
+        listener = MCPSocketListener(path: path) { fd, _ in
             HookConnection(fd: fd, idleLimit: idleLimit, onRequest: onRequest).start()
         }
     }

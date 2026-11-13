@@ -64,6 +64,9 @@ final class AgentApprovals {
         /// The tab the action is about (the entry carries it: closing that tab denies). Set
         /// together with `showTab`; nil when there is none.
         var tabID: UUID? = nil
+        /// The plugin whose own connection asked (`AgentCaller.plugin`); nil for an outside agent
+        /// or an artifact page.
+        var pluginID: String? = nil
     }
 
     /// A question waiting for the owner, handed to `presenter` (the inbox).

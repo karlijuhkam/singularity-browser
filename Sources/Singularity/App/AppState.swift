@@ -188,7 +188,8 @@ final class AppState {
         plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
         plugins.frontProvider = { [weak self] id in self?.pluginFront(id) ?? .hidden(.nothing) }
         plugins.browserServerProvider = { [weak self] in self?.browserServerDescription() ?? .null }
-        plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged() }
+        // A plugin's Space switches change only what its own connection sees, never an outside agent's.
+        plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged(pluginsOnly: true) }
         // Site settings: the console/network collector for switched-on sites, and plugins switched off per site.
         let captureBridge = CaptureBridge(state: self)
         pluginScripts.onAttach = { controller in captureBridge.install(in: controller) }
@@ -346,7 +347,11 @@ final class AppState {
             $0.agentPolicy = agentPolicy
         }
         // Tool descriptions mention the Space's name, so a rename also counts as a change.
-        if wasEnabled != agentsEnabled || agentsEnabled { mcp?.toolsChanged() }
+        if wasEnabled != agentsEnabled || agentsEnabled {
+            mcp?.toolsChanged()
+        } else {
+            mcp?.toolsChanged(pluginsOnly: true) // a plugin may have it switched on
+        }
         if wasEnabled != agentsEnabled { siteSettingsDidChange(id) } // agents off also ends console/network capture
     }
 
@@ -457,7 +462,7 @@ final class AppState {
         }
         // Once, after both changes: tool descriptions mention the Space's name (as in
         // `updateSpace`), and tool names are <slug>.<tool>.
-        if target.agentsEnabled { mcp?.toolsChanged() }
+        if target.agentsEnabled { mcp?.toolsChanged() } else { mcp?.toolsChanged(pluginsOnly: true) }
     }
 
     /// The one exception to "a slug is fixed at creation" (spec, step 2). Everything on disk for a
@@ -582,7 +587,8 @@ final class AppState {
         }
         stateFileDirty = true
         scheduleSave()
-        if space.agentsEnabled { mcp?.toolsChanged() }
+        // A plugin's connection may have had it too (`plugins.spaceRemoved` took it out of its switches).
+        if space.agentsEnabled { mcp?.toolsChanged() } else { mcp?.toolsChanged(pluginsOnly: true) }
 
         do {
             try store.trashSpaceFolder(slug: space.slug)

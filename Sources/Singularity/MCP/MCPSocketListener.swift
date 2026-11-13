@@ -2,20 +2,21 @@ import Darwin
 import Foundation
 
 /// Listens on a Unix domain socket (a socket that is a file on disk, reachable only from this
-/// Mac) and hands every accepted connection's file descriptor to `onConnection`.
+/// Mac) and hands every accepted connection's file descriptor to `onConnection`, with the pid of
+/// the process that connected (nil when the kernel can't tell).
 ///
 /// `singularity-mcp`, the stdio launcher an agent starts, connects here. Access control is the
 /// file system: the folder is 0700 and the socket 0600, so only this macOS user can connect, and
 /// we double-check the connecting process's user id.
 final class MCPSocketListener: @unchecked Sendable {
     private let path: String
-    private let onConnection: @Sendable (Int32) -> Void
+    private let onConnection: @Sendable (Int32, pid_t?) -> Void
     private let queue = DispatchQueue(label: "dev.roosa.Singularity.mcp-listener")
     // Only touched on `queue` after start().
     private var listenFD: Int32 = -1
     private var source: DispatchSourceRead?
 
-    init(path: String, onConnection: @escaping @Sendable (Int32) -> Void) {
+    init(path: String, onConnection: @escaping @Sendable (Int32, pid_t?) -> Void) {
         self.path = path
         self.onConnection = onConnection
     }
@@ -85,7 +86,12 @@ final class MCPSocketListener: @unchecked Sendable {
             // Without this, writing to a client that has gone away would kill the app with SIGPIPE.
             var on: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-            onConnection(client)
+            // The process that connected, as the kernel recorded it at connect(): the agent door
+            // checks whether it descends from a plugin's own program.
+            var pid: pid_t = 0
+            var size = socklen_t(MemoryLayout<pid_t>.size)
+            let peer: pid_t? = getsockopt(client, SOL_LOCAL, LOCAL_PEERPID, &pid, &size) == 0 && pid > 0 ? pid : nil
+            onConnection(client, peer)
         }
     }
 }

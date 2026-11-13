@@ -213,6 +213,9 @@ private struct AgentSettings: View {
         Form {
             Section("Spaces") {
                 ForEach(state.spaces) { space in
+                    // Plugins with `browser` switched on for this Space use it through the agent door
+                    // under the same policy, so the policy can be set for them too.
+                    let usedBy = state.plugins.browserPluginTitles(openFor: space)
                     HStack {
                         Circle().fill(Color(hex: space.colorHex)).frame(width: 10, height: 10)
                         Text(space.name)
@@ -225,11 +228,17 @@ private struct AgentSettings: View {
                         }
                         .labelsHidden()
                         .fixedSize()
-                        .disabled(!space.agentsEnabled)
+                        .disabled(!space.agentsEnabled && usedBy.isEmpty)
                         Toggle("", isOn: enabledBinding(space))
                             .labelsHidden()
                             .toggleStyle(.switch)
                             .help("Allow agents in this Space")
+                    }
+                    if !usedBy.isEmpty {
+                        Text(verbatim: "Also used by " + usedBy.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 18)
                     }
                     if space.agentsEnabled {
                         Toggle("Let agents see console and network", isOn: Binding(

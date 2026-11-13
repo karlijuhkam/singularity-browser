@@ -119,6 +119,13 @@ public final class PluginProcess: @unchecked Sendable {
     /// The most program output that was ever sent and not yet reported read (for tests).
     var programUnreadPeak: Int { lock.withLock { _programUnreadPeak } }
 
+    /// The pid of the plugin's running program (`singularity.spawn`); nil when none runs (not
+    /// started, still starting, or ended). The agent door uses it to recognise the plugin's own
+    /// connection: a peer that descends from this process.
+    public var programPID: pid_t? {
+        lock.withLock { program?.running }?.livePID
+    }
+
     /// - Parameters:
     ///   - programsAllowed: false refuses every program start (`ProgramPolicy.spawnAllowed`).
     ///   - programEnvironment: builds a program's whole environment from the settings the plugin
@@ -720,6 +727,11 @@ public final class PluginSupervisor: @unchecked Sendable {
         }
         process?.terminateNow()
         setState(.stopped)
+    }
+
+    /// The pid of the running process's program (`PluginProcess.programPID`); nil when none runs.
+    public var programPID: pid_t? {
+        lock.withLock { current }?.programPID
     }
 
     /// Passes a message to the running process; dropped when none is running.

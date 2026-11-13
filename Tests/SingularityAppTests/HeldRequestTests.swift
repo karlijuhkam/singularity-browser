@@ -958,7 +958,7 @@ extension AppTests {
 
         init(path: String, then answer: @escaping @Sendable (Int32) -> Void) {
             let box = Box()
-            listener = MCPSocketListener(path: path) { client in
+            listener = MCPSocketListener(path: path) { client, _ in
                 DispatchQueue.global().async {
                     _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
                     var buffer = [UInt8](repeating: 0, count: 4096)
@@ -1044,7 +1044,7 @@ extension AppTests {
         }
         let received = Received()
         // A bare listener that reads one line and hangs up without a reply.
-        let listener = MCPSocketListener(path: path) { client in
+        let listener = MCPSocketListener(path: path) { client, _ in
             DispatchQueue.global().async {
                 // An accepted socket inherits the listener's O_NONBLOCK on macOS: read blocking here.
                 _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)

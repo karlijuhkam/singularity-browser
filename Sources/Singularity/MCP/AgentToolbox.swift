@@ -7,6 +7,11 @@ import WebKit
 ///
 /// Everything here runs on the main thread, because it touches AppState and WKWebView.
 /// Anything that came from a web page is wrapped with `UntrustedContent.wrap` before it is returned.
+///
+/// Every list and call is for one `AgentCaller`. An outside agent gets the Spaces with agents on,
+/// exactly as before. A plugin's own connection gets the Spaces switched on for that plugin, checked
+/// again at every call, and never a tab or address on a site the owner switched the plugin off for
+/// (checked against where the tab is at the time of the call).
 @MainActor
 final class AgentToolbox {
     private weak var state: AppState?
@@ -22,8 +27,8 @@ final class AgentToolbox {
 
     // MARK: - Tool definitions
 
-    func listTools() -> [Tool] {
-        guard let state else { return [] }
+    func listTools(for caller: AgentCaller) -> [Tool] {
+        guard state != nil else { return [] }
         var tools = [
             Tool(
                 name: AgentToolName.listSpaces,
@@ -33,7 +38,7 @@ final class AgentToolbox {
                 annotations: .init(readOnlyHint: true)
             ),
         ]
-        for space in state.spaces where space.agentsEnabled {
+        for space in spaces(for: caller) {
             tools += spaceTools(space)
         }
         return tools
@@ -125,6 +130,8 @@ final class AgentToolbox {
     /// Book-keeping for one call: who, what, which tab, and the approval decision (for the log).
     private final class CallRecord {
         let started = Date()
+        let caller: AgentCaller
+        /// For the log and the inbox card: the plugin's title, or the name the agent introduced itself with.
         let client: String
         var spaceID: UUID?
         var tabID: UUID?
@@ -133,15 +140,16 @@ final class AgentToolbox {
         /// When set, the log keeps this instead of the result (console and network content is never logged).
         var logResult: String?
 
-        init(client: String) {
-            self.client = client
+        init(client: String, caller: AgentCaller) {
+            self.caller = caller
+            self.client = caller.clientName(introducedAs: client)
         }
     }
 
     /// Runs one tool call: checks the approval policy, marks the tab as busy while it runs,
     /// and appends the call to the Space's agent log.
-    func call(_ name: String, arguments: [String: Value], client: String) async -> CallTool.Result {
-        let record = CallRecord(client: client)
+    func call(_ name: String, arguments: [String: Value], client: String, caller: AgentCaller) async -> CallTool.Result {
+        let record = CallRecord(client: client, caller: caller)
         let result: CallTool.Result
         do {
             result = try await perform(name, arguments: arguments, record: record)
@@ -157,21 +165,29 @@ final class AgentToolbox {
 
     private func perform(_ name: String, arguments: [String: Value], record: CallRecord) async throws -> CallTool.Result {
         if name == AgentToolName.listSpaces {
-            return .init(content: [.plain(try listSpaces())])
+            return .init(content: [.plain(try listSpaces(record.caller))])
         }
         guard let state, let (slug, tool) = AgentToolName.parse(name),
               let space = state.spaces.first(where: { $0.slug == slug }) else {
             throw ToolError("Unknown tool \(name). Call list_spaces to see what is available.")
         }
-        guard space.agentsEnabled else {
-            throw ToolError("Agents are not allowed in the “\(space.name)” Space.")
+        switch record.caller {
+        case .outside:
+            guard space.agentsEnabled else {
+                throw ToolError("Agents are not allowed in the “\(space.name)” Space.")
+            }
+        case .plugin(_, let title):
+            // The switch as it is now: a tool name remembered from before is refused once it is off.
+            guard isOpen(space, for: record.caller) else {
+                throw ToolError(AgentCaller.spaceOff(title: title, space: space.name))
+            }
         }
         record.spaceID = space.id
         let args = Arguments(arguments)
         record.args = args.forLog()
 
         switch tool {
-        case "list_tabs": return .init(content: [.plain(try listTabs(space))])
+        case "list_tabs": return .init(content: [.plain(try listTabs(space, record: record))])
         case "open": return .init(content: [.plain(try await open(space, url: args.url("url"), record: record))])
         case "navigate":
             return .init(content: [.plain(try await navigate(space, tabID: args.tabID(), url: args.url("url"), record: record))])
@@ -194,23 +210,25 @@ final class AgentToolbox {
 
     // MARK: - Tools
 
-    private func listSpaces() throws -> String {
-        guard let state else { throw ToolError("Browser is shutting down.") }
-        let spaces = state.spaces.filter(\.agentsEnabled).map { space -> [String: Any] in
-            ["slug": space.slug, "name": space.name, "tabs": space.tabs.filter { !$0.isPlugin }.count,
+    private func listSpaces(_ caller: AgentCaller) throws -> String {
+        guard state != nil else { throw ToolError("Browser is shutting down.") }
+        let spaces = spaces(for: caller).map { space -> [String: Any] in
+            ["slug": space.slug, "name": space.name, "tabs": space.tabs.filter { tabIsVisible($0, in: space, to: caller) }.count,
              "policy": space.agentPolicy.rawValue,
              "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
         }
         if spaces.isEmpty {
+            if case .plugin(_, let title) = caller { return AgentCaller.noSpaces(title: title) }
             return "No Spaces are open to agents. The user can allow agents per Space in the Space's settings (right-click the Space → Edit Space…)."
         }
         let note = "policy: readOnly = you may only look; ask = the user confirms each action (open, navigate, close, click, type) in a dialog; allowAll = no confirmation."
         return try Self.json(spaces) + "\n" + note
     }
 
-    private func listTabs(_ space: Space) throws -> String {
+    private func listTabs(_ space: Space, record: CallRecord) throws -> String {
         // A plugin's own page is not for agents: its tab is left out here and refused everywhere else.
-        let tabs = space.tabsInSidebarOrder.filter { !$0.isPlugin }.map { tab -> [String: Any] in
+        // For a plugin's connection, so are tabs on a site the owner switched that plugin off for.
+        let tabs = space.tabsInSidebarOrder.filter { tabIsVisible($0, in: space, to: record.caller) }.map { tab -> [String: Any] in
             var entry: [String: Any] = ["tab_id": tab.id.uuidString.lowercased(), "title": tab.displayTitle]
             switch tab.kind {
             case .web(let url): entry["kind"] = "web"; entry["url"] = url.absoluteString
@@ -235,6 +253,7 @@ final class AgentToolbox {
     }
 
     private func open(_ space: Space, url: URL, record: CallRecord) async throws -> String {
+        try refuseAddress(url, space, record) // before anything is asked
         try await authorize(
             AgentActionContext(kind: .open, targetOrigin: AgentApprovalRules.origin(of: url)), space, record,
             request(record, space, action: "open a page", detail: url.absoluteString))
@@ -244,10 +263,11 @@ final class AgentToolbox {
         record.tabID = tab.id
         state.beginAgentWork(on: tab.id)
         await controller.waitUntilLoaded()
-        return "Opened tab_id \(tab.id.uuidString.lowercased()).\n" + pageSummary(controller)
+        return "Opened tab_id \(tab.id.uuidString.lowercased()).\n" + pageSummary(controller, space, record)
     }
 
     private func navigate(_ space: Space, tabID: UUID, url: URL, record: CallRecord) async throws -> String {
+        try refuseAddress(url, space, record) // before the tab is loaded or anything is asked
         let controller = try await webController(space, tabID, record)
         try await authorize(
             AgentActionContext(kind: .navigate, pageOrigin: AgentApprovalRules.origin(of: controller.webView.url),
@@ -255,17 +275,20 @@ final class AgentToolbox {
             request(record, space, action: "go to a page", detail: url.absoluteString, tabTitle: controller.webView.title))
         controller.load(url)
         await controller.waitUntilLoaded()
-        return pageSummary(controller)
+        return pageSummary(controller, space, record)
     }
 
     private func close(_ space: Space, tabID: UUID, record: CallRecord) async throws -> String {
         guard let state, let tab = space.tab(tabID) else { throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space.") }
         guard !tab.isTerminal else { throw ToolError("Terminal tabs cannot be closed by agents.") }
         guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
+        try refuseOffSite(tab, space, record)
         let origin = AgentApprovalRules.origin(of: tab.url ?? state.artifacts.host(space.id)?.origin)
         try await authorize(
             AgentActionContext(kind: .close, pageOrigin: origin), space, record,
             request(record, space, action: "close a tab", detail: tab.displayTitle, url: tab.url))
+        // Where the tab is after the owner was asked (`authorize` only re-checks tabs it marked).
+        if let now = state.space(space.id)?.tab(tabID) { try refuseOffSite(now, space, record) }
         state.closeTab(tabID, in: space.id, confirmIfBusy: false)
         return "Closed tab_id \(tabID.uuidString.lowercased())."
     }
@@ -273,12 +296,14 @@ final class AgentToolbox {
     private func readPage(_ space: Space, tabID: UUID, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
         let outline = try await controller.callPageAgent("snapshot(maxChars)", arguments: ["maxChars": 15_000])
+        try refuseIfNowOff(controller, space, record) // the page may have moved while it was read
         return UntrustedContent.wrap(outline, source: controller.webView.url?.absoluteString ?? "")
     }
 
     private func find(_ space: Space, tabID: UUID, query: String, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
         let matches = try await controller.callPageAgent("find(query, 25)", arguments: ["query": query])
+        try refuseIfNowOff(controller, space, record)
         return UntrustedContent.wrap(matches, source: controller.webView.url?.absoluteString ?? "")
     }
 
@@ -303,7 +328,7 @@ final class AgentToolbox {
         // If the click started a navigation, wait for it so the next read sees the new page.
         try? await Task.sleep(for: .milliseconds(300))
         await controller.waitUntilLoaded()
-        return UntrustedContent.wrap(result, source: controller.webView.url?.absoluteString ?? "") + "\n" + pageSummary(controller)
+        return UntrustedContent.wrap(result, source: shownAddress(controller, space, record)) + "\n" + pageSummary(controller, space, record)
     }
 
     private func type(_ space: Space, tabID: UUID, ref: Int, text: String, submit: Bool, record: CallRecord) async throws -> String {
@@ -326,12 +351,13 @@ final class AgentToolbox {
                                                         arguments: ["ref": ref, "text": text, "submit": submit])
         try? await Task.sleep(for: .milliseconds(submit ? 300 : 50))
         await controller.waitUntilLoaded()
-        return UntrustedContent.wrap(result, source: controller.webView.url?.absoluteString ?? "") + "\n" + pageSummary(controller)
+        return UntrustedContent.wrap(result, source: shownAddress(controller, space, record)) + "\n" + pageSummary(controller, space, record)
     }
 
     private func screenshot(_ space: Space, tabID: UUID, record: CallRecord) async throws -> Tool.Content {
         let controller = try await webController(space, tabID, record)
         let image = try await controller.webView.takeSnapshot(configuration: nil)
+        try refuseIfNowOff(controller, space, record)
         guard let png = Self.pngData(image, maxWidth: 1280) else { throw ToolError("Could not encode the screenshot.") }
         return .image(data: png.base64EncodedString(), mimeType: "image/png", annotations: nil, _meta: nil)
     }
@@ -350,6 +376,7 @@ final class AgentToolbox {
         guard case .web = tab.kind else {
             throw ToolError("Console and network can only be read for web tabs, not terminals or artifacts.")
         }
+        try refuseOffSite(tab, current, record)
         let controller = state.web.existingController(tabID)
         let url = controller?.webView.url ?? tab.url
         let site = SiteInfo.site(of: url)
@@ -379,13 +406,24 @@ final class AgentToolbox {
         let outcome = await state.approvals.check(context, space: current, request: request)
         record.decision = outcome.logValue
         if let refusal = outcome.refusal { throw ToolError(refusal) }
+        // A plugin's switches may have changed while the owner was asked: they count as they are now.
+        if case .plugin(_, let title) = record.caller {
+            let now = state.space(space.id)
+            guard let now, isOpen(now, for: record.caller) else {
+                throw ToolError(AgentCaller.spaceOff(title: title, space: space.name))
+            }
+            if let tabID = record.tabID, let tab = now.tab(tabID) { try refuseOffSite(tab, now, record) }
+        }
     }
 
     private func request(_ record: CallRecord, _ space: Space, action: String, detail: String,
                          url: URL? = nil, tabTitle: String? = nil, text: String? = nil) -> AgentApprovals.Request {
-        var request = AgentApprovals.Request(actor: AgentApprovals.displayName(forClient: record.client), action: action,
+        // A plugin's card names it by its title, exactly; an outside agent by its client name, tidied.
+        let actor = record.caller.pluginID != nil ? record.client : AgentApprovals.displayName(forClient: record.client)
+        var request = AgentApprovals.Request(actor: actor, action: action,
                                              detail: detail, url: url?.absoluteString, spaceName: space.name,
                                              tabTitle: tabTitle, text: text)
+        request.pluginID = record.caller.pluginID
         // "Show Tab" on the inbox entry: agent tabs load in the background, so the user may not
         // have seen the page. The entry carries the tab: closing it denies the request.
         if let tabID = record.tabID {
@@ -401,6 +439,11 @@ final class AgentToolbox {
                                         pageOrigin: String?, approved: Set<String>, submissionApproved: Bool) {
         controller.agentNavigationGuard = { [weak self] url, isFormSubmission in
             guard let self, let state = self.state, let current = state.space(space.id) else { return false }
+            // A plugin's action never carries a tab onto a site the owner switched it off for.
+            if self.siteIsOff(url, current, record.caller) {
+                record.decision += "+nav_site_off"
+                return false
+            }
             let target = AgentApprovalRules.origin(of: url)
             if let target, approved.contains(target), !isFormSubmission || submissionApproved {
                 return true
@@ -451,6 +494,8 @@ final class AgentToolbox {
         }
         guard !tab.isTerminal else { throw ToolError("Tab \(tabID.uuidString.lowercased()) is a terminal, not a web page.") }
         guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
+        // Before the tab is loaded or marked: where it is now (live page, else its stored address).
+        try refuseOffSite(tab, space, record)
         if record.tabID == nil {
             record.tabID = tabID
             state.beginAgentWork(on: tabID)
@@ -459,7 +504,64 @@ final class AgentToolbox {
             throw ToolError("Could not load tab \(tabID.uuidString.lowercased()).")
         }
         await controller.waitUntilLoaded()
+        // And again once loaded: the page may have ended up elsewhere (a redirect).
+        try refuseIfNowOff(controller, space, record)
         return controller
+    }
+
+    // MARK: - Who may see what
+
+    /// The Spaces `caller` gets tools for: agents on (outside), or switched on for the plugin now.
+    private func spaces(for caller: AgentCaller) -> [Space] {
+        AgentCaller.spaces(state?.spaces ?? [], caller: caller, isOpenForPlugin: { self.isOpen($0, for: caller) })
+    }
+
+    /// For a plugin's connection: the Space is switched on for that plugin now (approved with
+    /// `browser`, Space in its switches). Outside agents: always true (their gate is `agentsEnabled`).
+    private func isOpen(_ space: Space, for caller: AgentCaller) -> Bool {
+        guard case .plugin(let id, _) = caller else { return true }
+        return state?.plugins.browserSpaceIsOpen(id, space: space) == true
+    }
+
+    /// A web tab's address now: its live page's when it has one, else the stored address. Nil for
+    /// other tabs, which the site switch doesn't cover.
+    private func currentAddress(of tab: BrowserTab) -> URL? {
+        guard case .web(let stored) = tab.kind else { return nil }
+        return state?.web.existingController(tab.id)?.webView.url ?? stored
+    }
+
+    /// For a plugin's connection: the owner switched that plugin off for the site of `url` in the
+    /// Space (as the Space is now). Never for an outside agent.
+    private func siteIsOff(_ url: URL?, _ space: Space, _ caller: AgentCaller) -> Bool {
+        guard case .plugin(let id, _) = caller, let url else { return false }
+        return PluginReach.siteIsOff(state?.space(space.id) ?? space, pluginID: id, url: url)
+    }
+
+    /// A tab `caller` may know about: never a plugin's page; for a plugin, nothing on a switched-off site.
+    private func tabIsVisible(_ tab: BrowserTab, in space: Space, to caller: AgentCaller) -> Bool {
+        !tab.isPlugin && !siteIsOff(currentAddress(of: tab), space, caller)
+    }
+
+    private func refuseOffSite(_ tab: BrowserTab, _ space: Space, _ record: CallRecord) throws {
+        guard case .plugin(_, let title) = record.caller, siteIsOff(currentAddress(of: tab), space, record.caller) else { return }
+        throw ToolError(AgentCaller.siteOff(title: title))
+    }
+
+    /// For a plugin's connection: refuses when the tab's live page is on a switched-off site now.
+    private func refuseIfNowOff(_ controller: WebTabController, _ space: Space, _ record: CallRecord) throws {
+        guard case .plugin(_, let title) = record.caller, siteIsOff(controller.webView.url, space, record.caller) else { return }
+        throw ToolError(AgentCaller.siteOff(title: title))
+    }
+
+    private func refuseAddress(_ url: URL, _ space: Space, _ record: CallRecord) throws {
+        guard case .plugin(_, let title) = record.caller, siteIsOff(url, space, record.caller) else { return }
+        throw ToolError(AgentCaller.siteOff(title: title))
+    }
+
+    /// The page's address for a result, or "" when a plugin's action ended on a site it is
+    /// switched off for (a click or redirect can carry a tab there; it isn't told where).
+    private func shownAddress(_ controller: WebTabController, _ space: Space, _ record: CallRecord) -> String {
+        siteIsOff(controller.webView.url, space, record.caller) ? "" : controller.webView.url?.absoluteString ?? ""
     }
 
     /// A plugin's tab: agents can neither read nor act on a plugin's own page.
@@ -467,8 +569,12 @@ final class AgentToolbox {
         ToolError("Tab \(tabID.uuidString.lowercased()) is not a web page.")
     }
 
-    /// "Now at: <url>" plus the page title, with the title marked as page content.
-    private func pageSummary(_ controller: WebTabController) -> String {
+    /// "Now at: <url>" plus the page title, with the title marked as page content. For a plugin's
+    /// connection on a site it is switched off for: only that it is there.
+    private func pageSummary(_ controller: WebTabController, _ space: Space, _ record: CallRecord) -> String {
+        if case .plugin(_, let title) = record.caller, siteIsOff(controller.webView.url, space, record.caller) {
+            return "Now at a site \(title) is switched off for."
+        }
         let url = controller.webView.url?.absoluteString ?? "(no URL)"
         let title = controller.webView.title ?? ""
         return "Now at: \(url)\n" + UntrustedContent.wrap("Page title: \(title)", source: url)

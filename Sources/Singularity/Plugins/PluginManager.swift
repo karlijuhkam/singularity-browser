@@ -562,6 +562,53 @@ final class PluginManager {
         plugin(id)?.validManifest?.panel?.title
     }
 
+    // MARK: - The agent door (a plugin with `browser`)
+
+    /// The pid of the plugin's running program (`singularity.spawn`); nil when none runs.
+    func programPID(of id: String) -> pid_t? {
+        supervisors[id]?.programPID
+    }
+
+    /// The plugin whose own connection this is: `pid` (the agent socket's peer) is the running
+    /// program of an approved plugin with the `browser` permission, or descends from it. Nil for
+    /// everyone else, who is then an outside agent. Called once per connection, when it is accepted.
+    ///
+    /// The program is one the app itself started at the path pinned at approval (`PluginProcess`);
+    /// a process can't choose its parent, so nothing outside that program's tree can pass. Its pid
+    /// is only reported while the program hasn't been reaped (`RunningProgram.livePID`), so it
+    /// can't be a recycled pid.
+    func pluginOwning(pid: pid_t) -> (id: String, title: String)? {
+        for (id, supervisor) in supervisors.sorted(by: { $0.key < $1.key }) {
+            guard let manifest = browserManifest(id), let program = supervisor.programPID,
+                  ProcessInspector.isDescendant(pid, of: program) else { continue }
+            return (id, AgentCaller.title(of: manifest))
+        }
+        return nil
+    }
+
+    /// Whether a plugin's connection may use `space` now: the plugin is approved with `browser`
+    /// (in its manifest and its approval) and the Space is switched on for it. Checked when its
+    /// tools are listed and again at every call.
+    func browserSpaceIsOpen(_ id: String, space: Space) -> Bool {
+        guard let plugin = plugin(id), browserManifest(id) != nil else { return false }
+        return PluginReach.spaceIsOpen(space, approval: plugin.approval, status: plugin.status)
+    }
+
+    /// The titles of the plugins that may use `space` through the door (Settings → Agents).
+    func browserPluginTitles(openFor space: Space) -> [String] {
+        plugins.filter { browserSpaceIsOpen($0.id, space: space) }
+            .compactMap { $0.validManifest.map(AgentCaller.title(of:)) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// The manifest of an approved plugin whose manifest and approval both have `browser`.
+    private func browserManifest(_ id: String) -> PluginManifest? {
+        guard let plugin = plugin(id), plugin.status == .approved,
+              let manifest = plugin.validManifest, manifest.permissions.browser,
+              plugin.approval?.permissions.browser == true else { return nil }
+        return manifest
+    }
+
     /// Why there is no page for the plugin: its status line (`PluginStatusText.describe`), or
     /// "This plugin isn't installed." for an id with no folder.
     func notRunningReason(_ id: String) -> String {
