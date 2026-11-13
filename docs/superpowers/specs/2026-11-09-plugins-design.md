@@ -30,6 +30,7 @@ The concrete test page is **github.com/login** (form in the main page). Login fo
 ## Rounds after this one (planned, not part of round 1)
 
 - **Round 2: plugin tabs and browser abilities.** Plugins can provide a tab type, such as the Claude chat. They get the same browser abilities agents have through MCP (list tabs, read pages, click, type), under the same per-Space approval policy and agent log, with no MCP setup. The **Claude chat plugin** runs on the owner's Claude subscription via the Agent SDK. This is also when **network access to declared destinations** arrives (the chat needs `api.anthropic.com`).
+  - *Note, 2026-11-13:* plugin tabs arrived with the Assistant, part 1 (`docs/superpowers/specs/2026-11-13-assistant-part1-design.md`): a plugin's own page, shown in a panel at the right of the window or as a plugin tab (`TabKind.plugin`), plus one program a plugin keeps running (`permissions.programs`, `singularity.spawn`). Network destinations were not needed: the plugin keeps the user's installed `claude` running, and that program does the talking to Claude, so `permissions.network` stays empty and the background still has no network. Browser abilities are the Assistant's part 2, through `singularity-mcp` (the agents' own door) rather than a second plugin API.
 - **Round 3: catalog.** A public list that anyone can publish to (for example a git repository, where publishing is a pull request). Installing from it copies a plugin into `~/Singularity/plugins/`. There are no accounts and no telemetry.
 
 ## Non-goals

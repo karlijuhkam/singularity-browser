@@ -1,6 +1,6 @@
 # Assistant (the built-in helper), part 1: a plugin's own panel and tab, a running program, a plain chat: design
 
-Date: 2026-11-13. Status: written for the owner's approval; nothing is built yet.
+Date: 2026-11-13. Status: part 1 built on 2026-11-13. The "As built" section at the end says where the build differs from this design, and wins where they disagree.
 
 ## Why
 
@@ -350,3 +350,212 @@ The exact API and wire names; the scheme's name; how the import map is built; th
 renderer (own small one or a pinned package); the panel's width limits and look within the app's
 existing style; the shortcut if ⌃⌘J is taken; how the sandbox check of the SDK turns out and what
 the smallest fix is if it needs one more allowance (ask the owner before widening the sandbox).
+
+## As built (2026-11-13)
+
+Built on the branch `assistant` in eight tasks (plan `docs/superpowers/plans/2026-11-13-assistant-part1.md`).
+Where this section and the design above disagree, this section is what the code does.
+
+### Decisions and differences, in the order of the design
+
+**1. A plugin's own page.**
+- The manifest key is as designed: `"panel": { "page": "panel.tsx", "title": "Assistant" }`. The
+  title is one line of 1 to 40 characters ("its panel needs a title of 1 to 40 characters"). The
+  approval sheet line is "Shows its own panel and tab".
+- The scheme is `singularity-plugin://<id>/`; `/` is the page. GET only. Files go through the
+  artifact server's containment rules (no `..`, no hidden files, nothing outside the folder after
+  symlinks).
+- **Where the page may sit (new):** a script page anywhere in the folder; an HTML page only at the
+  top of the folder (in a subfolder its relative links would point to the top, so it gets 404 and a
+  line in the log). A leading `./` in `panel.page` is fine. Only a script page gets the shell page
+  and the import map; an HTML page has none (an inline import map would need the nonce).
+- **"Only files in the approved fingerprint are served" is kept differently:** the server itself
+  serves any contained regular file of the folder, and the page exists only while the plugin is
+  approved and running (`PluginManager.pageHost(for:)`), and is torn down on every stop, including
+  the pause after a file changes. Between a file changing and the change being noticed (a
+  debounce of about 300 ms) the changed file could still be served.
+- **The policy**, on every response (also 404 and 405): `default-src 'none'; script-src 'self'
+  'nonce-<new for every response>'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+  font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'`,
+  with `nosniff` and `no-store`. Inline styles are allowed (the Assistant's input box grows by
+  setting its height); inline scripts are not.
+- **Two holes found in review and closed:** a policy does not cover WebRTC, so peer connections
+  are switched off (WebKit's private preference `peerConnectionEnabled`, set only after checking
+  it exists; otherwise a script at document start removes `RTCPeerConnection` in every frame); and
+  a torn-down page's JavaScript keeps running until its web view is released while WebKit holds
+  delegates weakly, so teardown hands the view to a guard that lives as long as the app and
+  refuses every navigation, window, dialog and camera or microphone request.
+- Page dialogs (`alert`, `confirm`, `prompt`) are answered at once and never shown.
+- The page API is as designed (`send`, `onMessage`, frozen). Posts that arrive before the page set
+  its handler wait for it (at most 1000). Bridge errors: "only the plugin's own page can send
+  messages", "the message is larger than 256 KB", "malformed message", "the plugin isn't running
+  or didn't answer" (also after the manager's 75 s wait).
+- **JSX needed no change:** `transpile-artifact.ts` already honours `/** @jsxImportSource preact */`
+  and then imports `preact/jsx-runtime`; without the pragma a file still imports
+  `react/jsx-runtime`.
+- **The import map** is built from the packages `package.json` declares (after the same checks as
+  at approval), from each package's `exports` (or `module`/`main`), preferring the `browser`,
+  `import`, `module` and `default` conditions, `.js`/`.mjs` files only.
+- **The shell page has no stylesheet**, so the Assistant's page adds `panel.css` with a `<link>`
+  from its script (`'self'` allows it).
+- Preact 11.2.0 is the Assistant's UI library, as proposed.
+
+**2. The frame.**
+- Shortcut ⌃⌘J (it was free). View menu "Show <Title>" / "Hide <Title>"; palette "Show <Title>",
+  "Open <Title> as Tab", "Move <Title> to Side Panel".
+- Width: default 380, at least 300, at most 720 points; written to `settings.json`
+  (`pluginPanelWidth`, and `pluginPanel` for which plugin is open) when the drag ends; a double
+  click on the edge goes back to the default. The panel is a column at the window's right edge
+  with a 1 pt line on its left and its header below the hidden title bar (a 28 pt inset).
+- The header's menu has Open as Tab and Close, and a list to switch between plugins when more
+  than one has a panel.
+- **Open as Tab** removes every tab of that plugin and adds one at the end of Tabs in the selected
+  Space (a pinned or foldered place is not kept), and closes the panel only when the panel shows
+  that same plugin. While a plugin's page is a tab, the panel stays hidden for it and the shortcut
+  selects the tab.
+- **The not-running page** says "<Title> isn't running", the reason from `PluginScan` (or "This
+  plugin isn't installed."), and has an "Open Plugin Settings" button. At launch it can show for a
+  moment while plugins are being scanned.
+- **Space switches (a deviation):** shown when the plugin has a page script *or* has no panel at
+  all. The design said "not shown for a plugin that has no page script", but a plugin with only a
+  background needs them to start. A panel plugin without a page script records no Space at
+  approval, and the sheet says "Its panel is available in every Space."
+- Plugin tabs are invisible to agents: `list_tabs` leaves them out (and `list_spaces` doesn't
+  count them); `close`, `read_page`, `screenshot`, `click`, `type`, `read_console` and the rest
+  answer "Tab <id> is not a web page." Web-only commands are off for a plugin tab.
+
+**3. A running program.**
+- The manifest is as designed, with rules added: at most 4 names in `programs`, no name twice, and
+  only with a `background` ("it asks to keep a program running but has no background program").
+  `programEnv` names are `^[A-Z][A-Z0-9_]{0,63}$`, never `HOME`, `USER`, `LOGNAME`, `PATH`,
+  `TMPDIR`, `LANG`, `SHELL`, `PWD` or a name starting with `DYLD_`, `LD_` or `SINGULARITY_`, and
+  only with `programs`. A new program or setting name asks for approval again. Programs are pinned
+  with the commands (one map), and a missing program blocks the approval. `singularity.run` still
+  runs only `commands`.
+- The approval sheet lines: "Keeps <path> running and talks to it. This program is not sandboxed:
+  it uses the internet and acts as you", "Passes these settings to it: <names>", and "Its background
+  program never uses the internet; the programs it runs can".
+- **Wire messages:** plugin to app `startProgram`, `programInput`, `closeProgramInput`,
+  `killProgram`, `programOutputRead`, `panelPost`; app to plugin `panelMessage`,
+  `programStarted`, `programFailed`, `programOutput`, `programExit`.
+- **Starting:** `posix_spawn` of the pinned path, no shell, in its own process group, inheriting
+  only its three standard streams, signals reset, in the plugin's data folder. The pinned path is
+  checked again at every start. Refusals, in this order: "programs are off in a test copy", "not
+  allowed by the manifest", "the program is missing or changed", "a program is already running";
+  a failed start answers "could not start: <reason>". To the plugin a refusal is an `error` event,
+  then `exit` with 126.
+- **The environment** is the designed one plus `LOGNAME`; empty values and values with a NUL are
+  dropped, and a requested name can never replace a fixed one. The login shell's PATH is asked
+  once per run.
+- **Output and input:** output in pieces of at most 48 KB, and the app stops reading the program
+  while more than 1 MB is unread by the plugin. Input in pieces of 512 KB; **more than 16 MB of
+  input the program hasn't taken ends it** (not in the design: without it a plugin could make the
+  app hold unbounded memory). stderr lines go to the plugin log as `<program>: <line>`, cut to
+  2000 characters. `exit` comes after the last output, so a plugin that never reads stdout never
+  hears it.
+- **Ending:** SIGTERM to the program's group, SIGKILL to the group 2 s later even when the program
+  itself already ended (so a child that ignored SIGTERM goes too); at app quit SIGKILL at once,
+  sent synchronously. The reaper waits without reaping (`waitid` with `WNOWAIT`) and only then
+  kills the group, so a group signal can never reach a recycled pid.
+- No Node `spawn` event: the SDK listens for none.
+- **Packages:** installed with `--omit=optional` added to the existing arguments; the approval
+  sheet's count skips optional-only packages. The Assistant installs 2 declared packages, 105 in
+  all (113 lock entries less the SDK's 8 optional platform packages).
+- **The SDK inside the sandbox:** no allowance was needed; `SandboxProfile` is unchanged. Checked
+  on 2026-11-13 with the SDK installed by the app's own install and a stand-in `claude` script (not
+  the real program): the SDK loads in the sandbox, starts the program through `singularity.spawn`
+  with `--output-format stream-json --verbose --input-format stream-json --tools=
+  --setting-sources= --strict-mcp-config --include-partial-messages`, the program sees only
+  `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, `LANG`, `CLAUDE_AGENT_SDK_CLIENT_APP` and the SDK's
+  three names, runs in the data folder, and its end shows in the page as "The connection to Claude
+  ended."
+- **Crash restarts** of the background keep the page and reload it; any other stop and start
+  makes a new page (the host changes identity), so views ask the manager for it every time.
+
+**4. The Assistant plugin.**
+- Files: `plugin.json`, `package.json`, `bun.lock`, `README.md`, `background.ts` (the state and
+  the page's messages), `provider.ts` (the provider interface), `provider-claude.ts` (everything
+  that knows about Claude), `conversation.ts` (the visible messages on disk), `markdown.ts`,
+  `view.ts` (new: the page's logic as plain functions, so it is tested), `panel.tsx`, `panel.css`.
+  SDK `@anthropic-ai/claude-agent-sdk` 0.3.323, Preact 11.2.0.
+- `claude` is started with `tools: []`, `settingSources: []`, `mcpServers: {}` **plus
+  `strictMcpConfig: true`** (without it, MCP servers from the user's own config could still load),
+  `skills: []`, partial messages on, a short system prompt of its own (it can't see pages, tabs or
+  terminals or act, and says so), no `canUseTool` (so no permission prompt tool). Still open, with
+  no SDK switch: a message the user types that starts with "/" may be read by `claude` as one of
+  its commands, and settings an organisation manages for Claude still apply. The README says both.
+- **The provider starts on the page's first `hello`**, not when the plugin starts, so nothing runs
+  or counts against a plan until the panel is opened.
+- **Ready before the first message:** Claude Code's per-turn `init` message (with `apiKeySource`)
+  only comes after a message is sent, so the first `ready` comes from the SDK's initialization
+  result and model list, and each turn's `init` then confirms or corrects billing, model and
+  version.
+- **Billing fails closed:** a turn's billing is "Claude plan" only for `apiKeySource` exactly
+  `"none"`; absent or anything else is "API billing". Before the first turn: plan for `"none"`, or
+  for no API key and a Claude subscription on Anthropic's own service; anything else API. A
+  message typed while the billing notice waits for OK is shown at once and sent on OK.
+- **Signed out shows only after the first message:** the SDK's initialization answers even when
+  Claude Code is signed out; the failure comes with the first turn.
+- **States:** signed out, limit reached, program ended (all with Try Again), programs off in a test
+  copy (no Try Again), and other errors in the program's own words (with Try Again, and Claude's
+  and the SDK's versions, e.g. "Claude 2.1.323 · SDK 0.3.323"). Try Again is taken in every state
+  except ready and answering.
+- **A failed resume** is recognised only when the start asked to resume, was not refused, and the
+  program ended before it answered `initialize`; then the old messages are greyed under "Earlier
+  conversation. The Assistant no longer remembers it." and a new session starts. Every other
+  error keeps the session and the messages.
+- **Restarts wait for the old program** (New Chat, Try Again, a new config folder): Singularity
+  runs one program per plugin, so a new start waits up to 5 s for the last one's exit.
+- **The page's state** carries two more fields than designed, `error` and `version`; every change
+  counts up `version`, pieces of an answer carry it, and the page asks for the whole state again
+  when it sees a gap. The state sent to the page holds the newest messages that fit in 200 KB;
+  the file keeps up to 400.
+- **The config folder** setting takes an empty value or an absolute path; `~` is refused ("Use a
+  full path that starts with /, or leave it empty."), because the program gets it without a shell.
+- **Markdown:** a small renderer of its own (`markdown.ts`): paragraphs, line breaks, fenced and
+  inline code, bold, italic, headings, lists; a link is shown as "text (address)"; it builds
+  elements one by one with no attributes, so HTML in an answer stays text.
+
+**5. Safety** is as designed. **6. Documents:** `CLAUDE.md` (scope change, architecture, "Plugin
+panels and programs", the third known exception for Claude's own session files),
+`docs/plugins/AUTHORING.md` (panel, the page API and rules, programs, `programEnv`, `spawn`,
+`panel.post`, the new messages and review items), `IDEAS.md`, and a note in the plugins design's
+round 2 section.
+
+**7. Tests.**
+- Core (Swift Testing): manifest and approval lines, programs and environment, wire messages, the
+  plugin tab in `space.json`, the panel and place rules, the import map, the Assistant's manifest
+  and packages; `PluginProgramTests` run a fixture program (`echo-program.sh`) through the real
+  sandbox and bridge.
+- App: the page server and host (policy, containment, a page that cannot reach a counting local
+  site, WebRTC off, teardown); panel plugins in the manager (no Space needed, crash restart,
+  programs refused in a test copy, the app's environment); panel and tab moves with a real
+  `AppState`; and the Assistant's real page files with a small stand-in for Preact (no network):
+  served and compiled, the first message is `hello`, the empty chat and the billing label are
+  drawn, its stylesheet loads under the policy, and a pushed piece of an answer is drawn as
+  Markdown with HTML left as text.
+- Bun: the Assistant's logic with a fake `singularity` and a fake program replaying a hand-written
+  recording; the same tests also pass against the real SDK (`ASSISTANT_SDK=<path to sdk.mjs>`).
+- `RealAssistantTests` (opt-in, `SINGULARITY_REAL_ASSISTANT=1`): installs the packages, runs the
+  real `claude` on the owner's account and sends one message. Written, not run by the builders;
+  the owner decides when. A throwaway `CLAUDE_CONFIG_DIR` can't be used (it would be signed out).
+
+### Known small gaps (left on purpose for now)
+
+- The Markdown of an answer is drawn again for every piece that streams in, which gets slow on
+  very long answers.
+- After a crash restart, a page message sent in the moment before the new background is in place
+  can wait 75 s for its answer.
+- A failed login-shell PATH lookup is kept for the rest of the run (a success should be the only
+  thing cached).
+- A plugin tab made before the plugins were scanned stores an empty title until the scan ends;
+  `list_tabs` shows no selected tab while a plugin tab is selected; the panel's menu item stays
+  enabled while a little window is in front (it brings the main window forward first).
+- A write to a program that doesn't read can hold one thread until the program reads or ends.
+- The page host compiles with its own copy of the TypeScript cache rather than the app's shared one.
+
+### Not checked without the owner's hands
+
+The panel's look and feel in light and dark mode, dragging its edge, ⌃⌘J in the real menu bar,
+streaming and Stop with the real program, Open as Tab and back, a restart that continues the
+conversation, a signed-out Claude Code, and the page in real Preact (the tests use a stand-in).

@@ -4,18 +4,19 @@ This guide is for agents first and people second. It describes what is on the `p
 
 Paths like `Plugins/template/` and `Resources/plugin-host/` are in the Singularity repository (relative to its root).
 
-Spec and reasons: `docs/superpowers/specs/2026-11-09-plugins-design.md`. A working example: `Plugins/1password/`. The smallest example: `Plugins/template/`.
+Spec and reasons: `docs/superpowers/specs/2026-11-09-plugins-design.md`; for panels and programs, `docs/superpowers/specs/2026-11-13-assistant-part1-design.md`. A working example: `Plugins/1password/`. A plugin with its own panel and a running program: `Plugins/assistant/`. The smallest example: `Plugins/template/`.
 
 ## What a plugin is
 
-A plugin is a folder with two optional parts:
+A plugin is a folder with three optional parts:
 
 - a **page script** (`page.ts`) that runs inside web pages and adds small buttons and menus to them;
-- a **background program** (`background.ts`) that runs on Singularity's bundled Bun, in a macOS sandbox with no network. It can ask Singularity to run a few declared programs.
+- a **background program** (`background.ts`) that runs on Singularity's bundled Bun, in a macOS sandbox with no network. It can ask Singularity to run a few declared programs, and to keep one declared program running and talk to it (see Programs kept running);
+- its **own page** (`panel` in the manifest, e.g. `panel.tsx`), shown in a panel at the right of the window or as a tab of its own (see A plugin's own page).
 
-The page script talks to the background program with `singularity.send(...)`. The user must approve a plugin before anything runs. The approval sheet lists the permissions in `plugin.json`.
+The page script and the plugin's own page talk to the background program with `singularity.send(...)`. The user must approve a plugin before anything runs. The approval sheet lists the permissions in `plugin.json`.
 
-Round 1 has no built-in AI. Network APIs and site data (cookies, storage) are blocked in page scripts, and the background has no network. **But a page script can still send data out through the page itself**: image URLs, inserted `<script>`/`<link>` elements, CSS `url(...)`, navigation, form submission. The app can't block those. Reviewers must look for them (see the review checklist), and finding one is a reason to reject the plugin. A plugin's page script only runs on the sites it is allowed on.
+Singularity itself has no built-in AI. A plugin may bring one: the bundled Assistant keeps the user's own `claude` program running (see Programs kept running). Network APIs and site data (cookies, storage) are blocked in page scripts, and the background has no network. **But a page script can still send data out through the page itself**: image URLs, inserted `<script>`/`<link>` elements, CSS `url(...)`, navigation, form submission. The app can't block those. Reviewers must look for them (see the review checklist), and finding one is a reason to reject the plugin. A plugin's page script only runs on the sites it is allowed on.
 
 A plugin may be **page-only**: leave out the `background` key and `background.ts`. That is valid.
 
@@ -34,6 +35,7 @@ my-plugin/              folder name == id
   plugin.json           the manifest (required)
   background.ts         background program (optional)
   page.ts               page script (optional, one file, no imports)
+  panel.tsx             the plugin's own page (optional; may import its own files and packages)
   package.json          only if you use npm packages
   bun.lock              required with package.json
   README.md, icon.png   anything else is fine, but every file is fingerprinted
@@ -72,6 +74,7 @@ Rules for the folder:
 | `name`, `version`, `description`, `author` | yes | Shown in Settings and on the approval sheet. |
 | `background` | no | Path of the background file, relative to the folder. A regular file inside the folder, no `..`. |
 | `page` | no | `{ "script": "page.ts", "sites": [patterns] }`. The script runs only on these sites. |
+| `panel` | no | `{ "page": "panel.tsx", "title": "Assistant" }`. The plugin's own page (a regular file inside the folder, like `background`) and the title of its panel and tab (one line, 1 to 40 characters). Having `panel` is the permission: the approval sheet says "Shows its own panel and tab". See A plugin's own page. |
 | `permissions` | yes | See below. Any key inside may be left out and means "none". An unknown key is an error. |
 
 A minimal **page-only** manifest (no `background`, no commands):
@@ -85,6 +88,24 @@ A minimal **page-only** manifest (no `background`, no commands):
   "author": "Your name",
   "page": { "script": "page.ts", "sites": ["https://*/*"] },
   "permissions": { "pageAdditions": ["https://*/*"] }
+}
+```
+
+A plugin with **its own page and a program it keeps running** (the bundled Assistant's manifest; no page script, no sites):
+
+```json
+{
+  "id": "assistant",
+  "name": "Assistant",
+  "version": "0.1.0",
+  "description": "A built-in helper you can chat with, running on your own Claude sign-in.",
+  "author": "Karli Juhkam",
+  "background": "background.ts",
+  "panel": { "page": "panel.tsx", "title": "Assistant" },
+  "permissions": {
+    "programs": ["claude"],
+    "programEnv": ["CLAUDE_CONFIG_DIR", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SDK_READS_SESSION_STATE"]
+  }
 }
 ```
 
@@ -107,7 +128,9 @@ Every entry of `page.sites` must also appear, as the same text, in `permissions.
 | `pageAdditions` | Buttons and menus in pages on these sites (and the page script running there). | "Reads and changes pages on <sites>, including what you type" ("on all sites" for `<all_urls>`), and "Its page script could pass what it reads to other websites; review it before approving" (also shown for any plugin with a page script) |
 | `fillForms` | The background may fill login fields on these sites (see Fills). | "Fills login forms on <sites>" |
 | `commands` | `{ "program": ["sub command", ...] }`. The background may run that program with arguments starting with one of the listed sub-commands. | "Runs /opt/homebrew/bin/program (only: sub command, ... — plus any further arguments)" (the path is only an example) |
-| `network` | Must be `[]` in round 1. | About the background program only (a page-only plugin gets no such line): "Its background program never uses the internet" without commands; with commands: "Its background program never uses the internet; the programs it runs can" |
+| `programs` | `["program"]`, at most 4 names. The background may keep one of these programs running and talk to it through its input and output (`singularity.spawn`). `singularity.run` never runs them: only `commands` does. | "Keeps /opt/homebrew/bin/program running and talks to it. This program is not sandboxed: it uses the internet and acts as you" |
+| `programEnv` | `["SETTING_NAME"]`: the names of settings (environment variables) the background may pass to its program. Only with `programs`. | "Passes these settings to it: SETTING_NAME, ..." |
+| `network` | Must be `[]` in round 1. | About the background program only (a page-only plugin gets no such line): "Its background program never uses the internet" without commands or programs; with them: "Its background program never uses the internet; the programs it runs can" |
 
 Details:
 
@@ -115,11 +138,13 @@ Details:
 - A program name is a bare name: letters, digits, `.`, `_`, `-`, starting with a letter or digit. No slashes.
 - The program is found on the user's login `PATH` when the plugin is approved, and that path is pinned. A different program with the same name later is not run.
 - These program names are refused (also with a version suffix such as `python3.12`): `sh bash zsh fish dash ksh csh tcsh env sudo su curl wget ssh scp sftp nc ncat telnet ftp rsync osascript open python python3 perl ruby php node bun deno npx bunx rbash nodejs pip pip3 npm pnpm yarn xargs nice nohup exec command launchctl swift lua awk gawk tclsh expect arch caffeinate time timeout gtimeout stdbuf watch script sandbox-exec taskpolicy ssh-agent xcrun find tmux screen lldb gdb sqlite3 vim vi ex nvim emacs`. In short: shells, interpreters, network tools, package managers, and programs that run other programs.
-- Asking for more later (a new site, a new program, a new sub-command) means the plugin needs approval again, even in development mode. Asking for less does not.
+- `programs` follow the same rules as `commands`: bare names, the refused list above, found on the login `PATH` at approval and pinned. A program that can't be found blocks the approval. The pinned path is checked again every time the program starts.
+- A name in `programEnv` is upper-case letters, digits and `_`, starting with a letter, at most 64 characters. These are refused, because they change how a program starts or where it looks: `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, `LANG`, `SHELL`, `PWD`, and anything starting with `DYLD_`, `LD_` or `SINGULARITY_`.
+- Asking for more later (a new site, a new program, a new sub-command, a new `programEnv` name) means the plugin needs approval again, even in development mode. Asking for less does not.
 
 ### Manifest errors
 
-Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "This folder isn't a plugin Singularity can use: <text>." Permission keys are checked while `plugin.json` is read, before the id. Check order: JSON shape and permission keys, id format, id equals folder, site patterns, page sites, network, commands, files, packages.
+Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "This folder isn't a plugin Singularity can use: <text>." Permission keys are checked while `plugin.json` is read, before the id. Check order: JSON shape and permission keys, id format, id equals folder, site patterns, page sites, network, commands, programs and `programEnv`, panel title, files, packages.
 
 | Mistake | Exact message |
 |---|---|
@@ -131,7 +156,11 @@ Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "Thi
 | Page site not in `pageAdditions` | `its page script runs on https://a.com/* without permission` |
 | `network` not empty | `it asks for internet access, which plugins can't have yet` |
 | Refused or malformed command, or empty sub-command list | `it may not run “bash”` |
-| `background` or `page.script` missing, absolute, or contains `..` | `the file background.ts is missing` |
+| Refused or malformed name in `programs`, a name twice, or more than 4 | `it asks to keep “bash” running, which plugins may not` |
+| `programs` without a `background` | `it asks to keep a program running but has no background program` |
+| Refused or malformed name in `programEnv`, or `programEnv` without `programs` | `it asks to set “PATH” for its program, which plugins may not` |
+| `panel.title` empty, longer than 40 characters, or more than one line | `its panel needs a title of 1 to 40 characters` |
+| `background`, `page.script` or `panel.page` missing, absolute, or contains `..` | `the file background.ts is missing` |
 | Symbolic link in the folder | `it contains a symbolic link (path/to/link)` |
 | FIFO, socket or device | `it contains a special file (path)` |
 | `.npmrc` present | `it contains .npmrc, which plugins may not have` |
@@ -163,12 +192,17 @@ singularity.storage.set(key: string, value: unknown): Promise<void>
 singularity.storage.delete(key: string): Promise<boolean>       // false when there was nothing to remove
 singularity.storage.keys(): Promise<string[]>
 singularity.storage.clear(): Promise<void>
+
+// Only for a plugin with `programs` (see Programs kept running):
+singularity.spawn(program: string, args: string[], options?: { env?: Record<string, string> }): SpawnedProgram
+// Only for a plugin with `panel` (see A plugin's own page):
+singularity.panel.post(payload: unknown): void
 ```
 
-**`onPageMessage(handler)`** handles every `singularity.send(payload)` from this plugin's page script. What the handler returns (or resolves to) is the answer; it must be JSON. `undefined` becomes `null`. A thrown error becomes `{ error: "<message>" }`. With no handler the answer is `{ error: "no handler" }`. Registering again replaces the handler. Several messages can be in progress at once.
+**`onPageMessage(handler)`** handles every `singularity.send(payload)` from this plugin's page script and from its own page. What the handler returns (or resolves to) is the answer; it must be JSON. `undefined` becomes `null`. A thrown error becomes `{ error: "<message>" }`. With no handler the answer is `{ error: "no handler" }`. Registering again replaces the handler. Several messages can be in progress at once.
 
 - `frameHost` is the page's host, read from WebKit. Use it, not a host in `payload`. A web page can put anything in `payload`: check its shape.
-- `tabID` is an opaque tab identifier.
+- `tabID` is an opaque tab identifier, or the text `"panel"` (with `frameHost` `""`) for a message from the plugin's own page, in its panel or its tab. Only Singularity sets these two fields, so `tabID === "panel"` is how to tell the plugin's own page from a page script on a website. A plugin that has both should answer each only what it should.
 
 **`run(command, args)`** asks Singularity to run a declared program. There is no shell; arguments are passed as they are. It always resolves, never rejects (except for wrong argument types). Look at `status` and `timedOut`:
 
@@ -223,6 +257,49 @@ There is no `PATH`. The plugin's own `.env` and `bunfig.toml` are not read.
 ### Programs run by `singularity.run` are not sandboxed
 
 The sandbox covers the plugin's Bun process only. A program started through `singularity.run` runs **as the user, with network access and with the app's own environment**. Only the leading sub-command words are checked. Reviewers should treat every `commands` entry as a program with full user powers and network access. Never put secrets in arguments.
+
+### Programs kept running: `singularity.spawn`
+
+`run` starts a program, waits up to 60 seconds and hands back its output. Some programs are meant to keep running and talk over their input and output (the Assistant keeps `claude` running for a whole conversation). For those, list the program under `permissions.programs` and start it with `spawn`. Singularity starts it outside the sandbox and carries its input and output as messages; to the plugin it looks like a Node child process (the shape the Claude Agent SDK's `spawnClaudeCodeProcess` asks for):
+
+```ts
+type SpawnedProgram = {
+  stdin: Writable;            // Node Writable; end() closes the program's input
+  stdout: Readable;           // Node Readable of Buffers
+  killed: boolean;            // true once kill() asked for the program to end
+  exitCode: number | null;    // its exit status once it ended by itself; null before, and when a signal ended it
+  kill(signal?: "SIGTERM" | "SIGKILL" | "SIGINT"): boolean;   // SIGTERM by default; SIGKILL follows after 2 s
+  on(event: "exit", listener: (code: number | null, signal: string | null) => void): SpawnedProgram;
+  on(event: "error", listener: (error: Error) => void): SpawnedProgram;
+  // once() and off() too
+};
+
+const program = singularity.spawn("claude", ["--version"], { env: { CLAUDE_CONFIG_DIR: folder } });
+program.stdout.on("data", (chunk) => { /* ... */ });
+program.on("exit", (code, signal) => { /* once, after the last output */ });
+program.on("error", (error) => { /* Singularity refused or couldn't start it */ });
+```
+
+Rules:
+
+- **Singularity builds the program's environment, not the plugin**: the user's real `HOME`, `USER` and `LOGNAME`, the login shell's `PATH`, `TMPDIR`, `LANG`, and `CLAUDE_AGENT_SDK_CLIENT_APP=singularity/<version>`. Of `options.env`, only names listed in `programEnv` are passed on (empty values are dropped); the rest is dropped without a word. Nothing else is inherited from the app.
+- It starts at the path pinned at approval, with the arguments as they are (no shell), in the plugin's data folder.
+- **One program at a time** per plugin. Wait for `exit` before starting the next one.
+- **It ends with the plugin**: when the plugin stops, is paused, changed or removed, or the app quits, the program and everything it started get SIGTERM, then SIGKILL 2 seconds later (at quit, SIGKILL at once).
+- **Read its output.** Singularity holds at most about 1 MB of output you haven't read, and stops reading the program until you do, so a slow reader slows the program down. `exit` comes only after the last output, so a plugin that never reads stdout never hears the exit. There is no such brake the other way: `stdin.write` never pushes back, and more than 16 MB of input the program hasn't taken ends it.
+- The program's error output (stderr) goes to the plugin log, line by line, as `<program>: <line>` (cut to 2000 characters). Don't make a program print secrets there.
+- A refused start emits `error` with one of these reasons, then `exit` with code 126 (with no `error` listener, the reason goes to the log):
+
+| Reason | When |
+|---|---|
+| `programs are off in a test copy` | Singularity runs with `SINGULARITY_HOME` set (a test or development copy). Programs are refused there unless the owner started it with `SINGULARITY_REAL_PROGRAMS=1`. |
+| `not allowed by the manifest` | The name isn't in `permissions.programs`, or has no pinned path. |
+| `the program is missing or changed` | The pinned path is no longer an allowed program. |
+| `a program is already running` | One is still running for this plugin. |
+| `could not start: <reason>` | The system couldn't start it. |
+
+- `spawn` throws `TypeError` for wrong argument types.
+- **Like `run`, the program is not sandboxed**: it acts as the user, with network access. Arguments are free. What a program can do with them is the reviewer's business (see the review checklist).
 
 ## The page API
 
@@ -303,18 +380,73 @@ is delivered to the page only when all of these hold:
 
 Otherwise the page gets `{ error: "fill blocked" }`. Use `https://` patterns in `fillForms` for sensitive sites, so a fill never reaches an `http://` page. Anything other than a well-formed `fill` object (wrong types) is blocked too. Set the fields with `singularity.fillLogin` in `page.ts`.
 
+## A plugin's own page (panel and tab)
+
+With `panel` in the manifest, the plugin has a page of its own, not inside any website. The user shows it in a panel at the right of the window (View menu, the palette, or ⌃⌘J), or with Open as Tab as a tab in the sidebar, which can be pinned, put in a folder or in a split. The frame around it (the panel's header with its menu, the tab's row) is Singularity's; everything inside is the plugin's page. The Assistant (`Plugins/assistant/panel.tsx`) is the example.
+
+- **One page, one place.** A plugin has exactly one page. Open as Tab moves it into a tab (and closes the panel); Move to Side Panel moves it back. Hiding the panel or closing the tab hides the page; the background and what it keeps go on. So the page can always assume it is the only copy of itself on screen. It may still be closed and opened again at any time: ask the background for the current state when it starts (the Assistant sends `hello`).
+- **It runs whenever it is approved.** A plugin with a panel needs no Space switch: its background starts as soon as it is approved, and messages from its page are answered in every Space. The per-Space switches only matter for a page script, and are shown only when the plugin has one.
+- **Only while the background runs.** The page is served only while the plugin's background is running and its files are the approved ones. Otherwise the panel and the tab show Singularity's own "<title> isn't running" page with the reason (not approved, changed since approval, a program missing, stopped after crashes) and a button to Settings -> Plugins. When the background restarts after a crash, the page is loaded again.
+
+### The page API
+
+The page gets a global `singularity` with exactly two members:
+
+```ts
+declare global {
+  interface Window {
+    singularity: {
+      send(payload: unknown): Promise<unknown>;
+      onMessage(handler: (payload: unknown) => void): void;
+    };
+  }
+}
+```
+
+- **`send(payload)`** reaches the background's `onPageMessage` handler with `tabID: "panel"` and `frameHost: ""`, and resolves with its answer. At most 256 KB. It rejects with `the message is larger than 256 KB`, with `the plugin isn't running or didn't answer` (also after 75 seconds without an answer), `only the plugin's own page can send messages` (from a frame inside the page), or `malformed message`.
+- **`onMessage(handler)`** receives what the background sends with **`singularity.panel.post(payload)`**. That is how the background tells the page about things the page didn't ask for, such as the pieces of an answer as they stream in. A post is dropped when no page is open (the background can't tell, so keep the state in the background and let the page ask for it). Posts that arrive before the page set a handler wait for it (at most 1000). `panel.post` throws `TypeError` (`panel.post needs a JSON value`) for something that isn't JSON and `RangeError` (`panel.post: the message is larger than 256 KB`) above 256 KB.
+
+`singularity` exists only on the plugin's own origin, and Singularity checks the sender of every message again.
+
+### Rules for the page
+
+1. **The policy.** Every response carries a Content-Security-Policy: scripts, styles, images and fonts only from the plugin's own files (`data:` images too), inline styles allowed; no inline scripts, no `eval` or `new Function`, no frames, no forms. Write all code in files; put event handlers in code, not in HTML attributes.
+2. **No network.** `fetch`, `XMLHttpRequest`, WebSockets, images from other sites and frames are blocked (`connect-src 'none'`), WebRTC is switched off, and navigation away from the page, new windows (`window.open`, `target=_blank`) and downloads are refused. `alert`, `confirm` and `prompt` are answered at once and never shown; camera and microphone are refused. Its own storage (`localStorage` and the like) lives in memory only and is gone after a restart: keep state in the background (`singularity.storage`). Everything from outside comes through the background.
+3. **Where the page sits.** `/` is the page named in `panel.page`. A script page (`.ts`, `.tsx`, `.jsx`, `.mts`) may be anywhere in the folder: Singularity serves a small shell page (a `<div id="root">` and the script) for it. An HTML page must sit at the top of the folder (in a subfolder its relative links would point to the wrong place, so it isn't served). An HTML page gets no import map.
+4. **TypeScript and TSX** are compiled on request, one file at a time, the way TS/TSX artifacts are. Imports of your own files stay imports (`import { render } from "./markdown.ts"`; `./markdown` finds `markdown.ts` too). Compile errors show in the page. Types are stripped, not checked.
+5. **JSX.** Compiled TSX imports React's runtime (`react/jsx-runtime`) unless the file starts with a pragma naming another one. For Preact (what the Assistant uses: plain ES module files, no build step):
+
+   ```tsx
+   /** @jsxImportSource preact */
+   import { render } from "preact";
+   render(<p>Hello</p>, document.getElementById("root")!);
+   ```
+
+6. **Packages through the import map.** Bare imports (`"preact"`, `"preact/hooks"`, `"preact/jsx-runtime"`) are resolved by an import map Singularity builds from the packages in your `package.json` and their `package.json` `exports` (or `module`/`main`), preferring the `browser`, `import`, `module` and `default` conditions, `.js`/`.mjs` files only. Nothing is bundled: the browser loads each file from `node_modules`, so a package must ship browser-ready ES modules. Packages for the page are declared and installed like any other (see Packages).
+7. **A stylesheet** is not in the shell page. Add it from your script (`'self'` allows it):
+
+   ```ts
+   const link = document.createElement("link");
+   link.rel = "stylesheet";
+   link.href = "./panel.css";
+   document.head.appendChild(link);
+   ```
+
+8. **Everything a model, a program or a website says is untrusted text.** Show it as text (a text node, or a Preact text child, which is escaped). Never put it into `innerHTML`; the Assistant's `markdown.ts` builds elements one by one and gives them no attributes.
+9. **The page sees nothing else.** No page agent, no other plugin's scripts, no websites, and no agent tool can list or read a plugin's tab. Web commands (Find, Reload, Zoom, Print) are off for it.
+
 ## Packages
 
-You may use npm packages in the background file. The rules are strict because the install runs outside the sandbox:
+You may use npm packages in the background file and in the plugin's own page. The rules are strict because the install runs outside the sandbox:
 
 - Only `dependencies` in `package.json`, each at an **exact version** (`"1.2.3"`) from the npm registry. Not allowed: ranges (`^1.2.0`), tags (`latest`), `file:`, `link:`, `workspace:`, git or GitHub specs, URLs, `npm:` aliases, other dependency groups, and keys such as `overrides`, `resolutions`, `workspaces`.
 - `bun.lock` is required and must be committed. It must match `package.json`, and must come from **Bun 1.4.4** (the shape the checker accepts). No comments, no CR line endings; trailing commas are fine in `bun.lock`. `package.json` must be strict JSON. Create the lock with `bun install` using that Bun version.
 - No `.npmrc`.
 - Packages that use npm aliases can't be used. That rules out `glob@10`, `rimraf@5`, `jackspeak` and anything depending on them.
-- Singularity installs packages itself at approval, with `--ignore-scripts`, so install scripts never run. The approval sheet says how many packages are installed.
+- Singularity installs packages itself at approval, with `--ignore-scripts`, so install scripts never run, and with `--omit=optional`, so optional packages (such as the platform binaries a package could swap in) are never installed. The approval sheet says how many packages are installed.
 - `package.json` and `bun.lock` are at most 1 MB.
 - A change to `package.json`, `bun.lock` or anything in `node_modules` needs a new approval, **even in development mode**.
-- `page.ts` cannot import packages. If the page needs logic, put it in the background and `send`.
+- `page.ts` cannot import packages. If the page script needs logic, put it in the background and `send`. The plugin's own page can (through its import map, see A plugin's own page).
 
 ## Approval, fingerprints and development mode
 
@@ -466,11 +598,21 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 | Edited a file after approval, development mode off | the plugin is paused until it is approved again |
 | Edited `bun.lock` with development mode on | the plugin is paused until it is approved again |
 | Added a site to `pageAdditions` | the plugin needs approval again (even in development mode) |
+| `singularity.run("claude", ...)` for a name listed only in `programs` | resolves with `status: 126`, `stderr: "not allowed by the manifest"` (`run` is for `commands`) |
+| A second `spawn` before the first program's `exit` | `error` with `a program is already running`, then `exit` with 126 |
+| `spawn` in a test copy of Singularity (`SINGULARITY_HOME`) | `error` with `programs are off in a test copy` |
+| `{ env: { HOME: "/tmp" } }` or a name not in `programEnv` | silently not passed; the program gets Singularity's own value or nothing |
+| Never reading the program's `stdout` | the program stalls after about 1 MB of output, and `exit` never comes |
+| `fetch(...)` in the plugin's own page | blocked by the page's policy |
+| `<script>` inline in an HTML page, or `onclick="..."` | blocked by the page's policy; put code in files |
+| `"panel": { "page": "ui/index.html", ... }` | not served (an HTML page must sit at the top of the folder); a script page in a subfolder is fine |
+| TSX without `/** @jsxImportSource preact */` while using Preact | the page asks for `react/jsx-runtime`, which the import map doesn't have |
+| Expecting `panel.post` to reach a page that isn't open | it is dropped; let the page ask for the state when it opens |
 
 ## Review checklist for people (five minutes)
 
-1. **Permissions vs purpose.** Read the approval sheet. Does each line match what the plugin says it does? `<all_urls>` for a plugin that only needs one site is a flag. Treat every `commands` entry as a program with full user powers and network access (not sandboxed; only its leading words are checked). It should be a program the plugin obviously needs, with narrow sub-commands.
-2. **DOM network routes in `page.ts`.** Search for `Image`, `.src`, `createElement`, `innerHTML`, `insertAdjacentHTML`, `<img`, `<script`, `<link`, `url(`, `location`, `.submit(`, `form`, `window.name`. Anything that could carry page data to a URL is a reason to reject. Site data (cookies, storage) isn't available to page scripts, but a `<script>` element inserted into the page runs in the page's own world and can read them: any inserted `<script>`, inline event-handler attribute (`onerror=`, `onclick=`...) or `javascript:` URL is a reason to reject. So is reaching into other frames (`window[0]`, `frames`, `parent`, `top`).
+1. **Permissions vs purpose.** Read the approval sheet. Does each line match what the plugin says it does? `<all_urls>` for a plugin that only needs one site is a flag. Treat every `commands` and `programs` entry as a program with full user powers and network access (not sandboxed; for `commands` only the leading words are checked, for `programs` nothing is). It should be a program the plugin obviously needs, with narrow sub-commands. Each `programEnv` name should be one the program obviously needs.
+2. **DOM network routes in `page.ts`.** Search for `Image`, `.src`, `createElement`, `innerHTML`, `insertAdjacentHTML`, `<img`, `<script`, `<link`, `url(`, `location`, `.submit(`, `form`, `window.name`. Anything that could carry page data to a URL is a reason to reject. Site data (cookies, storage) isn't available to page scripts, but a `<script>` element inserted into the page runs in the page's own world and can read them: any inserted `<script>`, inline event-handler attribute (`onerror=`, `onclick=`...) or `javascript:` URL is a reason to reject. So is reaching into other frames (`window[0]`, `frames`, `parent`, `top`). In a plugin's own page (`panel`), look for `innerHTML`, `insertAdjacentHTML` and `dangerouslySetInnerHTML`: text from the background, a model or a website must be shown as text.
 3. **What goes to the background, and what comes back.** In `page.ts`, look at every `send(...)`. Is only the needed data sent (not the whole page text)? In `background.ts`, is the payload checked, and is `frameHost` used instead of a host from the payload?
 4. **Fills happen only after a menu pick.** Any `fillLogin` or `fill` reply should come after a `showMenu` pick. Check that `fillForms` is as narrow as possible and uses `https://`.
 5. **Secrets in logs.** Search for `log(` and `console.`. Counts and error kinds are fine; values are not. Check that `stderr` of programs isn't logged or returned blindly.
@@ -478,5 +620,8 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 7. **Code quality.** Plain readable TypeScript. No minified, obfuscated or generated code, no strange encodings, no `atob`/base64 blobs.
 8. **No code from the data folder.** The data folder is writable and never reviewed: no `import()`, `require`, `eval` or `new Function` of anything read from it (or built at run time) in `background.ts`.
 9. **No secrets in storage.** `singularity.storage` and the data folder are plain files. Search `background.ts` for `storage.set` and file writes: a password, token, session cookie or one-time code being saved is a reason to reject.
+10. **How `spawn` is called, and with which arguments.** A program in `programs` runs as the user, with network access, and the plugin may pass it any arguments. For `claude` that includes switching on every tool and skipping its permission prompts, which is the power to run anything as you. Search for `spawn(` (and for whatever is handed to an SDK as its spawn function) and read the arguments that are passed, including the ones a package builds: the bundled Assistant starts `claude` with no tools (`tools: []`), none of your settings, hooks or MCP servers (`settingSources: []`, `mcpServers: {}` with `strictMcpConfig: true`) and no skills (`skills: []`), which the program receives as `--tools= --setting-sources= --strict-mcp-config`. That reviewed code is what keeps it harmless; the app does not enforce it. Check that only the expected names go into `env`.
+11. **The packages nobody reads.** A package like the Claude Agent SDK brings about 100 others (61 MB). They are pinned and fingerprinted, but no reviewer reads them, and the background runs their code. So review stretches from "the whole plugin in a few minutes" to "the plugin's own files". Prefer plugins with few packages; for the rest, the trust is in the package's publisher, and the sandbox (no network, its own folders only) is what limits them. The program they start is not sandboxed: item 10 matters most.
+12. **Version drift between an SDK and the program it drives.** The plugin pins its SDK, while the program (the user's `claude`) updates itself. The two are released together (SDK 0.3.323 with Claude Code 2.1.323), so after a while they can stop understanding each other and the chat fails. A plugin that drives a program should show both versions when it fails (the Assistant does), and its author should update the pinned SDK now and then; each update of the packages needs a new approval.
 
 If a plugin passes these, approving it is reasonable. If any step is unclear, ask the author or don't approve.
