@@ -472,3 +472,30 @@ test("Save config folder with a stored session keeps the conversation", async ()
   expect(lastState().messages).toEqual([{ role: "user", text: "kept" }]);
   expect(storage.get("session")).toBe("s1");
 });
+
+test("a restart drops a message held for the billing notice", async () => {
+  const { dir, provider, send, lastState } = await make({ session: "s1" }, [{ role: "user", text: "earlier" }]);
+  await send({ type: "hello" });
+  provider.emit(ready("api"));
+  await send({ type: "send", text: "Hi" });
+  const restarted = await send({ type: "setConfigFolder", path: "/Users/a/.claude-b" });
+  expect(restarted.messages).toEqual([{ role: "user", text: "earlier" }]);
+  // A failed resume after the restart greys out only what was really sent before.
+  provider.emit({ type: "error", kind: "other", message: "gone", resumeFailed: true });
+  provider.emit(ready("api"));
+  expect(lastState().messages).toEqual([{ role: "user", text: "earlier", stale: true }]);
+  // OK sends nothing: the held message is gone.
+  await send({ type: "billingSeen" });
+  expect(provider.sent).toEqual([]);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(await new ConversationFile(dir).load()).toEqual([{ role: "user", text: "earlier", stale: true }]);
+  // Try Again is a restart too.
+  const second = await make();
+  await second.send({ type: "hello" });
+  second.provider.emit(ready("api"));
+  await second.send({ type: "send", text: "Hi" });
+  second.provider.emit({ type: "error", kind: "programEnded", message: "x" });
+  await second.send({ type: "retry" });
+  await second.send({ type: "billingSeen" });
+  expect(second.provider.sent).toEqual([]);
+});

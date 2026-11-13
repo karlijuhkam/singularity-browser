@@ -482,7 +482,10 @@ export function createClaudeProvider(deps: Dependencies): Provider {
   function endRun(): void {
     if (run === null) return;
     run.end();
-    lastExit = run.exited;
+    // Chained, not replaced: a run stopped while it was still waiting for an earlier program has
+    // no program of its own and counts as exited at once, but that earlier program may still be
+    // ending.
+    lastExit = Promise.all([lastExit, run.exited]).then(() => {});
     run = null;
   }
 

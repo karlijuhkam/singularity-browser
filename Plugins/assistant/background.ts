@@ -155,8 +155,21 @@ export function createAssistant(deps: Dependencies) {
   }
 
   function restartProvider(): void {
+    dropHeld();
     provider.stop();
     startProvider();
+  }
+
+  /**
+   * A message held for the billing notice was never sent: an error or a restart takes it out of
+   * the list again (the user types it again once the Assistant is ready).
+   */
+  function dropHeld(): void {
+    if (held === null) return;
+    const last = messages.at(-1);
+    if (last && last.role === "user" && last.text === held) messages.pop();
+    conversation.update(messages);
+    held = null;
   }
 
   function onEvent(event: ProviderEvent): void {
@@ -199,13 +212,7 @@ export function createAssistant(deps: Dependencies) {
         }
         status = statusFor[event.kind];
         error = event.kind === "other" ? event.message.slice(0, 2000) : null;
-        if (held !== null) {
-          // Never sent (it waited for the billing notice): take it out again.
-          const last = messages.at(-1);
-          if (last && last.role === "user" && last.text === held) messages.pop();
-          conversation.update(messages);
-          held = null;
-        }
+        dropHeld();
         void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
         log("provider error: " + event.kind);
         break;

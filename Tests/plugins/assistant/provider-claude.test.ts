@@ -207,6 +207,34 @@ test("stop, then start: the new program starts only after the old one has ended"
   provider.stop();
 });
 
+for (const restarts of [2, 3]) {
+  test(`stop and start ${restarts} times in quick succession: each start waits its turn`, async () => {
+    const { spawn, programs, refused } = fakeSpawn([chat([helloTurn("sess-1")])]);
+    const provider = createClaudeProvider({ spawn, loadQuery });
+    const first: ProviderEvent[] = [];
+    provider.start({}, (event) => first.push(event));
+    await waitFor(() => of(first, "ready").length > 0, "ready");
+
+    // Right away, before any of the new programs started (New Chat clicked twice, a double-click
+    // on Try Again, New Chat right after Save config folder).
+    let last: ProviderEvent[] = [];
+    for (let i = 0; i < restarts; i++) {
+      provider.stop();
+      last = [];
+      const events = last;
+      provider.start({ resume: "s1" }, (event) => events.push(event));
+    }
+    await waitFor(() => of(last, "ready").length > 0, "the last ready");
+    expect(refused).toEqual([]);
+    expect(of(last, "error")).toEqual([]);
+    expect(programs.length).toBe(2);
+    expect(programs[0].ended).toBe(true);
+    provider.send("Hi");
+    await waitFor(() => of(last, "done").length > 0, "done");
+    provider.stop();
+  });
+}
+
 test("a refused start while resuming is an ordinary error, not a failed resume", async () => {
   const { provider, events, programs } = start([chat([])], { resume: "s1" }, "the program was not found");
   await waitFor(() => of(events, "error").length > 0, "an error");
