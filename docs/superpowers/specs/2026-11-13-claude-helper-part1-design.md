@@ -322,9 +322,9 @@ is never used; the builder checks how `PluginPackages` does that with `--frozen-
   Space switched on; the native "isn't running" page; panel ↔ tab moves with a real `AppState`.
 - Bun tests for the plugin's own logic with a fake `singularity`.
 - **Never in tests or trials: the real `claude`.** Tests use the fixture program. One opt-in manual
-  check, like `RealAgentConnectTests`, sends one message with the real one, pointed at a throwaway
-  `CLAUDE_CONFIG_DIR` is not possible here (it would be signed out), so it runs on the owner's
-  account, by the owner's choice, with `SINGULARITY_REAL_PROGRAMS=1`.
+  check, like `RealAgentConnectTests`, sends one message with the real one. A throwaway
+  `CLAUDE_CONFIG_DIR` cannot be used for it (that folder would be signed out), so it runs on the
+  owner's account, by the owner's choice, with `SINGULARITY_REAL_PROGRAMS=1`.
 - By the owner's hands: the panel's feel, streaming, Stop, Open as Tab and back, restart, a signed
   out Claude Code.
 
