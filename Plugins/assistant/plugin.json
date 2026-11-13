@@ -1,0 +1,13 @@
+{
+  "id": "assistant",
+  "name": "Assistant",
+  "version": "0.1.0",
+  "description": "A built-in helper you can chat with, running on your own Claude sign-in.",
+  "author": "Karli Juhkam",
+  "background": "background.ts",
+  "panel": { "page": "panel.tsx", "title": "Assistant" },
+  "permissions": {
+    "programs": ["claude"],
+    "programEnv": ["CLAUDE_CONFIG_DIR", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SDK_READS_SESSION_STATE"]
+  }
+}

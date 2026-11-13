@@ -9,3 +9,6 @@ __pycache__/
 
 # Brainstorm mockups (superpowers visual companion)
 .superpowers/
+
+# Plugin packages are installed by Singularity at approval, never committed
+node_modules/
