@@ -24,6 +24,9 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
     public var folderID: UUID?
     /// The tab was opened by an agent (shown with an agent badge in the sidebar).
     public var openedByAgent: Bool
+    /// For a terminal: the project it was started in (see Project.swift). Stored, because the
+    /// terminal's `workingDirectory` follows the shell as it moves and so can't tell.
+    public var projectID: UUID?
 
     public init(id: UUID = UUID(), kind: TabKind, title: String = "", isPinned: Bool = false, folderID: UUID? = nil,
                 openedByAgent: Bool = false) {
@@ -44,6 +47,7 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         folderID = try container.decodeIfPresent(UUID.self, forKey: .folderID)
         openedByAgent = try container.decodeIfPresent(Bool.self, forKey: .openedByAgent) ?? false
+        projectID = try container.decodeIfPresent(UUID.self, forKey: .projectID)
     }
 
     public static func web(_ url: URL, title: String = "") -> BrowserTab {

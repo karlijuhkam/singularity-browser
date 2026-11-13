@@ -10,11 +10,15 @@ public struct Folder: Codable, Hashable, Identifiable, Sendable {
     /// The folder this one is inside; nil at the top level. (Missing in space.json files written
     /// before folders could be nested, which decodes as nil.)
     public var parentID: UUID?
+    /// The project terminals opened in this folder start in (see Project.swift); nil = none of
+    /// its own. Optional, so files written before projects existed decode as nil.
+    public var projectID: UUID?
 
-    public init(id: UUID = UUID(), name: String, isExpanded: Bool = true, parentID: UUID? = nil) {
+    public init(id: UUID = UUID(), name: String, isExpanded: Bool = true, parentID: UUID? = nil, projectID: UUID? = nil) {
         self.id = id
         self.name = name
         self.isExpanded = isExpanded
         self.parentID = parentID
+        self.projectID = projectID
     }
 }

@@ -1,9 +1,9 @@
 # Projects in a Space: design
 
-Status: **approved by the owner on 2026-11-11, not built.** Building is parked; the owner will
-start it from another session. The next step is the implementation plan. Sections marked
-"Builder's call" were chosen by the writer; the owner read the list of them and approved the
-design as written.
+Status: **approved by the owner on 2026-11-11, built on 2026-11-12** (plan
+`docs/superpowers/plans/2026-11-12-projects.md`). Sections marked "Builder's call" were chosen
+by the writer; the owner read the list of them and approved the design as written. Differences
+from this text are listed under "As built" at the end.
 
 ## Intent: why
 
@@ -184,6 +184,35 @@ No new dependency.
 
 Build this after the onboarding work has landed: the design leans on `SpaceFields` and
 `SpaceEditorSheet` as that branch leaves them.
+
+## As built (2026-11-12)
+
+Built as designed. Small things the design did not say, decided while building:
+
+- The picker has no separate title: the palette's text field shows "New terminal in…" as its
+  placeholder. The row of the last used project says "Last used" at its right.
+- The folder header's "Project ▸" menu is only there when the Space has projects. "New Terminal"
+  is always there.
+- The palette's "New Terminal in…" command is only listed when the Space has projects. The menu
+  item and ⇧⌥⌘T always exist; without projects they open a terminal like New Terminal.
+- A project name longer than 18 characters is cut in the middle in the sidebar
+  ("acme-web…monorepo"), so a tag cannot take the whole row. The tag keeps its width and the
+  tab's title truncates instead.
+- Clearing a project's name in Edit Space gives it its folder's name back on Save. "Add
+  Project…" accepts several folders at once.
+- **One addition to the split rule.** A terminal opened in a split is still placed in Tabs, but
+  the split's row sits in the folder of its first tab. With such a pane focused, New Terminal
+  now treats it as being in that folder (lands there, starts in that folder's project), and a
+  split terminal opened beside a web pane of that split takes that folder's project. Without
+  this, a task folder holding "ticket page + terminal" as a split would ask every time and put
+  the new terminal in Tabs. The design did not cover this case.
+- A new terminal opens its folder (and the folders around it) in the sidebar if they were closed.
+- Choosing "New Terminal" in the command palette opens the picker with an empty field.
+- A project's folder cannot be changed in place: remove it and add it again (folders and
+  terminals that pointed at it lose it). Left out; say if it is missed.
+- A terminal row's tooltip names its project (also when the row shows no tag).
+- Not exercised by hand: this was verified with unit tests, `AppState` tests and off-screen
+  pictures of the sidebar and Edit Space. `IDEAS.md` lists what is left for a hands-on check.
 
 ## Left to the builder
 

@@ -465,11 +465,15 @@ echo "  architectures: $(lipo -archs "$APP/Contents/MacOS/Singularity")"
 
 # Stamp the updater's keys into the bundle's own Info.plist (before signing: the signature seals it).
 # Only bundles with both keys create an updater; --skip-notarize builds get none.
+# Only a real release declares the http/https schemes (default browser); scratch and
+# --skip-notarize bundles never do.
 # plutil -replace adds a key or replaces it, and takes the value as one argument.
 BUNDLE_PLIST="$APP/Contents/Info.plist"
 if [[ "$MODE" == release ]]; then
   plutil -replace SUFeedURL -string "$FEED_URL" "$BUNDLE_PLIST"
   plutil -replace SUPublicEDKey -string "$PUBLIC_ED_KEY" "$BUNDLE_PLIST"
+  # Only a real release receives links from other apps (little windows); see claim_web_links.
+  claim_web_links "$BUNDLE_PLIST"
 elif [[ "$MODE" == scratch ]]; then
   set_plist_version "$BUNDLE_PLIST" "$VERSION" "$BUILD"
   plutil -replace SUFeedURL -string "$SCRATCH_FEED_URL" "$BUNDLE_PLIST"
@@ -574,6 +578,9 @@ else
   ${EDITOR:-vi} "$NOTES"
   sed -i '' '/^#/d' "$NOTES"
 fi
+# One note per line, without a bullet: each line becomes a list item below. A notes file written
+# as a Markdown list would otherwise come out with a dash inside every item (0.3.0 did).
+sed -i '' -E 's/^[[:space:]]*[-*][[:space:]]+//' "$NOTES"
 grep -q '[^[:space:]]' "$NOTES" || fail "the release notes are empty; release cancelled."
 if (( NOT_NOTARIZED )); then
   { echo "Not notarized: works on the developer's Mac; Gatekeeper stops it elsewhere."; cat "$NOTES"; } >"$NOTES.new"

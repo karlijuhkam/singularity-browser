@@ -67,6 +67,17 @@ final class AppState {
     let inbox = InboxCenter()
     /// macOS notifications and the Dock badge for the inbox (wired in `init`).
     @ObservationIgnored private(set) var inboxNotifier: InboxNotifier?
+    /// Little windows: links from other apps, each in its own throwaway window.
+    let little = LittleWindows()
+    /// The browser window (set by `MainView`). Kept so it can be brought forward, and so sheets
+    /// that belong to it don't land on a little window.
+    @ObservationIgnored weak var mainWindow: NSWindow? {
+        didSet { if mainWindow != nil { mainWindowWasShown = true } }
+    }
+    /// False only during launch, until the browser window exists.
+    @ObservationIgnored private var mainWindowWasShown = false
+    /// Opens the browser window again after it was closed (SwiftUI's `openWindow`; set by `MainView`).
+    @ObservationIgnored var openMainWindow: (() -> Void)?
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
     /// Self-updating (Sparkle), only in a copy that may update itself (`UpdatePolicy`).
@@ -146,6 +157,19 @@ final class AppState {
         }
 
         web.state = self
+        little.state = self
+        // The inbox belongs to the browser window, also while a little window is in front: its panel
+        // opens there, and a terminal counts as "looked at" only while the *browser* window is key
+        // (with a little window in front, the owner is reading a link, not the terminal behind it).
+        let browserWindow: () -> NSWindow? = { [weak self] in
+            if let window = self?.mainWindow, window.isVisible { return window }
+            let littleWindows = self?.little.windows.map(\.window) ?? []
+            return NSApp.windows.first { window in
+                window.isVisible && window.canBecomeMain && !littleWindows.contains { $0 === window }
+            }
+        }
+        inbox.panelController.parentWindow = browserWindow
+        inbox.windowIsKey = { browserWindow()?.isKeyWindow ?? false }
         web.pluginScripts = pluginScripts
         pluginScripts.tabID = { [weak web] webView in web?.tabID(for: webView) }
         plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
@@ -360,7 +384,11 @@ final class AppState {
     /// us then, and closing the flow would leave the Arc import over the sidebar, or take a
     /// plugin's approval sheet away together with step 4.
     func closeTabCommand() {
-        if welcomeCoversWindow {
+        // A little window in front: ⌘W closes it, never a tab of the main window behind it.
+        if let front = little.frontWindow {
+            // Not while a sheet is open on it (a page's dialog, a login, printing): answer that first.
+            if front.window.attachedSheet == nil { little.close(front) }
+        } else if welcomeCoversWindow {
             if !welcomeSheetIsOpen { closeWelcome() }
         } else {
             closeSelectedTab()
@@ -504,6 +532,9 @@ final class AppState {
     /// and moves its folder to the Trash. The last remaining Space cannot be deleted.
     func deleteSpace(_ id: UUID) {
         guard spaces.count > 1, let space = space(id) else { return }
+        // Its little windows first: their pages are in no tab list, and the Space's WebKit data
+        // store (removed below) can't be deleted while a web view still uses it.
+        little.spaceWillBeDeleted(id)
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
         for tab in space.tabs { inbox.tabClosed(tab.id) }
@@ -579,6 +610,55 @@ final class AppState {
         loadSelectedTab()
     }
 
+    // MARK: - Little windows
+
+    /// A link from another app: it opens in its own little window (see `LittleWindows`).
+    func openLink(_ url: URL) {
+        // A link that started the app arrives while the browser window is still being put on
+        // screen; opened right away, the little window would end up behind it. So wait until the
+        // browser window is there (it reports itself through `MainView`), at most a second.
+        guard !mainWindowWasShown, !little.staysOffScreen else { little.open(url); return }
+        Task { @MainActor in
+            for _ in 0..<20 where mainWindow?.isVisible != true {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            little.open(url)
+        }
+    }
+
+    /// Brings the browser window forward, opening it again if it was closed.
+    func showMainWindow() {
+        if let mainWindow, mainWindow.isVisible {
+            mainWindow.makeKeyAndOrderFront(nil)
+        } else if let openMainWindow {
+            openMainWindow()
+        } else {
+            mainWindow?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// "Open in <home Space>" in a little window: the live page becomes a tab of its Space. The
+    /// controller is already in the registry under `tabID`, so adding a tab with that id is all
+    /// it takes; the pane then shows the same web view, with everything on the page as it was.
+    func adoptLittlePage(_ controller: WebTabController, fallbackURL: URL) {
+        let spaceID = controller.spaceID
+        guard space(spaceID) != nil else { return }
+        let url = controller.failedAddress ?? controller.webView.url ?? fallbackURL
+        let tab = BrowserTab(id: controller.tabID, kind: .web(url: url), title: controller.pageTitle)
+        mutateSpace(spaceID) { $0.append(tab) }
+        controller.joinSpace()
+        showTab(tab.id, in: spaceID)
+    }
+
+    /// The page the menu's page commands (Find, Reload, Back, Zoom, Print, …) act on: the little
+    /// window's when one has the keyboard, otherwise the selected tab's (nil while the welcome
+    /// flow hides it).
+    var frontController: WebTabController? {
+        if let front = little.frontWindow { return front.controller }
+        guard !welcomeCoversWindow else { return nil }
+        return selectedTab.flatMap { web.existingController($0.id) }
+    }
+
     /// Opens a URL in a background tab right after `sourceTabID` (Cmd+click on a link).
     func openInBackgroundTab(_ url: URL, spaceID: UUID, after sourceTabID: UUID) {
         mutateSpace(spaceID) { $0.insert(BrowserTab.web(url), after: sourceTabID) }
@@ -593,16 +673,64 @@ final class AppState {
         web.controller(for: tab, in: space).load(url)
     }
 
-    /// Opens a terminal tab in the current Space, starting in the Space's working directory.
+    // MARK: - Terminals and projects (the rules are in Core: Project.swift)
+
+    /// New Terminal (⌥⌘T, the sidebar button, the palette). The terminal lands in the selected
+    /// tab's folder. It starts in that folder's project; without one, in a Space that has
+    /// projects, the picker asks first.
     func openTerminal() {
+        newTerminal(inFolder: selectedSpace?.folderForNewTerminal, alwaysAsk: false)
+    }
+
+    /// "New Terminal" in a folder header's menu: the same, in that folder.
+    func openTerminal(inFolder folderID: UUID) {
+        newTerminal(inFolder: folderID, alwaysAsk: false)
+    }
+
+    /// "New Terminal in…" (⇧⌥⌘T): always shows the picker (when the Space has projects), for the
+    /// occasional terminal in another project. It never changes the folder's project.
+    func openTerminalChoosingProject() {
+        newTerminal(inFolder: selectedSpace?.folderForNewTerminal, alwaysAsk: true)
+    }
+
+    private func newTerminal(inFolder folderID: UUID?, alwaysAsk: Bool) {
         guard let space = selectedSpace else { return }
         closeWelcome()
-        let tab = BrowserTab.terminal(workingDirectory: space.workingDirectory)
+        switch space.terminalStart(inFolder: folderID, alwaysAsk: alwaysAsk) {
+        case .start(let directory, let projectID):
+            mutateSpace(space.id) {
+                $0.addTerminal(directory: directory, projectID: projectID, inFolder: folderID, select: true)
+            }
+            loadSelectedTab()
+        case .ask:
+            // The picker is a mode of the command palette. A plain New Terminal inside a folder
+            // that has no project yet also gives the folder the chosen project.
+            showPalette(.newTerminalIn(folderID: folderID, adoptForFolder: !alwaysAsk && folderID != nil))
+        }
+    }
+
+    /// The picker's choice: a project of the Space, or nil for the Space's own folder.
+    func startTerminal(choice projectID: UUID?, inFolder folderID: UUID?, adoptForFolder: Bool) {
+        guard let space = selectedSpace else { return }
+        closeWelcome()
+        let directory = space.project(projectID)?.path ?? space.workingDirectory
         mutateSpace(space.id) {
-            $0.append(tab)
-            $0.selectedTabID = tab.id
+            $0.recordPickerChoice(projectID, adoptForFolder: adoptForFolder ? folderID : nil)
+            $0.addTerminal(directory: directory, projectID: projectID, inFolder: folderID, select: true)
         }
         loadSelectedTab()
+    }
+
+    /// The folder header's Project menu (nil = None).
+    func setFolderProject(_ folderID: UUID, _ projectID: UUID?) {
+        guard let spaceID = selectedSpaceID else { return }
+        mutateSpace(spaceID) { $0.setFolderProject(folderID, projectID) }
+    }
+
+    /// Edit Space's project list. Folders and terminals of a removed project lose it.
+    func setProjects(_ projects: [Project], spaceID: UUID) {
+        guard space(spaceID)?.projects != projects else { return }
+        mutateSpace(spaceID) { $0.setProjects(projects) }
     }
 
     /// Closes a tab. When a terminal is running a program (an agent, an editor, a server),
@@ -929,7 +1057,11 @@ final class AppState {
     /// Opens a new terminal and shows it in a split next to `target`.
     func openTerminalInSplit(edge: SplitEdge, beside target: UUID) {
         guard let space = selectedSpace else { return }
-        let tab = BrowserTab.terminal(workingDirectory: space.workingDirectory)
+        // Never asks: the project of the terminal it goes beside, else that tab's folder's
+        // project, else the Space's folder (`splitTerminalStart`).
+        let start = space.splitTerminalStart(beside: target)
+        var tab = BrowserTab.terminal(workingDirectory: start.directory)
+        tab.projectID = start.projectID
         mutateSpace(space.id) { $0.append(tab) }
         splitTab(tab.id, beside: target, edge: edge)
     }
@@ -1271,13 +1403,16 @@ final class AppState {
 
 // MARK: - Small UI request types
 
-enum PaletteMode: Equatable {
+enum PaletteMode: Hashable {
     /// Cmd+T / Cmd+K: results open in a new tab.
     case newTab
     /// Clicking the address row: URLs load in the selected tab.
     case navigateCurrent
     /// "Split with…": the chosen tab (or a new one) is shown next to `beside`.
     case splitWith(edge: SplitEdge, beside: UUID)
+    /// The "New terminal in" picker: the Space's projects. The terminal lands in `folderID`
+    /// (nil = Tabs); with `adoptForFolder` the chosen project also becomes that folder's.
+    case newTerminalIn(folderID: UUID?, adoptForFolder: Bool)
 }
 
 struct SpaceEditorRequest: Identifiable {

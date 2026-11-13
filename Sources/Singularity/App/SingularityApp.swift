@@ -52,13 +52,40 @@ struct SingularityApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    weak var state: AppState?
+    weak var state: AppState? {
+        // Links that arrived before the app state was attached (a link that started the app).
+        didSet { links.deliver = state.map { state in { [weak state] url in state?.openLink(url) } } }
+    }
+    /// Links from other apps, on their way to little windows.
+    let links = LinkInbox()
     private var appearanceObservation: NSKeyValueObservation?
     private var sigtermSource: DispatchSourceSignal?
 
     /// The icon file (Finder, Launchpad) is the white orb on a dark tile. While running, the Dock
     /// icon follows light/dark mode like the orb on singularity.rroosa.ee: black orb on a light
     /// tile in light mode, white orb on a dark tile in dark mode.
+    /// Take web links ourselves, before AppKit's own handler would: registered this early, it also
+    /// gets the link that started the app. Our handler replaces AppKit's for this one event, so
+    /// SwiftUI never sees the link and doesn't react to it with the main window's scene.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleGetURL(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
+    }
+
+    /// "Open this URL": what macOS sends the default browser when a link is clicked in another app.
+    @objc func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        guard let text = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: text) else { return }
+        links.receive([url])
+    }
+
+    /// The same links, should AppKit's handler be the one that runs after all. Only one of the
+    /// two is ever called for a link (there is one handler per event), so no link opens twice.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        links.receive(urls)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         quitOnSigterm()
         updateDockIcon()

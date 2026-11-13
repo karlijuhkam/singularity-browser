@@ -1,10 +1,7 @@
 # Little windows for links from other apps: design
 
-Date: 2026-11-12. Status: draft, waiting for the owner's approval.
-
-**When:** not before the updates project (`2026-11-12-updates-design.md`) is finished and the
-owner's daily copy runs from `/Applications` (owner decision, 2026-11-12: "let's wait for the
-installed copy and the update work to finish"). See "Which copy receives links".
+Date: 2026-11-12. Status: approved by the owner and built (2026-11-12, "let's build it now"), after
+the updates project was finished and the daily copy moved to `/Applications`.
 
 ## Why
 
@@ -360,3 +357,22 @@ Made while writing, please check:
 10. A link that is a download closes its (empty) little window once the download has started.
 11. Agent approval sheets always appear on the main browser window, never on a little window.
 12. The Settings row compares by bundle id and names the path when another copy is the default.
+
+## As built
+
+- **Receiving links:** the app delegate installs its own handler for the "open URL" Apple event
+  (replacing AppKit's), so SwiftUI is never involved and `handlesExternalEvents` was not needed.
+  `application(_:open:)` stays as the fallback.
+- **Title bar:** an `NSToolbar` (unified compact) with plain AppKit controls: a centred label, an
+  `NSPopUpButton`, an `NSButton`. ⌘O is the File menu's "Open in <Space>".
+- **Only `http`/`https` schemes are declared** by release bundles, no HTML document type, and
+  that is enough: with 0.3.0 installed (2026-11-12) macOS lists `/Applications/Singularity.app`
+  as a handler for both schemes, and after the owner's "Make Default…" it is the default browser
+  (`NSWorkspace.urlForApplication(toOpen:)`).
+- **Tried with a trial bundle (2026-11-12),** started in the background with its own data folder
+  and a link (`open -g -n -a <bundle> --env SINGULARITY_HOME=… <url>`, see CLAUDE.md): a link that
+  starts the app arrives and its little window opens in front of the main window; a second link
+  to the running copy gets a second window; nothing is written to the Space; the frontmost app
+  stays what it was. With a temporary hook (not committed) that closed the main window and then
+  ran "Open in …": the main window came back, the app did not quit, and the page was a tab.
+- **Not checked, for the owner to see in use:** the look of the active window, 1Password filling a login in a little window.

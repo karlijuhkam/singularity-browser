@@ -53,6 +53,18 @@ expect "plist: build set"         [ "$($PB -c 'Print CFBundleVersion' "$TMP/Info
 changed="$(diff "$ROOT/Resources/Info.plist" "$TMP/Info.plist" | grep -c '^[<>]' || true)"
 expect "plist: only two lines changed" [ "$changed" = 4 ]
 
+# claim_web_links adds exactly the http and https schemes; the checked-in Info.plist claims none
+# (only release bundles may receive links from other apps).
+plist_has() { $PB -c "Print $2" "$1" >/dev/null 2>&1; }
+expect_not "plist: the checked-in file claims no URL schemes" plist_has "$ROOT/Resources/Info.plist" CFBundleURLTypes
+cp "$ROOT/Resources/Info.plist" "$TMP/Links.plist"
+claim_web_links "$TMP/Links.plist"
+expect "plist: http claimed"  [ "$($PB -c 'Print CFBundleURLTypes:0:CFBundleURLSchemes:0' "$TMP/Links.plist")" = http ]
+expect "plist: https claimed" [ "$($PB -c 'Print CFBundleURLTypes:0:CFBundleURLSchemes:1' "$TMP/Links.plist")" = https ]
+expect_not "plist: no third scheme" plist_has "$TMP/Links.plist" CFBundleURLTypes:0:CFBundleURLSchemes:2
+expect "plist: still a valid plist" plutil -lint -s "$TMP/Links.plist"
+expect "release.sh: links are claimed in release mode only" [ "$(grep -c 'claim_web_links "\$BUNDLE_PLIST"' "$ROOT/scripts/release.sh")" = 1 ]
+
 # ---- release-helpers.sh -------------------------------------------------------------------------
 source "$ROOT/scripts/lib/release-helpers.sh"
 

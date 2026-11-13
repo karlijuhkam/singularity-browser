@@ -31,6 +31,10 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     /// The owner's per-site choices (camera, microphone, agents, plugins), keyed by site
     /// ("https://example.com"). Sites with nothing chosen are not listed.
     public var siteSettings: [String: SiteSettings]
+    /// The Space's projects: named folders a terminal can start in (see Project.swift).
+    public var projects: [Project]
+    /// The project last chosen in the "New terminal in" picker; it is listed first there.
+    public var lastProjectID: UUID?
 
     public init(
         id: UUID = UUID(),
@@ -45,7 +49,9 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         agentPolicy: AgentPolicy = .ask,
         splits: [SplitGroup] = [],
         agentInspection: Bool = false,
-        siteSettings: [String: SiteSettings] = [:]
+        siteSettings: [String: SiteSettings] = [:],
+        projects: [Project] = [],
+        lastProjectID: UUID? = nil
     ) {
         self.id = id
         self.name = name
@@ -60,6 +66,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         self.splits = splits
         self.agentInspection = agentInspection
         self.siteSettings = siteSettings
+        self.projects = projects
+        self.lastProjectID = lastProjectID
     }
 
     /// Decoding by hand so that space.json files written before a field existed still load
@@ -79,6 +87,8 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         splits = try container.decodeIfPresent([SplitGroup].self, forKey: .splits) ?? []
         agentInspection = try container.decodeIfPresent(Bool.self, forKey: .agentInspection) ?? false
         siteSettings = (try? container.decodeIfPresent([String: SiteSettings].self, forKey: .siteSettings)) ?? [:]
+        projects = try container.decodeIfPresent([Project].self, forKey: .projects) ?? []
+        lastProjectID = try container.decodeIfPresent(UUID.self, forKey: .lastProjectID)
     }
 
     // MARK: - Reading
