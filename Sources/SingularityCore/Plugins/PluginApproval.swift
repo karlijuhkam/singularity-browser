@@ -277,6 +277,8 @@ extension PluginManifest.Permissions {
         }
         if programs.contains(where: { !approved.programs.contains($0) }) { return true }
         if programEnv.contains(where: { !approved.programEnv.contains($0) }) { return true }
+        if frontTab && !approved.frontTab { return true }
+        if browser && !approved.browser { return true }
         return false
     }
 }

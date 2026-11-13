@@ -14,6 +14,8 @@ public enum PluginError: Error, Equatable, Sendable {
     /// A name in `programs` that is invalid, refused, repeated, or beyond the fourth.
     case refusedProgram(String)
     case programsNeedBackground
+    /// `browser` without a program: the browser tools are for a program the plugin keeps running.
+    case browserNeedsProgram
     /// A name in `programEnv` that plugins may not set (or one with no program to receive it).
     case invalidProgramEnv(String)
     case invalidPanelTitle

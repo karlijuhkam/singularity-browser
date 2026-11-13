@@ -36,6 +36,13 @@ public enum PermissionDescriptions {
         if !permissions.programEnv.isEmpty {
             out.append("Passes these settings to it: " + permissions.programEnv.sorted().joined(separator: ", "))
         }
+        if permissions.frontTab {
+            out.append("Know which tab is in front (its Space, title and address), in Spaces where it is switched on")
+        }
+        if permissions.browser {
+            out.append("Use the browser like an agent, in Spaces where it is switched on: read pages, "
+                       + "and open, click and type under each Space's agent policy")
+        }
         if let packages, !packages.packages.isEmpty {
             let n = packages.packages.count
             var line = "Installs \(n) \(n == 1 ? "package" : "packages") from the npm registry"

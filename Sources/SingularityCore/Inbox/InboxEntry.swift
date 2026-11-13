@@ -59,9 +59,11 @@ public struct InboxEntry: Identifiable, Equatable, Sendable {
     public var message: String?           // already cleaned
     public var arrived: Date
     public var deadline: Date?            // approvals only
+    /// The plugin whose program asked (a browser approval from a plugin); nil for everything else.
+    public var pluginID: String?
 
     public init(id: UUID = UUID(), kind: InboxKind, spaceID: UUID, tabID: UUID?, agent: String,
-                message: String?, arrived: Date, deadline: Date? = nil) {
+                message: String?, arrived: Date, deadline: Date? = nil, pluginID: String? = nil) {
         self.id = id
         self.kind = kind
         self.spaceID = spaceID
@@ -70,6 +72,7 @@ public struct InboxEntry: Identifiable, Equatable, Sendable {
         self.message = message
         self.arrived = arrived
         self.deadline = deadline
+        self.pluginID = pluginID
     }
 
     /// Held entries keep an agent's hook call open until the user answers.

@@ -28,16 +28,25 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         public var programs: [String]
         /// Names of settings Singularity passes on to those programs.
         public var programEnv: [String]
+        /// The plugin may know which tab is in front (its Space, title and address), in Spaces
+        /// where it is switched on.
+        public var frontTab: Bool
+        /// The plugin may use the browser like an agent, in Spaces where it is switched on, under
+        /// each Space's agent policy. Needs a program (the Assistant's `claude`).
+        public var browser: Bool
 
         public init(pageAdditions: [String] = [], fillForms: [String] = [],
                     commands: [String: [String]] = [:], network: [String] = [],
-                    programs: [String] = [], programEnv: [String] = []) {
+                    programs: [String] = [], programEnv: [String] = [],
+                    frontTab: Bool = false, browser: Bool = false) {
             self.pageAdditions = pageAdditions
             self.fillForms = fillForms
             self.commands = commands
             self.network = network
             self.programs = programs
             self.programEnv = programEnv
+            self.frontTab = frontTab
+            self.browser = browser
         }
 
         private struct Key: CodingKey {
@@ -50,7 +59,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         /// Decodes by hand so an unknown key (e.g. "cookies") is an error, not silently ignored.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Key.self)
-            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv"]
+            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv", "frontTab", "browser"]
             for key in c.allKeys where !known.contains(key.stringValue) {
                 throw PluginError.unknownPermission(key.stringValue)
             }
@@ -63,6 +72,8 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             network = try field("network", [String]())
             programs = try field("programs", [String]())
             programEnv = try field("programEnv", [String]())
+            frontTab = try field("frontTab", false)
+            browser = try field("browser", false)
         }
     }
 
@@ -79,8 +90,12 @@ public struct PluginManifest: Codable, Equatable, Sendable {
     /// True when the plugin has a page script (the per-Space switches only matter then).
     public var hasPageScript: Bool { page != nil }
 
-    /// The Space switches are about page scripts, so only a plugin with one shows them.
-    public var showsSpaceSwitches: Bool { page != nil }
+    /// The Space switches are about page scripts and about what a plugin may reach in a Space
+    /// (the front tab, the browser), so a plugin with either shows them.
+    public var showsSpaceSwitches: Bool { page != nil || reachesSpaces }
+
+    /// The plugin may look into or act in the owner's Spaces.
+    public var reachesSpaces: Bool { permissions.frontTab || permissions.browser }
 
     // MARK: Loading
 
@@ -158,6 +173,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             throw .refusedProgram(programs.first { name in programs.filter { $0 == name }.count > 1 } ?? programs[4])
         }
         if !programs.isEmpty, background == nil { throw .programsNeedBackground }
+        if permissions.browser, programs.isEmpty { throw .browserNeedsProgram }
         for name in permissions.programEnv where !Self.isAllowedProgramEnv(name) { throw .invalidProgramEnv(name) }
         // Settings with no program to receive them make no sense.
         if !permissions.programEnv.isEmpty, programs.isEmpty { throw .invalidProgramEnv(permissions.programEnv[0]) }
