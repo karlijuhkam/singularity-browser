@@ -146,7 +146,8 @@ struct SidebarEdgeTrigger: NSViewRepresentable {
 
 // MARK: - The width strip
 
-/// The strip along the sidebar's right edge that drags its width. AppKit, because its top end
+/// The strip along the sidebar's right edge that drags its width (and, with `growsLeftward`, the one
+/// along the plugin panel's left edge, which widens as it is dragged left). AppKit, because its top end
 /// lies in the window's invisible title-bar strip, where macOS starts a window drag before asking
 /// the view: as `PaneDragHandleView` does, the window's `isMovable` is switched off while the
 /// pointer is over it. (And no SwiftUI `.help()` here: it adds a view that eats the click.)
@@ -158,6 +159,8 @@ struct SidebarResizeHandle: NSViewRepresentable {
     let ended: () -> Void
     /// Double-click: back to the default width.
     let reset: () -> Void
+    /// The strip is on the left edge of what it sizes: dragging left makes it wider.
+    var growsLeftward = false
 
     func makeNSView(context: Context) -> HandleView {
         let view = HandleView()
@@ -174,6 +177,7 @@ struct SidebarResizeHandle: NSViewRepresentable {
         view.dragged = dragged
         view.ended = ended
         view.reset = reset
+        view.growsLeftward = growsLeftward
     }
 
     final class HandleView: NSView {
@@ -181,6 +185,7 @@ struct SidebarResizeHandle: NSViewRepresentable {
         var dragged: ((Double) -> Void)?
         var ended: (() -> Void)?
         var reset: (() -> Void)?
+        var growsLeftward = false
         /// Where the drag began: the pointer's x in the window and the width then.
         private var start: (x: CGFloat, width: Double)?
         /// The window whose `isMovable` we switched off (so we can always switch it back on).
@@ -231,7 +236,8 @@ struct SidebarResizeHandle: NSViewRepresentable {
 
         override func mouseDragged(with event: NSEvent) {
             guard let start else { return }
-            dragged?(start.width + Double(event.locationInWindow.x - start.x))
+            let moved = Double(event.locationInWindow.x - start.x)
+            dragged?(start.width + (growsLeftward ? -moved : moved))
         }
 
         override func mouseUp(with event: NSEvent) {

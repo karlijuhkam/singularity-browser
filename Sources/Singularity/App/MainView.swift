@@ -66,18 +66,24 @@ extension MainView {
     /// Sidebar and page. The sidebar is one view in three states: beside the page; hidden (moved
     /// off the window's left edge, so it keeps its scroll position and open folders); and slid
     /// out over the page while the pointer is at the left edge (`SidebarPeekController`).
+    /// A plugin's panel, when open, is a column at the window's right edge, beside the page.
     @ViewBuilder
     fileprivate var browser: some View {
         let width = CGFloat(state.sidebarWidth)
         let hidden = state.settings.sidebarHidden
         let peeking = state.sidebarPeek.isPeeking
         ZStack(alignment: .topLeading) {
-            ContentArea()
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                .padding([.top, .bottom, .trailing], 8)
-                // Hidden: the page has the whole window, with the same 8 pt margin on the left.
-                .padding(.leading, hidden ? 8 : width)
+            HStack(spacing: 0) {
+                ContentArea()
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                    .padding([.top, .bottom, .trailing], 8)
+                    // Hidden: the page has the whole window, with the same 8 pt margin on the left.
+                    .padding(.leading, hidden ? 8 : width)
+                if let pluginID = state.shownPanelPlugin {
+                    PluginPanel(pluginID: pluginID)
+                }
+            }
 
             if hidden {
                 // In that left margin: the strip that notices the pointer at the window's edge.

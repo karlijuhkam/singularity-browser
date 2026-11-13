@@ -59,14 +59,17 @@ extension TabRow {
     }
 }
 
-/// A tab's icon: favicon for web pages, a symbol for terminals and artifacts.
+/// A tab's icon: favicon for web pages, a symbol for terminals, artifacts and plugin pages.
 struct TabIcon: View {
     @Environment(AppState.self) private var state
     let tab: BrowserTab
     let space: Space
 
     var body: some View {
-        if tab.isArtifact {
+        if tab.isPlugin {
+            Image(systemName: "puzzlepiece.extension")
+                .foregroundStyle(.secondary)
+        } else if tab.isArtifact {
             let isMissing = state.missingArtifactTabs.contains(tab.id)
             Image(systemName: isMissing ? "questionmark.square.dashed" : "doc.richtext")
                 .foregroundStyle(isMissing ? .tertiary : .secondary)
@@ -159,6 +162,11 @@ struct TabContextMenu: View {
         }
 
         Divider()
+
+        if let pluginID = tab.pluginID {
+            // The page goes back to the panel; the tab goes.
+            Button("Move to Side Panel") { state.movePluginPageToPanel(pluginID) }
+        }
 
         if tab.isTerminal, state.terminals.existingSession(tab.id)?.isRunning == false {
             Button("Start New Shell") { state.restartTerminal(tab.id, in: space.id) }

@@ -1,7 +1,7 @@
 import SingularityCore
 import SwiftUI
 
-/// What one tab shows: its web view or terminal, or a placeholder while it starts.
+/// What one tab shows: its web view, terminal or plugin page, or a placeholder while it starts.
 /// Used for a single tab and for every pane of a split.
 struct TabContentView: View {
     @Environment(AppState.self) private var state
@@ -13,7 +13,9 @@ struct TabContentView: View {
         let onDrop: (UUID, PaneDropZone) -> Void = { [state, tabID = tab.id] dropped, zone in
             state.handleTabDrop(dropped, onto: tabID, zone: zone)
         }
-        if let controller = state.web.existingController(tab.id) {
+        if let pluginID = tab.pluginID {
+            PluginPageArea(pluginID: pluginID, fallbackTitle: tab.title, tabID: tab.id, onDrop: onDrop)
+        } else if let controller = state.web.existingController(tab.id) {
             HostedView(view: controller.webView, tabID: tab.id, onDrop: onDrop)
                 .overlay(alignment: .top) { LoadingBar(controller: controller) }
                 .overlay(alignment: .topTrailing) {

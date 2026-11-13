@@ -146,6 +146,8 @@ enum PaletteResults {
         space.tabsInSidebarOrder.map { tab in
             let icon: PaletteItem.Icon = if tab.isTerminal {
                 .symbol("terminal")
+            } else if tab.isPlugin {
+                .symbol("puzzlepiece.extension")
             } else if tab.isArtifact {
                 .symbol("doc.richtext")
             } else {
@@ -171,6 +173,30 @@ enum PaletteResults {
             icon: entry.url.host().map { .favicon(host: $0) } ?? .symbol("clock"),
             action: .openURL(entry.url)
         )
+    }
+
+    /// Each panel plugin's page, as its place allows: shown in neither place, it can be shown in the
+    /// panel or opened as a tab; in the panel, opened as a tab; as a tab, shown (its tab selected)
+    /// or moved back to the panel.
+    private static func pluginPageItems(
+        state: AppState, command: (String, String, String, @escaping @MainActor () -> Void) -> PaletteItem
+    ) -> [PaletteItem] {
+        var items: [PaletteItem] = []
+        for plugin in state.plugins.panelPlugins() {
+            let id = plugin.id
+            let title = state.pluginTitle(id)
+            let show = command("plugin-show-\(id)", "Show \(title)", "puzzlepiece.extension") { state.showPluginPanel(id) }
+            let asTab = command("plugin-tab-\(id)", "Open \(title) as Tab", "puzzlepiece.extension") { state.openPluginPageAsTab(id) }
+            let toPanel = command("plugin-panel-\(id)", "Move \(title) to Side Panel", "sidebar.right") {
+                state.movePluginPageToPanel(id)
+            }
+            switch PluginSurface.place(of: id, panel: state.settings.pluginPanel, spaces: state.spaces) {
+            case .hidden: items += [show, asTab]
+            case .panel: items += [asTab]
+            case .tab: items += [show, toPanel]
+            }
+        }
+        return items
     }
 
     private static func commandItems(state: AppState, space: Space) -> [PaletteItem] {
@@ -200,6 +226,7 @@ enum PaletteResults {
             state.toggleSidebar()
         })
         items.append(command("show-inbox", "Show Inbox", "tray") { state.inbox.showPanel(takingFocus: true) })
+        items += pluginPageItems(state: state, command: command)
         if !space.projects.isEmpty {
             items.append(command("new-terminal-in", "New Terminal in…", "terminal") { state.openTerminalChoosingProject() })
         }
@@ -209,7 +236,7 @@ enum PaletteResults {
                     state.togglePin(tab.id)
                 })
             }
-            if !tab.isTerminal {
+            if !tab.isTerminal && !tab.isPlugin {
                 items.append(command("reload", "Reload Page", "arrow.clockwise") {
                     state.web.existingController(tab.id)?.reload()
                 })

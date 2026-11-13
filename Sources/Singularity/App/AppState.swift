@@ -89,6 +89,11 @@ final class AppState {
     /// Preferences from the Settings window (`~/Singularity/settings.json`). Change via `updateSettings`.
     private(set) var settings = AppSettings()
     @ObservationIgnored private var settingsDirty = false
+    /// The plugin whose page was shown last (panel or tab), for the toggle. In memory only: the
+    /// open panel itself is saved (`settings.pluginPanel`).
+    private(set) var lastPanelPlugin: String?
+    /// The panel's width while its left edge is dragged; nil otherwise (see `pluginPanelWidth`).
+    var pluginPanelLiveWidth: Double?
     /// Tabs an agent is working on right now (count, since calls can overlap). Drives the badges.
     private(set) var agentBusyTabs: [UUID: Int] = [:]
     /// Recent agent log entries per Space (oldest first), loaded from agent-log.jsonl on demand.
@@ -122,8 +127,9 @@ final class AppState {
     /// `discardFolder`: what `deleteSpace` does with the Space's folder. The app keeps the default
     /// (the Trash); tests remove it inside their temporary folder instead (`TestAppState`).
     /// `updateAvailability`: whether this copy updates itself; Sparkle starts only for `.available`.
+    /// `pluginManager`: the app makes its own; tests pass one that runs the repository's Bun.
     init(paths: Paths, discardFolder: @escaping SpaceStore.DiscardFolder = SpaceStore.moveToTrash,
-         updateAvailability: UpdateAvailability = AppUpdates.currentAvailability()) {
+         updateAvailability: UpdateAvailability = AppUpdates.currentAvailability(), pluginManager: PluginManager? = nil) {
         self.paths = paths
         self.store = SpaceStore(paths: paths, discardFolder: discardFolder)
         self.web = WebViewRegistry()
@@ -132,8 +138,8 @@ final class AppState {
         self.favicons = FaviconStore(paths: paths)
         // Bun and the plugin host ship inside the app bundle (see scripts/build-app.sh).
         let bundle = Bundle.main.bundleURL
-        self.plugins = PluginManager(paths: paths, runtime: bundle.appending(path: "Contents/Helpers/bun"),
-                                     host: bundle.appending(path: "Contents/Resources/plugin-host/host.ts"))
+        self.plugins = pluginManager ?? PluginManager(paths: paths, runtime: bundle.appending(path: "Contents/Helpers/bun"),
+                                                host: bundle.appending(path: "Contents/Resources/plugin-host/host.ts"))
         self.pluginScripts = PluginScripts(manager: plugins, runtime: bundle.appending(path: "Contents/Helpers/bun"),
                                            hostFolder: bundle.appending(path: "Contents/Resources/plugin-host",
                                                                         directoryHint: .isDirectory))
@@ -884,6 +890,90 @@ final class AppState {
         palette = mode
     }
 
+    // MARK: - A plugin's page: right-hand panel or tab (the rules are in Core: PluginSurface.swift)
+
+    /// The plugin whose page the right-hand panel shows now; nil when the panel is closed, while
+    /// the welcome flow covers the window, and while that plugin's page is a tab (one page, one place).
+    var shownPanelPlugin: String? {
+        guard !welcomeCoversWindow, let id = settings.pluginPanel else { return nil }
+        if case .tab = PluginSurface.place(of: id, panel: id, spaces: spaces) { return nil }
+        return id
+    }
+
+    /// The plugin the toggle (⌃⌘J) opens: the one shown last, while it still has a panel, else the
+    /// first panel plugin. Nil when no installed plugin has a panel.
+    var pluginPanelTarget: String? {
+        let ids = plugins.panelPlugins().map(\.id)
+        if let last = lastPanelPlugin, ids.contains(last) { return last }
+        return ids.first
+    }
+
+    /// The name of a plugin's page: the manifest's panel title, else `fallback` (a tab's stored
+    /// title), else the id.
+    func pluginTitle(_ id: String, fallback: String = "") -> String {
+        plugins.panelTitle(id) ?? (fallback.isEmpty ? id : fallback)
+    }
+
+    /// View → Show / Hide (⌃⌘J) and the palette. Closed: opens the panel for `pluginPanelTarget`, or
+    /// selects its tab when its page is a tab. Open: closes it. Nothing while the welcome flow covers
+    /// the window.
+    func togglePluginPanel() {
+        guard !welcomeCoversWindow else { return }
+        if shownPanelPlugin != nil {
+            closePluginPanel()
+        } else if let id = pluginPanelTarget {
+            showPluginPanel(id)
+        }
+    }
+
+    /// Shows the plugin's page in the panel; when its page is a tab, selects that tab instead
+    /// (through `showTab`, which also leaves the welcome flow and switches Space).
+    func showPluginPanel(_ id: String) {
+        lastPanelPlugin = id
+        if case .tab(let spaceID, let tabID) = PluginSurface.place(of: id, panel: settings.pluginPanel, spaces: spaces) {
+            showTab(tabID, in: spaceID)
+            return
+        }
+        updateSettings { $0.pluginPanel = id }
+    }
+
+    func closePluginPanel() {
+        updateSettings { $0.pluginPanel = nil }
+    }
+
+    /// "Open as Tab": the page moves into a new tab of the selected Space. Any other tab of the
+    /// plugin, in any Space, goes first, so there is never more than one.
+    func openPluginPageAsTab(_ id: String) {
+        guard let spaceID = selectedSpaceID else { return }
+        closeWelcome()
+        lastPanelPlugin = id
+        removePluginTabs(id)
+        let tab = BrowserTab.plugin(pluginID: id, title: plugins.panelTitle(id) ?? "")
+        mutateSpace(spaceID) {
+            $0.append(tab)
+            $0.selectedTabID = tab.id
+        }
+        if settings.pluginPanel == id { closePluginPanel() }
+        loadSelectedTab()
+    }
+
+    /// "Move to Side Panel": the plugin's tab goes and the panel opens with its page.
+    func movePluginPageToPanel(_ id: String) {
+        closeWelcome()
+        lastPanelPlugin = id
+        removePluginTabs(id)
+        updateSettings { $0.pluginPanel = id }
+    }
+
+    /// Closing a plugin's tab only hides its page: the page and the plugin's background go on.
+    private func removePluginTabs(_ id: String) {
+        for space in spaces {
+            for tabID in PluginSurface.tabsToRemove(for: id, in: space) {
+                closeTab(tabID, in: space.id, confirmIfBusy: false)
+            }
+        }
+    }
+
     // MARK: - Callbacks from web views
 
     /// Called by WebTabController when the page title or URL changes.
@@ -994,8 +1084,12 @@ final class AppState {
             _ = web.controller(for: tab, in: space)
         case .terminal:
             _ = terminals.session(for: tab, in: space)
-        case .plugin:
-            break // Assistant plan, Task 6 fills this in
+        case .plugin(let pluginID):
+            // Nothing to start: the page belongs to the plugin (`PluginManager.pageHost`), shown by
+            // `PluginPageArea`. Only keep the tab's stored title in step with the manifest.
+            if let title = plugins.panelTitle(pluginID), title != tab.title {
+                mutateSpace(space.id) { $0.updateTab(tab.id) { $0.title = title } }
+            }
         case .artifact(let path):
             guard web.existingController(tab.id) == nil else { return }
             // The page can only load once the Space's server runs.
@@ -1172,7 +1266,7 @@ final class AppState {
     }
 
     /// A live web view for a web or artifact tab, creating (and loading) it if the tab hasn't
-    /// been shown since launch. Nil for terminal tabs.
+    /// been shown since launch. Nil for terminal and plugin tabs.
     func liveWebController(tabID: UUID, spaceID: UUID) async -> WebTabController? {
         if let existing = web.existingController(tabID) { return existing }
         guard let space = space(spaceID), let tab = space.tab(tabID) else { return nil }
@@ -1182,7 +1276,7 @@ final class AppState {
         case .artifact(let path):
             guard let host = await ensureArtifactHost(space), let request = host.request(for: path) else { return nil }
             return web.existingController(tabID) ?? web.artifactController(for: tab, in: space, host: host, request: request)
-        case .terminal, .plugin: // Assistant plan, Task 6 fills this in
+        case .terminal, .plugin:
             return nil
         }
     }
@@ -1413,6 +1507,11 @@ final class AppState {
     /// The sidebar's width right now: the one being dragged, else the setting.
     var sidebarWidth: Double {
         SidebarLayout.clamp(sidebarPeek.liveWidth ?? settings.sidebarWidth)
+    }
+
+    /// The right-hand panel's width right now: the one being dragged, else the setting.
+    var pluginPanelWidth: Double {
+        PluginPanelLayout.clamp(pluginPanelLiveWidth ?? settings.pluginPanelWidth)
     }
 
     /// Hidden and not slid out: nothing of the sidebar is on screen. (Never while the welcome

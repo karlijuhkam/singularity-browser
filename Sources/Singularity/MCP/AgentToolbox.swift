@@ -197,7 +197,7 @@ final class AgentToolbox {
     private func listSpaces() throws -> String {
         guard let state else { throw ToolError("Browser is shutting down.") }
         let spaces = state.spaces.filter(\.agentsEnabled).map { space -> [String: Any] in
-            ["slug": space.slug, "name": space.name, "tabs": space.tabs.count,
+            ["slug": space.slug, "name": space.name, "tabs": space.tabs.filter { !$0.isPlugin }.count,
              "policy": space.agentPolicy.rawValue,
              "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
         }
@@ -209,13 +209,14 @@ final class AgentToolbox {
     }
 
     private func listTabs(_ space: Space) throws -> String {
-        let tabs = space.tabsInSidebarOrder.map { tab -> [String: Any] in
+        // A plugin's own page is not for agents: its tab is left out here and refused everywhere else.
+        let tabs = space.tabsInSidebarOrder.filter { !$0.isPlugin }.map { tab -> [String: Any] in
             var entry: [String: Any] = ["tab_id": tab.id.uuidString.lowercased(), "title": tab.displayTitle]
             switch tab.kind {
             case .web(let url): entry["kind"] = "web"; entry["url"] = url.absoluteString
             case .terminal(let directory): entry["kind"] = "terminal"; entry["directory"] = directory
             case .artifact(let path): entry["kind"] = "artifact"; entry["path"] = path
-            case .plugin: entry["kind"] = "plugin" // Assistant plan, Task 6 finishes the rules
+            case .plugin: break // filtered out above
             }
             switch tab.section {
             case .pinned: entry["section"] = "pinned"
@@ -260,6 +261,7 @@ final class AgentToolbox {
     private func close(_ space: Space, tabID: UUID, record: CallRecord) async throws -> String {
         guard let state, let tab = space.tab(tabID) else { throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space.") }
         guard !tab.isTerminal else { throw ToolError("Terminal tabs cannot be closed by agents.") }
+        guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
         let origin = AgentApprovalRules.origin(of: tab.url ?? state.artifacts.host(space.id)?.origin)
         try await authorize(
             AgentActionContext(kind: .close, pageOrigin: origin), space, record,
@@ -344,6 +346,7 @@ final class AgentToolbox {
             throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space. Call \(AgentToolName.make(slug: space.slug, tool: "list_tabs")).")
         }
         record.tabID = tabID
+        guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
         guard case .web = tab.kind else {
             throw ToolError("Console and network can only be read for web tabs, not terminals or artifacts.")
         }
@@ -447,6 +450,7 @@ final class AgentToolbox {
             throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space. Call \(AgentToolName.make(slug: space.slug, tool: "list_tabs")).")
         }
         guard !tab.isTerminal else { throw ToolError("Tab \(tabID.uuidString.lowercased()) is a terminal, not a web page.") }
+        guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
         if record.tabID == nil {
             record.tabID = tabID
             state.beginAgentWork(on: tabID)
@@ -456,6 +460,11 @@ final class AgentToolbox {
         }
         await controller.waitUntilLoaded()
         return controller
+    }
+
+    /// A plugin's tab: agents can neither read nor act on a plugin's own page.
+    private static func notAWebPage(_ tabID: UUID) -> ToolError {
+        ToolError("Tab \(tabID.uuidString.lowercased()) is not a web page.")
     }
 
     /// "Now at: <url>" plus the page title, with the title marked as page content.

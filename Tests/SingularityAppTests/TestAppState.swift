@@ -15,8 +15,10 @@ enum TestAppState {
         URL(filePath: "/private/tmp/sg-t-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
     }
 
-    static func make(root: URL) -> AppState {
-        AppState(paths: Paths(root: root), discardFolder: removeInside(root))
+    /// `plugins`: a manager of the test's own (with the repository's Bun), instead of the app
+    /// bundle's, which a test run doesn't have.
+    static func make(root: URL, plugins: PluginManager? = nil) -> AppState {
+        AppState(paths: Paths(root: root), discardFolder: removeInside(root), pluginManager: plugins)
     }
 
     /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers). Pending
