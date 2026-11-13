@@ -980,6 +980,18 @@ final class AppState {
         !welcomeCoversWindow && (shownPanelPlugin != nil || pluginPanelTarget != nil || bundledPanelOffer != nil)
     }
 
+    /// The sidebar's panel button: there when the menu item has something to do (an installed panel
+    /// plugin, or the shipped one it offers), whatever the welcome flow does (the sidebar is covered then).
+    var pluginPanelButtonVisible: Bool {
+        shownPanelPlugin != nil || pluginPanelTarget != nil || bundledPanelOffer != nil
+    }
+
+    /// Lit while the panel shows a plugin's page.
+    var pluginPanelButtonLit: Bool { shownPanelPlugin != nil }
+
+    /// The button's tooltip: the menu item's current title and its shortcut.
+    var pluginPanelButtonHelp: String { "\(pluginPanelCommandTitle) (⌃⌘J)" }
+
     /// The name of a plugin's page: the manifest's panel title, else `fallback` (a tab's stored
     /// title), else the id.
     func pluginTitle(_ id: String, fallback: String = "") -> String {

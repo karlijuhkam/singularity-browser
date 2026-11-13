@@ -109,6 +109,44 @@ extension AppTests {
         #expect(state.settings.pluginPanel == id)
     }
 
+    /// The sidebar's button for the panel: shown with an installed panel plugin or a shipped one,
+    /// pressing it is the menu item, lit while the panel shows the page, tooltip = menu title.
+    @Test func theSidebarButtonFollowsTheMenuItem() async throws {
+        let ws = try PanelWorkspace()
+        defer { ws.remove() }
+        let state = try await makeState(ws)
+        defer { TestAppState.shutDown(state) }
+        state.bundledPlugins = []
+        #expect(state.pluginPanelButtonVisible)
+        #expect(!state.pluginPanelButtonLit)
+        #expect(state.pluginPanelButtonHelp == "Show Fixture Panel (⌃⌘J)")
+        state.togglePluginPanel()   // what pressing the button does
+        #expect(state.settings.pluginPanel == id)
+        #expect(state.pluginPanelButtonLit)
+        #expect(state.pluginPanelButtonHelp == "Hide Fixture Panel (⌃⌘J)")
+        state.togglePluginPanel()
+        #expect(state.settings.pluginPanel == nil)
+        #expect(!state.pluginPanelButtonLit)
+    }
+
+    @Test func theSidebarButtonIsHiddenWithNothingInstalledOrShipped() async throws {
+        MainRunLoopGuard.start
+        let root = TestAppState.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let state = TestAppState.make(root: root)
+        defer { TestAppState.shutDown(state) }
+        state.closeWelcome()
+        try await waitUntil("the first scan") { state.plugins.firstScanDone }
+        state.bundledPlugins = []
+        #expect(!state.pluginPanelButtonVisible)
+        // A shipped Assistant that isn't added yet: the button is there and opens Settings → Plugins.
+        state.bundledPlugins = [BundledPlugin(id: "assistant", name: "Assistant", summary: "",
+                                              folder: URL(fileURLWithPath: "/nonexistent"), panelTitle: "Assistant")]
+        #expect(state.pluginPanelButtonVisible)
+        #expect(state.pluginPanelButtonHelp == "Show Assistant (⌃⌘J)")
+        #expect(!state.pluginPanelButtonLit)
+    }
+
     @Test func openAsTabMakesOneTabAndClosesThePanel() async throws {
         let ws = try PanelWorkspace()
         defer { ws.remove() }

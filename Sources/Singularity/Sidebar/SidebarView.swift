@@ -57,7 +57,31 @@ private struct BottomRow: View {
             if launchers.count > LauncherRow.shown {
                 LauncherOverflowMenu(launchers: Array(launchers.dropFirst(LauncherRow.shown)))
             }
+            if state.pluginPanelButtonVisible {
+                Spacer(minLength: 0)
+                PluginPanelButton()
+            }
         }
+    }
+}
+
+/// Show / hide the plugin panel (the Assistant): the View menu item, ⌃⌘J. Not in the title-bar
+/// strip, so `.help()` is fine here.
+private struct PluginPanelButton: View {
+    @Environment(AppState.self) private var state
+
+    var body: some View {
+        Button {
+            state.togglePluginPanel()
+        } label: {
+            Image(systemName: "bubble.left.and.text.bubble.right")
+                .font(.system(size: 12))
+                .foregroundStyle(state.pluginPanelButtonLit ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(state.pluginPanelButtonHelp)
     }
 }
 
