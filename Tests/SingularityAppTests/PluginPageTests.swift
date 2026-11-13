@@ -411,6 +411,27 @@ extension AppTests {
         #expect(await text(host, "p.empty") == "")
     }
 
+    /// A first `hello` that gets no answer (a background restarting after a crash) leaves the page
+    /// with the reason and Try Again, which asks again.
+    @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
+    func theAssistantsPageCanTryTheFirstHelloAgain() async throws {
+        let plugin = try AssistantCopy()
+        defer { plugin.remove() }
+        var hellos = 0
+        let (host, window) = makeHost(pluginID: "assistant", folder: plugin.folder, manifest: plugin.manifest) { _ in
+            hellos += 1
+            return hellos == 1 ? nil : Self.readyState
+        }
+        defer { close(host, window) }
+        let failed = "the plugin isn't running or didn't answer"
+        await wait("the failed hello") { await text(host, ".notice.warn p") == failed }
+        #expect(await text(host, ".notice.warn button") == "Try Again")
+        _ = try await host.webView.evaluateJavaScript("document.querySelector('.notice.warn button').click(); 1")
+        let emptyChat = "Ask anything. In this version the Assistant can't see your pages or act for you yet."
+        await wait("the empty chat after Try Again") { await text(host, "p.empty") == emptyChat }
+        #expect(hellos == 2)
+    }
+
     /// What the Assistant's background answers `hello` with once Claude is ready (see view.ts, ViewState).
     private static let readyState: JSONValue = .object([
         "messages": .array([]), "status": .string("ready"), "model": .null, "models": .array([]),
