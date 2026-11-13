@@ -192,7 +192,7 @@ final class InboxCenter {
     /// (`releaseApprovalsThatNowPass`).
     func requestApproval(_ pending: AgentApprovals.PendingApproval) async -> AgentApprovals.Outcome {
         // A call that was already stopped asks nothing.
-        if Task.isCancelled { return .cancelled }
+        if Task.isCancelled || pending.request.cancellation?.isCancelled == true { return .cancelled }
         // A request for a Space or tab that is already gone: no entry, "no".
         if let state {
             guard let space = state.space(pending.spaceID) else { return .denied }
@@ -231,6 +231,9 @@ final class InboxCenter {
                 logChange("approval added", tabID: entry.tabID)
                 listDidChange()
                 announceApproval(entry)
+                // Asked on behalf of a call from another task (the navigation guard): that call's
+                // cancellation withdraws it too.
+                request.cancellation?.onCancel(id) { [weak self] in self?.withdrawApproval(id) }
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.withdrawApproval(id) }
@@ -387,6 +390,7 @@ final class InboxCenter {
     private func finishApproval(_ id: UUID, _ outcome: AgentApprovals.Outcome) {
         guard let waiting = waitingApprovals.removeValue(forKey: id) else { return }
         waiting.timer?.cancel()
+        waiting.pending.request.cancellation?.forget(id)
         if inbox.remove(id) != nil { listDidChange() }
         logChange("approval \(outcome.logValue)", tabID: waiting.pending.request.tabID)
         waiting.continuation.resume(returning: outcome)

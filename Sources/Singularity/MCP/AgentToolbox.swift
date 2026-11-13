@@ -237,7 +237,10 @@ final class AgentToolbox {
         // A plugin's own page is not for agents: its tab is left out here and refused everywhere else.
         // For a plugin's connection, so are tabs on a site the owner switched that plugin off for.
         let tabs = space.tabsInSidebarOrder.filter { tabIsVisible($0, in: space, to: record.caller) }.map { tab -> [String: Any] in
-            var entry: [String: Any] = ["tab_id": tab.id.uuidString.lowercased(), "title": tab.displayTitle]
+            // While its page loads another address, the stored title may still be the old page's.
+            let titleIsCurrent = state?.web.existingController(tab.id)?.titleIsCurrent ?? true
+            var entry: [String: Any] = ["tab_id": tab.id.uuidString.lowercased(),
+                                        "title": titleIsCurrent ? tab.displayTitle : tab.untitledDisplayTitle]
             switch tab.kind {
             case .web(let url): entry["kind"] = "web"; entry["url"] = url.absoluteString
             case .terminal(let directory): entry["kind"] = "terminal"; entry["directory"] = directory
@@ -328,15 +331,20 @@ final class AgentToolbox {
                     detail: info.description + (info.href.map { " → \($0)" } ?? ""),
                     url: controller.webView.url, tabTitle: controller.webView.title))
 
+        let cancellation = ApprovalCancellation()
         installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
-                               approved: Set([pageOrigin, linkOrigin].compactMap { $0 }), submissionApproved: info.submits)
+                               approved: Set([pageOrigin, linkOrigin].compactMap { $0 }), submissionApproved: info.submits,
+                               cancellation: cancellation)
         defer { controller.agentNavigationGuard = nil }
 
-        let result = try await controller.callPageAgent("click(ref)", arguments: ["ref": ref])
-        // If the click started a navigation, wait for it so the next read sees the new page.
-        try? await Task.sleep(for: .milliseconds(300))
-        await controller.waitUntilLoaded()
-        return UntrustedContent.wrap(result, source: shownAddress(controller, space, record)) + "\n" + pageSummary(controller, space, record)
+        return try await whileNotCancelled(cancellation) {
+            let result = try await controller.callPageAgent("click(ref)", arguments: ["ref": ref])
+            // If the click started a navigation, wait for it so the next read sees the new page.
+            try? await Task.sleep(for: .milliseconds(300))
+            await controller.waitUntilLoaded()
+            return UntrustedContent.wrap(result, source: self.shownAddress(controller, space, record)) + "\n"
+                + self.pageSummary(controller, space, record)
+        }
     }
 
     private func type(_ space: Space, tabID: UUID, ref: Int, text: String, submit: Bool, record: CallRecord) async throws -> String {
@@ -351,15 +359,32 @@ final class AgentToolbox {
             request(record, space, action: submit ? "type into a field and submit the form" : "type into a field",
                     detail: info.description, url: controller.webView.url, tabTitle: controller.webView.title, text: shownText))
 
+        let cancellation = ApprovalCancellation()
         installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
-                               approved: Set([pageOrigin].compactMap { $0 }), submissionApproved: submit)
+                               approved: Set([pageOrigin].compactMap { $0 }), submissionApproved: submit,
+                               cancellation: cancellation)
         defer { controller.agentNavigationGuard = nil }
 
-        let result = try await controller.callPageAgent("type(ref, text, submit)",
-                                                        arguments: ["ref": ref, "text": text, "submit": submit])
-        try? await Task.sleep(for: .milliseconds(submit ? 300 : 50))
-        await controller.waitUntilLoaded()
-        return UntrustedContent.wrap(result, source: shownAddress(controller, space, record)) + "\n" + pageSummary(controller, space, record)
+        return try await whileNotCancelled(cancellation) {
+            let result = try await controller.callPageAgent("type(ref, text, submit)",
+                                                            arguments: ["ref": ref, "text": text, "submit": submit])
+            try? await Task.sleep(for: .milliseconds(submit ? 300 : 50))
+            await controller.waitUntilLoaded()
+            return UntrustedContent.wrap(result, source: self.shownAddress(controller, space, record)) + "\n"
+                + self.pageSummary(controller, space, record)
+        }
+    }
+
+    /// Runs a click's or type's action and wait. Cancelling the call (Stop, or the connection
+    /// closing) cancels `cancellation`: the navigation guard then withdraws what it is waiting for
+    /// and refuses every further navigation, so a stopped call never navigates on a late Allow.
+    private func whileNotCancelled<T>(_ cancellation: ApprovalCancellation,
+                                      _ work: () async throws -> T) async throws -> T {
+        try await withTaskCancellationHandler {
+            try await work()
+        } onCancel: {
+            Task { @MainActor in cancellation.cancel() }
+        }
     }
 
     private func screenshot(_ space: Space, tabID: UUID, record: CallRecord) async throws -> Tool.Content {
@@ -444,9 +469,15 @@ final class AgentToolbox {
     /// While a click or type runs, checks every navigation of the page: the origins the user
     /// already approved for this action pass, anything else goes through the policy again.
     private func installNavigationGuard(on controller: WebTabController, space: Space, record: CallRecord,
-                                        pageOrigin: String?, approved: Set<String>, submissionApproved: Bool) {
+                                        pageOrigin: String?, approved: Set<String>, submissionApproved: Bool,
+                                        cancellation: ApprovalCancellation) {
         controller.agentNavigationGuard = { [weak self] url, isFormSubmission in
             guard let self, let state = self.state, let current = state.space(space.id) else { return false }
+            // The call was stopped: nothing it started may move the page any more.
+            if cancellation.isCancelled {
+                record.decision += "+nav_cancelled"
+                return false
+            }
             // A plugin's action never carries a tab onto a site the owner switched it off for.
             if self.siteIsOff(url, current, record.caller) {
                 record.decision += "+nav_site_off"
@@ -458,10 +489,10 @@ final class AgentToolbox {
             }
             let context = AgentActionContext(kind: .navigate, pageOrigin: pageOrigin, targetOrigin: target,
                                              isFormSubmission: isFormSubmission && !submissionApproved)
-            let outcome = await state.approvals.check(
-                context, space: current,
-                request: self.request(record, current, action: isFormSubmission ? "submit a form" : "go to another site",
-                                      detail: url.absoluteString, url: controller.webView.url, tabTitle: controller.webView.title))
+            var request = self.request(record, current, action: isFormSubmission ? "submit a form" : "go to another site",
+                                       detail: url.absoluteString, url: controller.webView.url, tabTitle: controller.webView.title)
+            request.cancellation = cancellation
+            let outcome = await state.approvals.check(context, space: current, request: request)
             record.decision += "+nav_" + outcome.logValue
             return outcome.isAllowed
         }

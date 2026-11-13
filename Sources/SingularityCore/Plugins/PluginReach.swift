@@ -63,12 +63,20 @@ public enum PluginReach {
     /// stored address too), so a page that was redirected or navigated elsewhere counts where it is now. An artifact tab whose live page
     /// is no longer on `artifactOrigin` (the Space's artifact server) is reported as the web page it
     /// shows: kind "web" with that address, never as an artifact with a file path.
+    ///
+    /// `titleIsCurrent`: false while a tab's stored title may still be the previous page's (its live
+    /// page is loading another address); the title is then left out (the address stands in for it),
+    /// so a page's title never travels with another page's address.
+    ///
+    /// A Space that is not open to the plugin is `.spaceOff` whether or not it has a tab (so the
+    /// strip can offer it); no Space, the welcome flow, or an open Space without a tab: `.nothing`.
     public static func front(pluginID: String, space: Space?, spaceIsOpen: Bool, welcomeCoversWindow: Bool,
                              lastOtherPane: UUID?, liveURL: (UUID) -> URL? = { _ in nil },
-                             artifactOrigin: URL? = nil) -> Front {
+                             artifactOrigin: URL? = nil, titleIsCurrent: (UUID) -> Bool = { _ in true }) -> Front {
         if welcomeCoversWindow { return .hidden(.nothing) }
-        guard let space, let selected = space.selectedTab else { return .hidden(.nothing) }
+        guard let space else { return .hidden(.nothing) }
         guard spaceIsOpen else { return .hidden(.spaceOff) }
+        guard let selected = space.selectedTab else { return .hidden(.nothing) }
 
         var tab = selected
         if selected.isPlugin {
@@ -78,9 +86,10 @@ public enum PluginReach {
 
         let live = liveURL(tab.id)
         var ref = FrontTab.TabRef(id: tab.id.uuidString.lowercased(), kind: "terminal")
+        let title = titleIsCurrent(tab.id) ? tab.displayTitle : tab.untitledDisplayTitle
         func webPage(_ url: URL) {
             ref.kind = "web"
-            ref.title = String(tab.displayTitle.prefix(titleLimit))
+            ref.title = String(title.prefix(titleLimit))
             ref.url = String(url.absoluteString.prefix(urlLimit))
         }
         switch tab.kind {
@@ -100,7 +109,7 @@ public enum PluginReach {
                 }
             }
             ref.kind = "artifact"
-            ref.title = String(tab.displayTitle.prefix(titleLimit))
+            ref.title = String(title.prefix(titleLimit))
             ref.url = String(path.prefix(urlLimit))
         case .terminal:
             break

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MCP
 import SwiftUI
 import Testing
 import WebKit
@@ -509,10 +510,14 @@ extension AppTests {
             try? FileManager.default.removeItem(at: appRoot)
         }
         state.closeWelcome()
-        state.openInNewTab(URL(string: "https://a.example/")!)
-        let space = try #require(state.selectedSpace)
         manager.start()
         try await waitUntil("the plugin to run", limit: .seconds(20)) { manager.plugin(CardWorkspace.id)?.runState == .running }
+        // A Space without a tab: the strip too.
+        #expect(state.selectedSpace?.tabs.isEmpty == true)
+        #expect(state.pluginFront(CardWorkspace.id) == .hidden(.spaceOff))
+        #expect(state.pluginPageCards(CardWorkspace.id, showsStrip: true).strip != nil)
+        state.openInNewTab(URL(string: "https://a.example/")!)
+        let space = try #require(state.selectedSpace)
 
         #expect(state.pluginFront(CardWorkspace.id) == .hidden(.spaceOff))
         let strip = try #require(state.pluginPageCards(CardWorkspace.id, showsStrip: true).strip)
@@ -548,6 +553,158 @@ extension AppTests {
         manager.setEnabled(CardWorkspace.id, space: space.id, false)
         #expect(state.pluginPageCards(CardWorkspace.id, showsStrip: true).strip != nil)
         #expect(state.pluginPageCards("not-installed", showsStrip: true).strip == nil)
+    }
+
+    // MARK: A yes that comes too late
+
+    /// The owner's Allow was handled just before the call's cancel took effect: the call must not
+    /// act on it (`.cancelled`), whether the call asked from its own task or under a cancellation
+    /// token (the navigation guard).
+    @Test func anAllowJustBeforeTheCancelDoesNotAct() async throws {
+        let rig = Rig(active: false)
+        defer { rig.tearDown() }
+        let answer = rig.check(pluginID: Self.pluginID)
+        let entry = try await rig.waitForEntry()
+        // In one main-actor turn: the answer resumes the waiting check, then the call is cancelled
+        // before the check runs on.
+        rig.center.decideApproval(entry.id, .approved)
+        answer.cancel()
+        #expect(await answer.value.logValue == "cancelled")
+
+        // Under a token: cancelled after the yes, before the asking code runs on.
+        let token = ApprovalCancellation()
+        var request = AgentApprovals.Request(actor: "Assistant", action: "go to another site", detail: "https://x.example/",
+                                             url: nil, spaceName: "Work", tabTitle: nil, text: nil)
+        request.cancellation = token
+        let guarded = Task { @MainActor in
+            await rig.approvals.check(AgentActionContext(kind: .navigate, pageOrigin: "https://example.com",
+                                                         targetOrigin: "https://x.example"),
+                                      space: Self.space, request: request)
+        }
+        let second = try await rig.waitForEntry()
+        rig.center.decideApproval(second.id, .approved)
+        token.cancel()
+        #expect(await guarded.value.logValue == "cancelled")
+    }
+
+    /// Cancelling the token withdraws what waits under it, and nothing more is asked under it.
+    @Test func aCancelledTokenWithdrawsAndAsksNothingMore() async throws {
+        let rig = Rig(active: false)
+        defer { rig.tearDown() }
+        let token = ApprovalCancellation()
+        func ask() -> Task<AgentApprovals.Outcome, Never> {
+            var request = AgentApprovals.Request(actor: "Assistant", action: "go to another site", detail: "https://x.example/",
+                                                 url: nil, spaceName: "Work", tabTitle: nil, text: nil)
+            request.cancellation = token
+            return Task { @MainActor in
+                await rig.approvals.check(AgentActionContext(kind: .navigate, pageOrigin: "https://example.com",
+                                                             targetOrigin: "https://x.example"),
+                                          space: Self.space, request: request)
+            }
+        }
+        let first = ask()
+        try await rig.waitForEntry()
+        token.cancel()
+        #expect(await first.value.logValue == "cancelled")
+        #expect(rig.waiting.isEmpty)
+        #expect(await ask().value.logValue == "cancelled")
+        #expect(rig.center.inbox.entries.isEmpty)
+    }
+
+    // MARK: A stopped click
+
+    /// A click whose navigation (to another site) waits for the owner, then the call is stopped:
+    /// the call returns at once (no spinning), the navigation's entry is withdrawn and logged, and
+    /// the page never moves, not even after a while.
+    @Test(.timeLimit(.minutes(1))) func aStoppedClickNeverNavigates() async throws {
+        MainRunLoopGuard.start
+        let server = try TitleFixtureServer.start()
+        defer { server.stop() }
+        let root = TestAppState.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SpaceStore(paths: Paths(root: root))
+        var space = Space(name: "Work", slug: "work", colorHex: "#5E81F4")
+        space.agentsEnabled = true
+        space.agentPolicy = .ask
+        let tab = BrowserTab.web(server.url("/go"))
+        space.append(tab)
+        space.selectedTabID = tab.id
+        try store.save(space)
+        try store.save(AppStateFile(spaceOrder: [space.id], selectedSpaceID: space.id))
+        let state = TestAppState.make(root: root)
+        defer { TestAppState.shutDown(state) }
+        state.inbox.appIsActive = { false }
+        state.inbox.onArrival = { _ in }
+        state.inbox.requestAttention = {}
+        let toolbox = AgentToolbox(state: state)
+        let tabArgument = Value.string(tab.id.uuidString.lowercased())
+
+        let page = await toolbox.call("work.read_page", arguments: ["tab_id": tabArgument], client: "test-agent", caller: .outside)
+        let outline = page.content.compactMap { if case .text(let text, _, _) = $0 { text } else { nil } }.joined()
+        let match = try #require(outline.firstMatch(of: /\[(\d+)\] button "Go"/), "no Go button in \(outline)")
+        let ref = try #require(Int(match.1))
+        let controller = try #require(state.web.existingController(tab.id))
+
+        let click = Task { @MainActor in
+            await toolbox.call("work.click", arguments: ["tab_id": tabArgument, "ref": .int(ref)], client: "test-agent", caller: .outside)
+        }
+        // The click itself asks first: allowed.
+        try await waitUntil("the click's approval", limit: .seconds(10)) { state.inbox.inbox.count == 1 }
+        let clickEntry = try #require(state.inbox.inbox.visible.first)
+        state.inbox.decideApproval(clickEntry.id, .approved)
+        // Then the page moves to another site: the guard asks.
+        try await waitUntil("the navigation's approval", limit: .seconds(10)) {
+            state.inbox.inbox.visible.contains { entry in
+                if case .approval(let approval) = entry.kind { approval.action == "go to another site" } else { false }
+            }
+        }
+        #expect(controller.pendingNavigationApprovals == 1)
+
+        let stopped = ContinuousClock.now
+        click.cancel()
+        _ = await click.value
+        #expect(ContinuousClock.now - stopped < .seconds(1), "the stopped call took \(ContinuousClock.now - stopped)")
+        try await waitUntil("the navigation's approval to be withdrawn") { state.inbox.inbox.count == 0 }
+        try await waitUntil("the guard to give up") { controller.pendingNavigationApprovals == 0 }
+        // Nothing moves the page later.
+        try await Task.sleep(for: .seconds(1))
+        #expect(controller.webView.url?.host() == "127.0.0.1")
+        #expect(controller.webView.url?.path() == "/go")
+        let logged = AgentLogStore(file: state.paths.agentLogFile("work")).loadRecent()
+        let clickLog = try #require(logged.last { $0.tool == "work.click" })
+        #expect(clickLog.decision.contains("nav_cancelled"), "decision: \(clickLog.decision)")
+    }
+
+    /// `waitUntilLoaded` in a cancelled task returns at once, also in the middle of a load (a
+    /// cancelled `Task.sleep` returns immediately, so a loop on it would spin the main actor).
+    @Test(.timeLimit(.minutes(1))) func aCancelledWaitForALoadEndsAtOnce() async throws {
+        MainRunLoopGuard.start
+        let server = try TitleFixtureServer.start()
+        defer { server.stop() }
+        let f = try PageFixture()
+        defer { f.tearDown() }
+        let controller = WebTabController(tabID: UUID(), spaceID: f.spaceID, configuration: WKWebViewConfiguration(), state: nil)
+        controller.load(server.url("/slow-titled?t=Slow"))
+        try await waitUntil("the load to start") { controller.webView.isLoading }
+        let wait = Task { @MainActor in
+            let started = ContinuousClock.now
+            await controller.waitUntilLoaded()
+            return ContinuousClock.now - started
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        wait.cancel()
+        let waited = await wait.value
+        #expect(controller.webView.isLoading, "the load should still be going on")
+        #expect(waited < .milliseconds(400), "waited \(waited)")
+        // Already cancelled when called: returns at once.
+        let early = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            let started = ContinuousClock.now
+            await controller.waitUntilLoaded()
+            return ContinuousClock.now - started
+        }
+        #expect(await early.value < .milliseconds(50))
+        controller.webView.stopLoading()
     }
 
     // MARK: - Helpers

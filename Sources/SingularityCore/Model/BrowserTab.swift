@@ -107,6 +107,11 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
     /// Title to show in the UI: the page title, else the host, else the raw URL.
     public var displayTitle: String {
         if !title.isEmpty { return title }
+        return untitledDisplayTitle
+    }
+
+    /// What `displayTitle` falls back to without a page title: the address's host, the file name…
+    public var untitledDisplayTitle: String {
         if isTerminal { return "Terminal" }
         if let artifactPath { return (artifactPath as NSString).lastPathComponent }
         if let pluginID { return pluginID }

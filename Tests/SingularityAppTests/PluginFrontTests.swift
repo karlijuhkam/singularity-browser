@@ -43,6 +43,7 @@ private struct FrontWorkspace {
                 if (payload === "front") return { front: await singularity.front() };
                 if (payload === "browser") return { browser: await singularity.browser.server() };
                 if (payload === "changes") return { changes };
+                if (payload === "reset") { changes.length = 0; return { reset: true }; }
               } catch (error) { return { error: String((error as Error).message) }; }
               return null;
             });
@@ -94,6 +95,10 @@ struct PluginFrontTests {
         let tabs = try #require(state.selectedSpace?.tabs)
         manager.start()
         try await waitUntil("the plugin to run", limit: .seconds(20)) { manager.plugin(FrontWorkspace.id)?.runState == .running }
+        // While it runs switched off, the tabs' first loads (they fail: .example has no hosts) can
+        // tell it "nothing in front" (null). Let them land, forget them, then switch it on.
+        try await Task.sleep(for: .milliseconds(600))
+        _ = await manager.sendFromPanel(pluginID: FrontWorkspace.id, payload: .string("reset"))
         if on { manager.setEnabled(FrontWorkspace.id, space: spaceID, true) }
         return Rig(ws: ws, appRoot: appRoot, manager: manager, state: state, spaceID: spaceID, a: tabs[0], b: tabs[1])
     }
@@ -135,6 +140,37 @@ struct PluginFrontTests {
         // The Space switched off.
         rig.manager.setEnabled(id, space: rig.spaceID, false)
         #expect(rig.state.pluginFront(id) == .hidden(.spaceOff))
+    }
+
+    /// A tab on a site switched off for the plugin moves to an allowed page without a title: the
+    /// switched-off page's title is never reported with the new address, neither while the new
+    /// page loads nor after (then the address's host stands in for it).
+    @Test(.timeLimit(.minutes(1))) func aSwitchedOffPagesTitleNeverTravelsWithTheNextAddress() async throws {
+        let rig = try await makeRig()
+        defer { tearDown(rig) }
+        let id = FrontWorkspace.id
+        let server = try TitleFixtureServer.start()
+        defer { server.stop() }
+        rig.state.openInNewTab(server.url("/titled?t=Secret"))
+        let tab = try #require(rig.state.selectedTab)
+        rig.state.updateSiteSettings(spaceID: rig.spaceID, site: "http://127.0.0.1:\(server.port)") { $0.disabledPlugins.insert(id) }
+        let controller = try #require(await rig.state.liveWebController(tabID: tab.id, spaceID: rig.spaceID))
+        try await waitUntil("the secret page", limit: .seconds(10)) { rig.state.selectedSpace?.tab(tab.id)?.title == "Secret" }
+        #expect(rig.state.pluginFront(id) == .hidden(.siteOff))
+
+        controller.load(server.url("/slow-untitled", host: "localhost"))
+        var reported: [String?] = []
+        let deadline = ContinuousClock.now + .seconds(6)
+        while ContinuousClock.now < deadline {
+            if case .tab(let front) = rig.state.pluginFront(id) { reported.append(front.tab.title) }
+            if !controller.webView.isLoading, rig.state.selectedSpace?.tab(tab.id)?.title == "" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!reported.isEmpty)
+        #expect(!reported.contains("Secret"), "reported titles: \(Set(reported.map { $0 ?? "nil" }))")
+        let after = try #require(frontTab(rig.state.pluginFront(id)))
+        #expect(after.tab.title == "localhost")
+        #expect(after.tab.url?.hasPrefix("http://localhost:") == true)
     }
 
     @Test(.timeLimit(.minutes(1))) func anArtifactTabThatLeftItsServerIsTheWebPageItShows() async throws {

@@ -189,6 +189,21 @@ import Testing
         #expect(live == .hidden(.siteOff))
     }
 
+    /// While the tab's live page is loading another address, its stored title may still be the
+    /// previous page's: the title is left out (the address's host stands in for it).
+    @Test func aTitleThatIsNotCurrentIsLeftOut() {
+        let tab = BrowserTab.web(URL(string: "https://fine.example/next")!, title: "Old page's title")
+        let s = space([tab], selected: tab)
+        func title(current: Bool) -> String? {
+            guard case .tab(let f) = PluginReach.front(pluginID: "t", space: s, spaceIsOpen: true, welcomeCoversWindow: false,
+                                                       lastOtherPane: nil, titleIsCurrent: { _ in current }) else { return nil }
+            return f.tab.title
+        }
+        #expect(title(current: true) == "Old page's title")
+        #expect(title(current: false) == "fine.example")
+        #expect(tab.untitledDisplayTitle == "fine.example")
+    }
+
     @Test func hiddenReasons() {
         let tab = BrowserTab.web(URL(string: "https://example.com/")!)
         let s = space([tab], selected: tab)
@@ -196,6 +211,12 @@ import Testing
         #expect(front(s, welcome: true) == .hidden(.nothing))
         #expect(front(nil) == .hidden(.nothing))
         #expect(front(space([], selected: nil)) == .hidden(.nothing))
+        // A Space not open to the plugin is "off" with or without a tab (the strip offers it).
+        #expect(front(space([], selected: nil), open: false) == .hidden(.spaceOff))
+        #expect(front(space([tab], selected: nil), open: false) == .hidden(.spaceOff))
+        // The welcome flow and no Space stay "nothing", also for a closed Space.
+        #expect(front(s, open: false, welcome: true) == .hidden(.nothing))
+        #expect(front(nil, open: false) == .hidden(.nothing))
         let off = space([tab], selected: tab, sites: ["https://example.com": SiteSettings(disabledPlugins: ["t"])])
         #expect(front(off) == .hidden(.siteOff))
         // A site switch is about web pages: a terminal is unaffected.

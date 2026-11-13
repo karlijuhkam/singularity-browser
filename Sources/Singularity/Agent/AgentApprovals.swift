@@ -72,6 +72,10 @@ final class AgentApprovals {
         /// The plugin whose own connection asked (`AgentCaller.plugin`); nil for an outside agent
         /// or an artifact page.
         var pluginID: String? = nil
+        /// For a request that is not asked from the calling task itself (the navigation guard
+        /// asks from WebKit's policy callback): cancelling the call cancels this, which withdraws
+        /// the request and makes it ask nothing more. Nil: the asking task's own cancellation counts.
+        var cancellation: ApprovalCancellation? = nil
     }
 
     /// A question waiting for the owner, handed to `presenter` (the inbox).
@@ -116,7 +120,13 @@ final class AgentApprovals {
         case .ask(let siteOrigin):
             let outcome = await ask(request, context: context, space: space, siteOrigin: siteOrigin)
             if case .approvedSite = outcome, let siteOrigin {
+                // The owner's choice for the site holds, even if this call no longer acts.
                 allowedOrigins[space.id, default: []].insert(siteOrigin)
+            }
+            // The call was stopped while the owner answered (a yes handled just before the cancel
+            // took effect): it must not act on that yes.
+            if outcome.isAllowed, Task.isCancelled || request.cancellation?.isCancelled == true {
+                return .cancelled
             }
             return outcome
         }
@@ -170,5 +180,33 @@ final class AgentApprovals {
         let words = client.replacingOccurrences(of: "_", with: "-").split(separator: "-")
         let name = words.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
         return name.isEmpty ? "An agent" : name
+    }
+}
+
+/// Ties approval requests to a tool call that doesn't ask from its own task: during a click or
+/// type, the navigation guard asks from WebKit's policy callback. When the call is cancelled,
+/// `cancel()` withdraws every request still waiting under it (the inbox registers each one) and
+/// every later request under it is answered `.cancelled` without asking.
+@MainActor
+final class ApprovalCancellation {
+    private(set) var isCancelled = false
+    private var withdraws: [UUID: () -> Void] = [:]
+
+    func cancel() {
+        guard !isCancelled else { return }
+        isCancelled = true
+        let pending = withdraws
+        withdraws = [:]
+        for withdraw in pending.values { withdraw() }
+    }
+
+    /// `withdraw` runs once when the call is cancelled (at once if it already is).
+    func onCancel(_ id: UUID, _ withdraw: @escaping () -> Void) {
+        if isCancelled { withdraw() } else { withdraws[id] = withdraw }
+    }
+
+    /// The request was answered some other way.
+    func forget(_ id: UUID) {
+        withdraws[id] = nil
     }
 }

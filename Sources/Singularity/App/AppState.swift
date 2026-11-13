@@ -651,7 +651,8 @@ final class AppState {
         return PluginReach.front(pluginID: pluginID, space: space, spaceIsOpen: open,
                                  welcomeCoversWindow: welcomeCoversWindow, lastOtherPane: other,
                                  liveURL: { [web] id in web.existingController(id)?.webView.url },
-                                 artifactOrigin: space.flatMap { artifacts.host($0.id)?.origin })
+                                 artifactOrigin: space.flatMap { artifacts.host($0.id)?.origin },
+                                 titleIsCurrent: { [web] id in web.existingController(id)?.titleIsCurrent ?? true })
     }
 
     /// How a plugin with the `browser` permission starts this copy's browser server: the
@@ -1076,6 +1077,7 @@ final class AppState {
     // MARK: - Callbacks from web views
 
     /// Called by WebTabController when the page title or URL changes.
+    /// `title`: nil keeps the stored one; "" clears it (the page changed and came without one).
     func webTabDidChange(tabID: UUID, spaceID: UUID, title: String?, url: URL?) {
         let host = artifacts.host(spaceID)
         // The front tab's title or address may be what changed: only a pane on screen can be.

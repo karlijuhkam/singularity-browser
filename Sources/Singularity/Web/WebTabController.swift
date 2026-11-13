@@ -36,6 +36,20 @@ final class WebTabController: NSObject {
     /// Title and address of the page, mirrored for the little window's title bar.
     private(set) var pageTitle = ""
     private(set) var pageURL: URL?
+    /// The page (address without its fragment) of the document on screen: set when a load
+    /// commits or finishes, and when the address moves without a load (`pushState`, a fragment).
+    /// Nil before the first commit. While a load of another page is under way, `webView.url` is
+    /// already the new address but `webView.title` is still the old page's.
+    @ObservationIgnored private var committedPage: URL?
+    /// False from the commit of another page until that page's title arrives: the stored title is
+    /// still the previous page's. If the load finishes without one, it is cleared (`pageFinished`).
+    @ObservationIgnored private var titleBelongsToPage = true
+    /// Clears a title left behind by the previous page, shortly after a load finished without one.
+    @ObservationIgnored private var staleTitleClear: Task<Void, Never>?
+    /// How long after the load finished a page's title may still arrive (WebKit can report it just
+    /// after `didFinish`); only then is the old title cleared, so a normal load never flashes the
+    /// address in the sidebar.
+    static let untitledGrace: Duration = .milliseconds(500)
 
     /// Set while an agent's click or type runs on this tab. Every main-frame navigation during
     /// that time is checked: it gets the URL and whether it is a form submission, and returns
@@ -143,23 +157,29 @@ final class WebTabController: NSObject {
         captureSite = nil
     }
 
-    /// Waits until the page has finished loading (or `timeout` passes).
+    /// Waits until the page has finished loading (or `timeout` passes). Returns at once when the
+    /// calling task is cancelled (an agent stopped its call, or its connection closed): a
+    /// cancelled `Task.sleep` returns immediately, so waiting on would spin the main actor.
     func waitUntilLoaded(timeout: Duration = .seconds(20)) async {
         let deadline = ContinuousClock.now + timeout
+        /// False once the task is cancelled.
+        func pause() async -> Bool {
+            (try? await Task.sleep(for: .milliseconds(100))) != nil
+        }
         // A load requested a moment ago may not have flipped `isLoading` yet.
-        try? await Task.sleep(for: .milliseconds(100))
+        guard await pause() else { return }
         while webView.isLoading, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(100))
+            guard await pause() else { return }
         }
         // A navigation held for the user's approval doesn't count as loading yet; wait for the
         // answer (approvals time out on their own), then for the load it may start.
         if pendingNavigationApprovals > 0 {
             while pendingNavigationApprovals > 0 {
-                try? await Task.sleep(for: .milliseconds(100))
+                guard await pause() else { return }
             }
-            try? await Task.sleep(for: .milliseconds(100))
+            guard await pause() else { return }
             while webView.isLoading, ContinuousClock.now < deadline {
-                try? await Task.sleep(for: .milliseconds(100))
+                guard await pause() else { return }
             }
         }
     }
@@ -285,11 +305,32 @@ final class WebTabController: NSObject {
         ]
     }
 
+    /// Whether the tab's title still belongs to its address: false while a load of another page is
+    /// under way (the address is already the new page's, the title still the old one's). Agents and
+    /// plugins are then told the address without that title (`PluginReach.front`, `list_tabs`).
+    var titleIsCurrent: Bool {
+        guard titleBelongsToPage else { return false }
+        guard let committedPage, let page = Self.page(webView.url) else { return true }
+        return page == committedPage
+    }
+
+    /// `url` without its fragment: moving within a page is not another page.
+    static func page(_ url: URL?) -> URL? {
+        guard let url else { return nil }
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        parts.fragment = nil
+        return parts.url ?? url
+    }
+
     private func titleOrURLChanged() {
+        // Not loading: the address moved within the document on screen (`pushState`, a fragment).
+        if !webView.isLoading, committedPage != nil, let page = Self.page(webView.url) { committedPage = page }
         // The error page's title is not the page's name: keep the saved one (pinned tabs offline).
         let showingError = failedURL != nil || errorNavigation != nil
         let title = showingError ? nil : webView.title.flatMap { $0.isEmpty ? nil : $0 }
         if !showingError { pageTitle = title ?? "" } // an untitled page (a PDF, an image) has none
+        // The committed page's own title arrived (`webView.title` is reset when a page commits).
+        if title != nil, !webView.isLoading || committedPage == Self.page(webView.url) { titleBelongsToPage = true }
         if let url = webView.url { pageURL = url }
         // A little window's page is no tab: telling the Space would find nothing to update and
         // still mark it changed, rewriting space.json for a page that should leave no trace.
@@ -394,6 +435,8 @@ extension WebTabController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let page = Self.page(webView.url) { committedPage = page }
+        pageFinished()
         // The error page finishing is not a visit: keep it out of history.
         if navigation === errorNavigation, errorNavigation != nil {
             errorNavigation = nil
@@ -421,8 +464,39 @@ extension WebTabController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if navigation !== errorNavigation { failedURL = nil }
         hasCommittedPage = true
+        pageCommitted()
         // The tab left the site its console and network entries belong to: they go.
         if captureSite != nil, SiteInfo.site(of: webView.url) != captureSite { clearCapture() }
+    }
+
+    /// A document committed. When it is another page than the one on screen before, the stored
+    /// title is the previous page's until this page's title arrives: agents and plugins are not
+    /// given it meanwhile (`titleIsCurrent`), and the sidebar keeps it for that moment rather than
+    /// flashing the address. The first commit of a tab doesn't count: a restored tab's saved
+    /// title belongs to the address it loads.
+    private func pageCommitted() {
+        let page = Self.page(webView.url)
+        defer { committedPage = page ?? committedPage }
+        staleTitleClear?.cancel()
+        guard let previous = committedPage, let page, page != previous else { return }
+        titleBelongsToPage = !(webView.title ?? "").isEmpty && failedAddress == nil
+    }
+
+    /// The load finished. A page that came without a title of its own (a PDF, an image, a failed
+    /// load's error page) leaves the previous page's title behind: unless its own arrives within
+    /// `untitledGrace`, the old one is cleared, so the tab shows its address.
+    private func pageFinished() {
+        guard !titleBelongsToPage else { return }
+        let page = committedPage
+        staleTitleClear?.cancel()
+        staleTitleClear = Task { @MainActor [weak self] in
+            guard (try? await Task.sleep(for: Self.untitledGrace)) != nil else { return }
+            guard let self, !self.titleBelongsToPage, self.committedPage == page else { return }
+            self.titleBelongsToPage = true
+            self.pageTitle = ""
+            guard !self.isLittle else { return }
+            self.state?.webTabDidChange(tabID: self.tabID, spaceID: self.spaceID, title: "", url: self.webView.url)
+        }
     }
 
     /// Sites behind a username and password (HTTP Basic/Digest, common on staging servers).
