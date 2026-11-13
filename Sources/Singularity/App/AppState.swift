@@ -191,6 +191,7 @@ final class AppState {
         // A plugin's Space switches change only what its own connection sees, never an outside agent's.
         plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged(pluginsOnly: true) }
         plugins.onProgramEnded = { [weak self] id in self?.mcp?.closeStaleConnections(ofPlugin: id) }
+        plugins.onSpaceSwitchedOff = { [weak self] id, space in self?.inbox.denyApprovals(ofPlugin: id, inSpace: space) }
         // Site settings: the console/network collector for switched-on sites, and plugins switched off per site.
         let captureBridge = CaptureBridge(state: self)
         pluginScripts.onAttach = { controller in captureBridge.install(in: controller) }
@@ -205,6 +206,7 @@ final class AppState {
         artifacts.state = self
         inbox.state = self
         inbox.trayIsOnScreen = { [weak self] in self?.sidebarIsOffScreen != true }
+        inbox.pluginPageOnScreen = { [weak self] id in self?.pluginPageOnScreen(id) ?? false }
         sidebarPeek.state = self
         // The notifier sets itself as the notification centre's delegate here, in init, so a click
         // on a banner that launched the app is delivered. It does nothing without a bundle id.

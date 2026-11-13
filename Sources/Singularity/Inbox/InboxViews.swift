@@ -182,8 +182,9 @@ struct InboxPlace {
     }
 }
 
-/// One card: the first line, a body by kind, and the buttons.
-private struct InboxCard: View {
+/// One card: the first line, a body by kind, and the buttons. The inbox panel's list and a plugin's
+/// page area (`PluginPageCards`) both draw it.
+struct InboxCard: View {
     let entry: InboxEntry
     let place: InboxPlace
     let onAction: (InboxCardAction) -> Void
@@ -544,6 +545,56 @@ private struct InboxBlockText: View {
 
 // MARK: First line and buttons
 
+extension EnvironmentValues {
+    /// False where the cards sit beside something that has the keyboard (a plugin's page with its
+    /// chat input): their buttons then can never become first responder, not even with Full
+    /// Keyboard Access, so Tab can't move the keyboard onto Allow. The inbox panel keeps the
+    /// system's behaviour (true).
+    @Entry var inboxCardButtonsTakeFocus = true
+}
+
+/// `.focusable(false)` on a card's button where `inboxCardButtonsTakeFocus` is off; the button
+/// untouched otherwise (`.focusable(true)` would change it).
+private struct InboxCardButtonFocus: ViewModifier {
+    @Environment(\.inboxCardButtonsTakeFocus) private var takesFocus
+
+    func body(content: Content) -> some View {
+        if takesFocus {
+            content
+        } else {
+            content.focusable(false)
+        }
+    }
+}
+
+/// A card's link-looking button (Show Tab, Go to terminal). Where `inboxCardButtonsTakeFocus` is
+/// off it is a plain SwiftUI button in the link colour: `.link` is drawn by an AppKit button,
+/// which accepts first responder whatever `.focusable` says.
+private struct InboxCardLinkButton: ViewModifier {
+    @Environment(\.inboxCardButtonsTakeFocus) private var takesFocus
+
+    func body(content: Content) -> some View {
+        if takesFocus {
+            content.buttonStyle(.link)
+        } else {
+            content
+                .buttonStyle(.plain)
+                .foregroundStyle(Color(nsColor: .linkColor))
+                .focusable(false)
+        }
+    }
+}
+
+extension View {
+    fileprivate func inboxCardButtonFocus() -> some View {
+        modifier(InboxCardButtonFocus())
+    }
+
+    fileprivate func inboxCardLinkButton() -> some View {
+        modifier(InboxCardLinkButton())
+    }
+}
+
 private struct InboxCardButtons: View {
     let entry: InboxEntry
     let onAction: (InboxCardAction) -> Void
@@ -561,15 +612,17 @@ private struct InboxCardButtons: View {
                     if isDone {
                         Button("Dismiss") { onAction(.dismiss(entry.id)) }
                             .controlSize(.small)
+                            .inboxCardButtonFocus()
                     }
                     ForEach(Array(permission.enumerated()), id: \.offset) { _, choice in
                         Button(choice.title) { onAction(choice.action) }
                             .controlSize(.small)
+                            .inboxCardButtonFocus()
                     }
                     Spacer(minLength: 0)
                     if entry.tabID != nil {
                         Button("Go to terminal") { onAction(.goTo(entry)) }
-                            .buttonStyle(.link)
+                            .inboxCardLinkButton()
                             .font(.system(size: 11))
                     }
                 }
@@ -613,13 +666,14 @@ struct InboxApprovalButtons: View {
                 Button(choice.title) { onAction(choice.action) }
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .inboxCardButtonFocus()
                     // A long "Allow on <site>" gives way first; Allow and Deny keep their size.
                     .layoutPriority(index == 1 && choices.answers.count == 3 ? -1 : 0)
             }
             Spacer(minLength: 0)
             if let showTab = choices.showTab {
                 Button(showTab.title) { onAction(showTab.action) }
-                    .buttonStyle(.link)
+                    .inboxCardLinkButton()
                     .font(.system(size: 11))
                     .fixedSize()
             }

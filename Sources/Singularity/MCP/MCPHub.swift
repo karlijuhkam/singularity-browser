@@ -133,14 +133,17 @@ final class MCPHub {
 
         // The client's name ("claude-code"), from its initialize request; used in sheets and the log.
         let client = ClientName()
+        let calls = RunningCalls()
 
         Task { [weak self, toolbox] in
             await server.withMethodHandler(ListTools.self) { _ in
                 await .init(tools: toolbox.listTools(for: caller, program: program))
             }
             await server.withMethodHandler(CallTool.self) { params in
-                await toolbox.call(params.name, arguments: params.arguments ?? [:], client: client.value, caller: caller,
-                                   program: program)
+                await calls.run {
+                    await toolbox.call(params.name, arguments: params.arguments ?? [:], client: client.value, caller: caller,
+                                       program: program)
+                }
             }
             // The socket is both our input and our output.
             let transport = StdioTransport(input: FileDescriptor(rawValue: fd), output: FileDescriptor(rawValue: fd))
@@ -152,10 +155,53 @@ final class MCPHub {
             } catch {
                 mcpLog.error("MCP connection failed: \(error)")
             }
+            // The client is gone: its calls still running are cancelled, so one waiting for the
+            // owner withdraws its approval at once instead of waiting for its timeout.
+            calls.cancelAll()
             await server.stop()
             self?.servers[id] = nil // first: nothing may shut down this fd number once it is closed
             close(fd)
             mcpLog.notice("agent disconnected")
+        }
+    }
+
+    /// The tool calls of one connection that are still running, so they can be cancelled when the
+    /// connection ends (the SDK cancels a call's task on the client's `notifications/cancelled`,
+    /// but not when the connection closes). A cancelled call that waits for an approval withdraws
+    /// it (`InboxCenter.requestApproval`) and is answered "The request was withdrawn.".
+    private final class RunningCalls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var tasks: [UUID: Task<CallTool.Result, Never>] = [:]
+        private var ended = false
+
+        /// Runs `work` as its own task, cancelled with the calling task (the SDK's) or by `cancelAll`.
+        func run(_ work: @escaping @Sendable () async -> CallTool.Result) async -> CallTool.Result {
+            let key = UUID()
+            let task: Task<CallTool.Result, Never>? = lock.withLock {
+                guard !ended else { return nil }
+                let task = Task { await work() }
+                tasks[key] = task
+                return task
+            }
+            guard let task else {
+                return .init(content: [.text(text: "The connection was closed.", annotations: nil, _meta: nil)], isError: true)
+            }
+            defer { lock.withLock { tasks[key] = nil } }
+            return await withTaskCancellationHandler {
+                await task.value
+            } onCancel: {
+                task.cancel()
+            }
+        }
+
+        /// The connection ended: every running call is cancelled, and no new one starts.
+        func cancelAll() {
+            let running = lock.withLock {
+                ended = true
+                defer { tasks = [:] }
+                return Array(tasks.values)
+            }
+            for task in running { task.cancel() }
         }
     }
 

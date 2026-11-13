@@ -119,6 +119,8 @@ private struct PluginPanelHeader: View {
 /// The plugin's page, in the panel or in a tab (and a tab's split pane): the page's web view
 /// while the plugin runs, else the native "isn't running" page. The web view can only be in one
 /// place, so it is hosted like a tab's view (`HostedView`: the newest container owns it).
+/// Below it, the plugin's waiting approvals as cards, or the strip for a Space it can't see
+/// (`PluginPageCards`); the page is made shorter for them, never covered.
 struct PluginPageArea: View {
     @Environment(AppState.self) private var state
     let pluginID: String
@@ -129,7 +131,16 @@ struct PluginPageArea: View {
     var onDrop: ((UUID, PaneDropZone) -> Void)?
 
     var body: some View {
-        switch state.pluginPageContent(pluginID, fallbackTitle: fallbackTitle) {
+        let content = state.pluginPageContent(pluginID, fallbackTitle: fallbackTitle)
+        let isPage = if case .page = content { true } else { false }
+        PluginPageAreaLayout(pluginID: pluginID, showsStrip: isPage) {
+            page(content)
+        }
+    }
+
+    @ViewBuilder
+    private func page(_ content: PluginPageContent) -> some View {
+        switch content {
         case .page(let host):
             HostedView(view: host.webView, tabID: tabID, onDrop: onDrop)
                 // After the plugin stopped and started again the page is a new web view; `.id`

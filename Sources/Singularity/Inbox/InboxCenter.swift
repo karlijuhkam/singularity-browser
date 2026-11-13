@@ -85,6 +85,10 @@ final class InboxCenter {
     /// The visible entries' ids, in order, when `answersUnlockAt` was last moved.
     @ObservationIgnored private var lastVisibleIDs: [UUID] = []
 
+    /// Whether plugin `id`'s page (its panel, or a tab of it) is on screen in the main window while
+    /// the app is active (`AppState.pluginPageOnScreen`). Its approvals are then answered there.
+    @ObservationIgnored var pluginPageOnScreen: (String) -> Bool = { _ in false }
+
     /// False while the sidebar is hidden and not slid out (`AppState` sets this).
     @ObservationIgnored var trayIsOnScreen: () -> Bool = { true }
     /// The rail's tray button (its AppKit view), so the panel can open beside it.
@@ -181,10 +185,14 @@ final class InboxCenter {
     // MARK: Browser approvals
 
     /// `AgentApprovals`' presenter: adds an approval entry and waits for the owner's answer, the
-    /// deadline (`.timedOut`), or the entry leaving another way (tab closed, Space deleted, app
-    /// quitting: `.denied`). Never returns an allowed outcome on its own, except `.auto` for a
-    /// request the rules let through at that moment (`releaseApprovalsThatNowPass`).
+    /// deadline (`.timedOut`), the entry leaving another way (tab closed, Space deleted, the
+    /// plugin's Space switched off, app quitting: `.denied`), or the asking call being cancelled
+    /// (`.cancelled`: the agent stopped it, or its connection closed). Never returns an allowed
+    /// outcome on its own, except `.auto` for a request the rules let through at that moment
+    /// (`releaseApprovalsThatNowPass`).
     func requestApproval(_ pending: AgentApprovals.PendingApproval) async -> AgentApprovals.Outcome {
+        // A call that was already stopped asks nothing.
+        if Task.isCancelled { return .cancelled }
         // A request for a Space or tab that is already gone: no entry, "no".
         if let state {
             guard let space = state.space(pending.spaceID) else { return .denied }
@@ -202,19 +210,55 @@ final class InboxCenter {
             tabTitle: request.tabTitle, text: request.text,
             siteHost: pending.siteOrigin.map { URL(string: $0)?.host() ?? $0 })
         let arrived = now()
+        // Named before the entry exists, so a cancellation at any moment can withdraw it.
+        let id = UUID()
 
         // The check pauses here until `finishApproval` resumes it. The closure runs at once, on
         // the main actor, so the entry and its waiting record exist before anything can answer.
-        return await withCheckedContinuation { continuation in
-            let entry = inbox.addApproval(approval, spaceID: pending.spaceID, tabID: request.tabID,
-                                          deadline: arrived.addingTimeInterval(Self.seconds(pending.timeout)),
-                                          now: arrived)
-            waitingApprovals[entry.id] = WaitingApproval(continuation: continuation, pending: pending,
-                                                         deadline: .now + pending.timeout)
-            startApprovalTimer(entry.id)
-            logChange("approval added", tabID: entry.tabID)
-            listDidChange()
-            announceApproval(entry)
+        // A cancellation of the calling task (the SDK cancels a tool call's task on the client's
+        // `notifications/cancelled`, and `MCPHub` cancels a connection's calls when it closes)
+        // withdraws the entry. Its handler runs on any thread, possibly at once; it hops to the
+        // main actor, which runs it only after the closure below has made the record, and
+        // `finishApproval` ignores an id that is already answered.
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let entry = inbox.addApproval(approval, id: id, spaceID: pending.spaceID, tabID: request.tabID,
+                                              deadline: arrived.addingTimeInterval(Self.seconds(pending.timeout)),
+                                              now: arrived, pluginID: request.pluginID)
+                waitingApprovals[entry.id] = WaitingApproval(continuation: continuation, pending: pending,
+                                                             deadline: .now + pending.timeout)
+                startApprovalTimer(entry.id)
+                logChange("approval added", tabID: entry.tabID)
+                listDidChange()
+                announceApproval(entry)
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.withdrawApproval(id) }
+        }
+    }
+
+    /// The call waiting for this approval was cancelled: the entry goes and the call gets
+    /// `.cancelled` (logged as such). An approval that is no longer waiting: nothing.
+    func withdrawApproval(_ id: UUID) {
+        finishApproval(id, .cancelled)
+    }
+
+    /// The waiting approvals that plugin `pluginID`'s own connection asked for, oldest first:
+    /// what its page area draws as cards.
+    func approvals(forPlugin pluginID: String) -> [InboxEntry] {
+        inbox.visible.filter { entry in
+            guard entry.pluginID == pluginID, case .approval = entry.kind else { return false }
+            return true
+        }
+    }
+
+    /// The owner switched Space `spaceID` off for plugin `pluginID`: what that plugin's connection
+    /// is waiting for there is denied (an outside agent's approvals and the plugin's in other
+    /// Spaces wait on).
+    func denyApprovals(ofPlugin pluginID: String, inSpace spaceID: UUID) {
+        for (id, waiting) in waitingApprovals
+        where waiting.pending.spaceID == spaceID && waiting.pending.request.pluginID == pluginID {
+            finishApproval(id, .denied)
         }
     }
 
@@ -235,7 +279,7 @@ final class InboxCenter {
                 await Task.yield()
                 self?.releaseApprovalsThatNowPass()
             }
-        case .auto, .timedOut, .refused:
+        case .auto, .timedOut, .cancelled, .refused:
             return
         }
     }
@@ -290,6 +334,12 @@ final class InboxCenter {
 
     /// The panel came on screen: lock the answer buttons for a moment (see `answersUnlockAt`).
     func panelAppeared() {
+        lockAnswers()
+    }
+
+    /// Cards came on screen in a plugin's page area (the page was shown with approvals already
+    /// waiting): the same lock as the panel's.
+    func pageCardsAppeared() {
         lockAnswers()
     }
 
@@ -360,8 +410,10 @@ final class InboxCenter {
 
     /// Singularity active: the panel opens by itself, without the keyboard, and no notification
     /// (the owner is here). In the background, or when the panel could not open: a notification
-    /// and a Dock bounce.
+    /// and a Dock bounce. A plugin's approval while that plugin's page is on screen: neither; its
+    /// page area draws it as a card (`PluginPageCards`), and it is in the list and counts as any.
     private func announceApproval(_ entry: InboxEntry) {
+        if InboxRules.shownInPluginPage(entryPluginID: entry.pluginID, pageOnScreen: pluginPageOnScreen) { return }
         if appIsActive() {
             showPanel(takingFocus: false)
             if isPanelShown { return }

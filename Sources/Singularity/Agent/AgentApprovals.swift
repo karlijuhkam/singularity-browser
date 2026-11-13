@@ -12,12 +12,15 @@ final class AgentApprovals {
         case approvedSite
         case denied
         case timedOut
+        /// The call that asked was cancelled while it waited (the agent stopped it, or its
+        /// connection closed): the request was withdrawn, unanswered.
+        case cancelled
         case refused(String)
 
         var isAllowed: Bool {
             switch self {
             case .auto, .approved, .approvedSite: return true
-            case .denied, .timedOut, .refused: return false
+            case .denied, .timedOut, .cancelled, .refused: return false
             }
         }
 
@@ -29,6 +32,7 @@ final class AgentApprovals {
             case .approvedSite: return "approved_site"
             case .denied: return "denied"
             case .timedOut: return "timeout"
+            case .cancelled: return "cancelled"
             case .refused: return "readonly"
             }
         }
@@ -39,6 +43,7 @@ final class AgentApprovals {
             case .auto, .approved, .approvedSite: return nil
             case .denied: return "The user declined this action."
             case .timedOut: return "The user did not answer in time, so the action was not performed."
+            case .cancelled: return "The request was withdrawn."
             case .refused(let reason): return reason
             }
         }
@@ -129,10 +134,11 @@ final class AgentApprovals {
                 }
             })
         let outcome = await presenter(pending)
-        // Only the owner's answers come back from the inbox, or `.auto` for a request that the
-        // rules let through now. Anything else would be a mistake: treat it as "no".
+        // Only the owner's answers come back from the inbox, `.cancelled` for a call that was
+        // stopped while it waited, or `.auto` for a request that the rules let through now.
+        // Anything else would be a mistake: treat it as "no".
         switch outcome {
-        case .denied, .timedOut:
+        case .denied, .timedOut, .cancelled:
             return outcome
         case .approved, .approvedSite:
             if case .approvedSite = outcome, siteOrigin == nil { return .denied }

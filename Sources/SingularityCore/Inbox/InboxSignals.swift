@@ -117,6 +117,14 @@ public enum InboxRules {
         appIsActive && windowIsKey && tabIsOnScreen
     }
 
+    /// An approval of a plugin is answered in that plugin's page instead of opening the inbox
+    /// panel (and no banner is sent) while that page is on screen. Everything else, and a plugin's
+    /// approval while its page is not on screen, is announced as always.
+    public static func shownInPluginPage(entryPluginID: String?, pageOnScreen: (String) -> Bool) -> Bool {
+        guard let entryPluginID else { return false }
+        return pageOnScreen(entryPluginID)
+    }
+
     /// Matches by prefix, so `claude`, `claude-code` and `Claude Code` all map to "Claude Code".
     private static func known(_ raw: String?) -> String? {
         guard let lower = raw?.lowercased() else { return nil }

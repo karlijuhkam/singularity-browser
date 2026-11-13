@@ -202,10 +202,14 @@ public struct Inbox: Equatable, Sendable {
 
     // MARK: Approvals
 
-    public mutating func addApproval(_ approval: InboxApproval, spaceID: UUID, tabID: UUID?,
-                                     deadline: Date, now: Date) -> InboxEntry {
-        let entry = InboxEntry(kind: .approval(approval), spaceID: spaceID, tabID: tabID,
-                               agent: approval.actor, message: nil, arrived: now, deadline: deadline)
+    /// - Parameters:
+    ///   - id: the entry's id, chosen by the caller (the app names it before the entry exists, so a
+    ///     call cancelled at any moment can withdraw it).
+    ///   - pluginID: the plugin whose own connection asked; nil for an outside agent or a page.
+    public mutating func addApproval(_ approval: InboxApproval, id: UUID = UUID(), spaceID: UUID, tabID: UUID?,
+                                     deadline: Date, now: Date, pluginID: String? = nil) -> InboxEntry {
+        let entry = InboxEntry(id: id, kind: .approval(approval), spaceID: spaceID, tabID: tabID,
+                               agent: approval.actor, message: nil, arrived: now, deadline: deadline, pluginID: pluginID)
         entries.append(entry)
         return entry
     }

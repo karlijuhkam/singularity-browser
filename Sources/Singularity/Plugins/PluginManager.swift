@@ -138,6 +138,9 @@ final class PluginManager {
     @ObservationIgnored var browserServerProvider: (() -> JSONValue)?
     /// Called after a plugin was switched on or off in a Space (`AppState` tells the MCP hub).
     @ObservationIgnored var onSpacesChanged: (() -> Void)?
+    /// The owner switched a Space off for a plugin (`setEnabled`): what the plugin's connection is
+    /// waiting for there is denied (the inbox).
+    @ObservationIgnored var onSpaceSwitchedOff: ((_ pluginID: String, _ space: UUID) -> Void)?
     /// A plugin's program ended or its background stopped: the agent door closes the connections
     /// that came from a program that isn't the plugin's running one any more.
     @ObservationIgnored var onProgramEnded: ((String) -> Void)?
@@ -812,6 +815,7 @@ final class PluginManager {
         reapply(id)
         frontDidChange()
         onSpacesChanged?()
+        if !on { onSpaceSwitchedOff?(id, space) }
     }
 
     /// Development mode: while on, edited files restart the plugin instead of pausing it.
