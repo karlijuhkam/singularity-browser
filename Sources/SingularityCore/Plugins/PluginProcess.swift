@@ -63,6 +63,7 @@ public final class PluginProcess: @unchecked Sendable {
     private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
     private var _onFrontRequest: (@Sendable (Int) -> Void)?
     private var _onBrowserServerRequest: (@Sendable (Int) -> Void)?
+    private var _onProgramExit: (@Sendable () -> Void)?
     /// The plugin's one program: reserved (`running` nil) while it starts, cleared when its exit
     /// has been sent.
     private var program: (id: Int, name: String, running: RunningProgram?)?
@@ -114,6 +115,12 @@ public final class PluginProcess: @unchecked Sendable {
     public var onBrowserServerRequest: (@Sendable (Int) -> Void)? {
         get { lock.withLock { _onBrowserServerRequest } }
         set { lock.withLock { _onBrowserServerRequest = newValue } }
+    }
+    /// The plugin's program ended (after `programPID` became nil). The agent door then closes the
+    /// connections that came from it.
+    public var onProgramExit: (@Sendable () -> Void)? {
+        get { lock.withLock { _onProgramExit } }
+        set { lock.withLock { _onProgramExit = newValue } }
     }
 
     /// The most program output that was ever sent and not yet reported read (for tests).
@@ -473,6 +480,7 @@ public final class PluginProcess: @unchecked Sendable {
         case let .exit(status, signal):
             // Cleared before the plugin hears of the exit, so it may start the next one at once.
             lock.withLock { if program?.id == programID { program = nil } }
+            lock.withLock { _onProgramExit }?()
             send(.programExit(programID: programID, status: status, signal: signal.map(ProgramSignal.name)))
         }
     }
@@ -642,6 +650,7 @@ public final class PluginSupervisor: @unchecked Sendable {
     private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
     private var _onFrontRequest: (@Sendable (Int) -> Void)?
     private var _onBrowserServerRequest: (@Sendable (Int) -> Void)?
+    private var _onProgramExit: (@Sendable () -> Void)?
 
     /// - Parameters:
     ///   - restartDelay: pause before a restart.
@@ -687,6 +696,12 @@ public final class PluginSupervisor: @unchecked Sendable {
     public var onBrowserServerRequest: (@Sendable (Int) -> Void)? {
         get { lock.withLock { _onBrowserServerRequest } }
         set { lock.withLock { _onBrowserServerRequest = newValue } }
+    }
+    /// The plugin's program ended (after `programPID` became nil). The agent door then closes the
+    /// connections that came from it.
+    public var onProgramExit: (@Sendable () -> Void)? {
+        get { lock.withLock { _onProgramExit } }
+        set { lock.withLock { _onProgramExit = newValue } }
     }
 
     /// Starts the plugin. Does nothing while a process is running or a restart is pending.
@@ -768,6 +783,7 @@ public final class PluginSupervisor: @unchecked Sendable {
         process.onLog = { [weak self] level, message in self?.record(level, message) }
         process.onPanelPost = { [weak self] payload in self?.onPanelPost?(payload) }
         process.onFrontRequest = { [weak self] id in self?.onFrontRequest?(id) }
+        process.onProgramExit = { [weak self] in self?.onProgramExit?() }
         process.onBrowserServerRequest = { [weak self] id in self?.onBrowserServerRequest?(id) }
         process.onExit = { [weak self] status in self?.processExited(status: status, generation: generation) }
         do {

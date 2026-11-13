@@ -27,7 +27,10 @@ final class AgentToolbox {
 
     // MARK: - Tool definitions
 
-    func listTools(for caller: AgentCaller) -> [Tool] {
+    /// - Parameter program: for a plugin's connection, the pid of the plugin's program it came from
+    ///   (seen when it was accepted). Once that program is no longer the plugin's running one, the
+    ///   connection gets no Space (`isOpen`).
+    func listTools(for caller: AgentCaller, program: pid_t? = nil) -> [Tool] {
         guard state != nil else { return [] }
         var tools = [
             Tool(
@@ -38,7 +41,7 @@ final class AgentToolbox {
                 annotations: .init(readOnlyHint: true)
             ),
         ]
-        for space in spaces(for: caller) {
+        for space in spaces(for: caller, program: program) {
             tools += spaceTools(space)
         }
         return tools
@@ -131,6 +134,8 @@ final class AgentToolbox {
     private final class CallRecord {
         let started = Date()
         let caller: AgentCaller
+        /// For a plugin's connection: the program it came from (see `listTools(for:program:)`).
+        let program: pid_t?
         /// For the log and the inbox card: the plugin's title, or the name the agent introduced itself with.
         let client: String
         var spaceID: UUID?
@@ -140,16 +145,18 @@ final class AgentToolbox {
         /// When set, the log keeps this instead of the result (console and network content is never logged).
         var logResult: String?
 
-        init(client: String, caller: AgentCaller) {
+        init(client: String, caller: AgentCaller, program: pid_t?) {
             self.caller = caller
+            self.program = program
             self.client = caller.clientName(introducedAs: client)
         }
     }
 
     /// Runs one tool call: checks the approval policy, marks the tab as busy while it runs,
     /// and appends the call to the Space's agent log.
-    func call(_ name: String, arguments: [String: Value], client: String, caller: AgentCaller) async -> CallTool.Result {
-        let record = CallRecord(client: client, caller: caller)
+    func call(_ name: String, arguments: [String: Value], client: String, caller: AgentCaller,
+              program: pid_t? = nil) async -> CallTool.Result {
+        let record = CallRecord(client: client, caller: caller, program: program)
         let result: CallTool.Result
         do {
             result = try await perform(name, arguments: arguments, record: record)
@@ -165,7 +172,7 @@ final class AgentToolbox {
 
     private func perform(_ name: String, arguments: [String: Value], record: CallRecord) async throws -> CallTool.Result {
         if name == AgentToolName.listSpaces {
-            return .init(content: [.plain(try listSpaces(record.caller))])
+            return .init(content: [.plain(try listSpaces(record.caller, program: record.program))])
         }
         guard let state, let (slug, tool) = AgentToolName.parse(name),
               let space = state.spaces.first(where: { $0.slug == slug }) else {
@@ -176,10 +183,11 @@ final class AgentToolbox {
             guard space.agentsEnabled else {
                 throw ToolError("Agents are not allowed in the “\(space.name)” Space.")
             }
-        case .plugin(_, let title):
+        case .plugin:
             // The switch as it is now: a tool name remembered from before is refused once it is off.
-            guard isOpen(space, for: record.caller) else {
-                throw ToolError(AgentCaller.spaceOff(title: title, space: space.name))
+            // Exactly as for a Space that doesn't exist, so a guessed slug tells it nothing.
+            guard isOpen(space, for: record.caller, program: record.program) else {
+                throw ToolError("Unknown tool \(name). Call list_spaces to see what is available.")
             }
         }
         record.spaceID = space.id
@@ -210,9 +218,9 @@ final class AgentToolbox {
 
     // MARK: - Tools
 
-    private func listSpaces(_ caller: AgentCaller) throws -> String {
+    private func listSpaces(_ caller: AgentCaller, program: pid_t?) throws -> String {
         guard state != nil else { throw ToolError("Browser is shutting down.") }
-        let spaces = spaces(for: caller).map { space -> [String: Any] in
+        let spaces = spaces(for: caller, program: program).map { space -> [String: Any] in
             ["slug": space.slug, "name": space.name, "tabs": space.tabs.filter { tabIsVisible($0, in: space, to: caller) }.count,
              "policy": space.agentPolicy.rawValue,
              "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
@@ -409,7 +417,7 @@ final class AgentToolbox {
         // A plugin's switches may have changed while the owner was asked: they count as they are now.
         if case .plugin(_, let title) = record.caller {
             let now = state.space(space.id)
-            guard let now, isOpen(now, for: record.caller) else {
+            guard let now, isOpen(now, for: record.caller, program: record.program) else {
                 throw ToolError(AgentCaller.spaceOff(title: title, space: space.name))
             }
             if let tabID = record.tabID, let tab = now.tab(tabID) { try refuseOffSite(tab, now, record) }
@@ -494,7 +502,7 @@ final class AgentToolbox {
         }
         guard !tab.isTerminal else { throw ToolError("Tab \(tabID.uuidString.lowercased()) is a terminal, not a web page.") }
         guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
-        // Before the tab is loaded or marked: where it is now (live page, else its stored address).
+        // Before the tab is loaded or marked: where it is now (live page and stored address).
         try refuseOffSite(tab, space, record)
         if record.tabID == nil {
             record.tabID = tabID
@@ -512,22 +520,34 @@ final class AgentToolbox {
     // MARK: - Who may see what
 
     /// The Spaces `caller` gets tools for: agents on (outside), or switched on for the plugin now.
-    private func spaces(for caller: AgentCaller) -> [Space] {
-        AgentCaller.spaces(state?.spaces ?? [], caller: caller, isOpenForPlugin: { self.isOpen($0, for: caller) })
+    private func spaces(for caller: AgentCaller, program: pid_t?) -> [Space] {
+        AgentCaller.spaces(state?.spaces ?? [], caller: caller, isOpenForPlugin: { self.isOpen($0, for: caller, program: program) })
     }
 
-    /// For a plugin's connection: the Space is switched on for that plugin now (approved with
-    /// `browser`, Space in its switches). Outside agents: always true (their gate is `agentsEnabled`).
-    private func isOpen(_ space: Space, for caller: AgentCaller) -> Bool {
+    /// For a plugin's connection: the connection still comes from the plugin's running program
+    /// (the one seen when it was accepted: a launcher left behind by an ended program gets nothing,
+    /// also once the plugin runs a new one), and the Space is switched on for that plugin now
+    /// (approved with `browser`, Space in its switches). Outside agents: always true (their gate is
+    /// `agentsEnabled`).
+    private func isOpen(_ space: Space, for caller: AgentCaller, program: pid_t?) -> Bool {
         guard case .plugin(let id, _) = caller else { return true }
-        return state?.plugins.browserSpaceIsOpen(id, space: space) == true
+        guard let plugins = state?.plugins, let program, plugins.programPID(of: id) == program else { return false }
+        return plugins.browserSpaceIsOpen(id, space: space)
     }
 
-    /// A web tab's address now: its live page's when it has one, else the stored address. Nil for
-    /// other tabs, which the site switch doesn't cover.
-    private func currentAddress(of tab: BrowserTab) -> URL? {
-        guard case .web(let stored) = tab.kind else { return nil }
-        return state?.web.existingController(tab.id)?.webView.url ?? stored
+    /// Where a web or artifact tab is now: its live page's address (an artifact tab's page can leave
+    /// the artifact server and stay an artifact tab) and a web tab's stored address (which follows
+    /// the page). Empty for terminals and plugin tabs, which the site switch doesn't cover.
+    private func currentAddresses(of tab: BrowserTab) -> [URL] {
+        switch tab.kind {
+        case .web, .artifact: return [state?.web.existingController(tab.id)?.webView.url, tab.url].compactMap { $0 }
+        case .terminal, .plugin: return []
+        }
+    }
+
+    /// For a plugin's connection: the tab is on a site the owner switched that plugin off for.
+    private func tabIsOff(_ tab: BrowserTab, _ space: Space, _ caller: AgentCaller) -> Bool {
+        currentAddresses(of: tab).contains { siteIsOff($0, space, caller) }
     }
 
     /// For a plugin's connection: the owner switched that plugin off for the site of `url` in the
@@ -539,11 +559,11 @@ final class AgentToolbox {
 
     /// A tab `caller` may know about: never a plugin's page; for a plugin, nothing on a switched-off site.
     private func tabIsVisible(_ tab: BrowserTab, in space: Space, to caller: AgentCaller) -> Bool {
-        !tab.isPlugin && !siteIsOff(currentAddress(of: tab), space, caller)
+        !tab.isPlugin && !tabIsOff(tab, space, caller)
     }
 
     private func refuseOffSite(_ tab: BrowserTab, _ space: Space, _ record: CallRecord) throws {
-        guard case .plugin(_, let title) = record.caller, siteIsOff(currentAddress(of: tab), space, record.caller) else { return }
+        guard case .plugin(_, let title) = record.caller, tabIsOff(tab, space, record.caller) else { return }
         throw ToolError(AgentCaller.siteOff(title: title))
     }
 

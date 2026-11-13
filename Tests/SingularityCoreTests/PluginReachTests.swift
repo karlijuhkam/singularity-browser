@@ -160,6 +160,35 @@ import Testing
         #expect(front(s, other: UUID()) == .hidden(.nothing))
     }
 
+    @Test func anArtifactTabsLivePageCountsWhereItIs() {
+        let tab = BrowserTab.artifact(path: "report/index.html")
+        let server = URL(string: "http://127.0.0.1:50123/")!
+        let off = space([tab], selected: tab, sites: ["https://off.example": SiteSettings(disabledPlugins: ["t"])])
+        func front(live: URL?) -> PluginReach.Front {
+            PluginReach.front(pluginID: "t", space: off, spaceIsOpen: true, welcomeCoversWindow: false, lastOtherPane: nil,
+                              liveURL: { $0 == tab.id ? live : nil }, artifactOrigin: server)
+        }
+        // Its live page on a switched-off site: hidden.
+        #expect(front(live: URL(string: "https://off.example/x")!) == .hidden(.siteOff))
+        // On another site: reported as that web page, with the live address, never as the artifact.
+        guard case .tab(let elsewhere) = front(live: URL(string: "https://other.example/y")!) else { Issue.record("no tab"); return }
+        #expect(elsewhere.tab.kind == "web" && elsewhere.tab.url == "https://other.example/y")
+        // Still on the artifact server: the artifact, as before.
+        guard case .tab(let home) = front(live: URL(string: "http://127.0.0.1:50123/report/index.html")!) else { Issue.record("no tab"); return }
+        #expect(home.tab.kind == "artifact" && home.tab.url == "report/index.html")
+        // No live page: as before.
+        guard case .tab(let none) = front(live: nil) else { Issue.record("no tab"); return }
+        #expect(none.tab.kind == "artifact" && none.tab.url == "report/index.html")
+    }
+
+    @Test func aWebTabsLiveAddressIsChecked() {
+        let tab = BrowserTab.web(URL(string: "https://fine.example/")!)
+        let off = space([tab], selected: tab, sites: ["https://off.example": SiteSettings(disabledPlugins: ["t"])])
+        let live = PluginReach.front(pluginID: "t", space: off, spaceIsOpen: true, welcomeCoversWindow: false,
+                                     lastOtherPane: nil, liveURL: { _ in URL(string: "https://off.example/z") })
+        #expect(live == .hidden(.siteOff))
+    }
+
     @Test func hiddenReasons() {
         let tab = BrowserTab.web(URL(string: "https://example.com/")!)
         let s = space([tab], selected: tab)

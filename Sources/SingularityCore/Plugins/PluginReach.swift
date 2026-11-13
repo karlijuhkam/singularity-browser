@@ -57,8 +57,15 @@ public enum PluginReach {
 
     /// `lastOtherPane`: in the selected tab's split, the pane focused last that is not a plugin
     /// tab (nil if none). It is used only when the selected tab is a plugin tab.
+    ///
+    /// `liveURL`: the address of a tab's live page, when it has one (the app passes its web view's
+    /// URL). For web and artifact tabs alike, the site switch is checked against it (a web tab's
+    /// stored address too), so a page that was redirected or navigated elsewhere counts where it is now. An artifact tab whose live page
+    /// is no longer on `artifactOrigin` (the Space's artifact server) is reported as the web page it
+    /// shows: kind "web" with that address, never as an artifact with a file path.
     public static func front(pluginID: String, space: Space?, spaceIsOpen: Bool, welcomeCoversWindow: Bool,
-                             lastOtherPane: UUID?) -> Front {
+                             lastOtherPane: UUID?, liveURL: (UUID) -> URL? = { _ in nil },
+                             artifactOrigin: URL? = nil) -> Front {
         if welcomeCoversWindow { return .hidden(.nothing) }
         guard let space, let selected = space.selectedTab else { return .hidden(.nothing) }
         guard spaceIsOpen else { return .hidden(.spaceOff) }
@@ -69,14 +76,29 @@ public enum PluginReach {
             tab = other
         }
 
+        let live = liveURL(tab.id)
         var ref = FrontTab.TabRef(id: tab.id.uuidString.lowercased(), kind: "terminal")
-        switch tab.kind {
-        case .web(let url):
-            if siteIsOff(space, pluginID: pluginID, url: url) { return .hidden(.siteOff) }
+        func webPage(_ url: URL) {
             ref.kind = "web"
             ref.title = String(tab.displayTitle.prefix(titleLimit))
             ref.url = String(url.absoluteString.prefix(urlLimit))
+        }
+        switch tab.kind {
+        case .web(let stored):
+            // The stored address follows the page (`webTabDidChange`); either one on a switched-off
+            // site hides the tab, so a page that just moved counts at once.
+            if siteIsOff(space, pluginID: pluginID, url: stored)
+                || live.map({ siteIsOff(space, pluginID: pluginID, url: $0) }) == true { return .hidden(.siteOff) }
+            webPage(stored)
         case .artifact(let path):
+            if let live {
+                if siteIsOff(space, pluginID: pluginID, url: live) { return .hidden(.siteOff) }
+                let onArtifactServer = artifactOrigin.flatMap { SiteInfo.site(of: $0) }.map { $0 == SiteInfo.site(of: live) } ?? false
+                if !onArtifactServer {
+                    webPage(live)
+                    break
+                }
+            }
             ref.kind = "artifact"
             ref.title = String(tab.displayTitle.prefix(titleLimit))
             ref.url = String(path.prefix(urlLimit))

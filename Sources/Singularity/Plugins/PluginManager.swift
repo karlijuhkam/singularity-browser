@@ -138,6 +138,9 @@ final class PluginManager {
     @ObservationIgnored var browserServerProvider: (() -> JSONValue)?
     /// Called after a plugin was switched on or off in a Space (`AppState` tells the MCP hub).
     @ObservationIgnored var onSpacesChanged: (() -> Void)?
+    /// A plugin's program ended or its background stopped: the agent door closes the connections
+    /// that came from a program that isn't the plugin's running one any more.
+    @ObservationIgnored var onProgramEnded: ((String) -> Void)?
     /// At most one `frontChanged` this often per plugin; a change inside the window is sent when it ends.
     static let frontChangeInterval: Duration = .milliseconds(500)
     /// What each running plugin was last told (by a reply or a `frontChanged`), and when.
@@ -404,6 +407,9 @@ final class PluginManager {
                 }
             }
         }
+        supervisor.onProgramExit = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.onProgramEnded?(id) } }
+        }
         supervisor.onStateChange = { [weak self, weak supervisor] state in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -411,6 +417,7 @@ final class PluginManager {
                     self.update(id) { $0.runState = state }
                     if state == .running { self.appendLog(id, "info", "started") }
                     if state != .running {
+                        self.onProgramEnded?(id)
                         self.failRequests(of: id)
                         // Crashed for good or couldn't start: no background, so no page.
                         self.tearDownPage(id)
@@ -445,6 +452,7 @@ final class PluginManager {
         frontTimers.removeValue(forKey: id)?.cancel()
         update(id) { $0.runState = .stopped }
         failRequests(of: id)
+        onProgramEnded?(id)
         appendLog(id, "info", reason.map { "stopped: \($0)" } ?? "stopped")
     }
 
@@ -577,11 +585,13 @@ final class PluginManager {
     /// a process can't choose its parent, so nothing outside that program's tree can pass. Its pid
     /// is only reported while the program hasn't been reaped (`RunningProgram.livePID`), so it
     /// can't be a recycled pid.
-    func pluginOwning(pid: pid_t) -> (id: String, title: String)? {
+    /// `program` is the program's pid: the connection is the plugin's only while that program is
+    /// still the plugin's running one (`programPID(of:)`), checked at every call.
+    func pluginOwning(pid: pid_t) -> (id: String, title: String, program: pid_t)? {
         for (id, supervisor) in supervisors.sorted(by: { $0.key < $1.key }) {
             guard let manifest = browserManifest(id), let program = supervisor.programPID,
                   ProcessInspector.isDescendant(pid, of: program) else { continue }
-            return (id, AgentCaller.title(of: manifest))
+            return (id, AgentCaller.title(of: manifest), program)
         }
         return nil
     }

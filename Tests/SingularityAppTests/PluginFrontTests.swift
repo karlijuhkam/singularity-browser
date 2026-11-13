@@ -137,6 +137,34 @@ struct PluginFrontTests {
         #expect(rig.state.pluginFront(id) == .hidden(.spaceOff))
     }
 
+    @Test(.timeLimit(.minutes(1))) func anArtifactTabThatLeftItsServerIsTheWebPageItShows() async throws {
+        MainRunLoopGuard.start
+        let rig = try await makeRig()
+        defer { tearDown(rig) }
+        let id = FrontWorkspace.id
+        let slug = try #require(rig.state.space(rig.spaceID)?.slug)
+        let folder = rig.state.paths.artifactsDirectory(slug)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("<!doctype html><title>Report</title><p>hi</p>".utf8).write(to: folder.appending(path: "report.html"))
+        rig.state.openArtifact("report.html")
+        let tab = try #require(rig.state.selectedTab)
+        #expect(tab.artifactPath == "report.html")
+        let controller = try #require(await rig.state.liveWebController(tabID: tab.id, spaceID: rig.spaceID))
+        try await waitUntil("the artifact page", limit: .seconds(10)) { controller.webView.url?.path() == "/report.html" }
+        #expect(frontTab(rig.state.pluginFront(id))?.tab.kind == "artifact")
+
+        // The page leaves the artifact server (nothing listens on port 1: the error page keeps the address).
+        controller.load(URL(string: "http://127.0.0.1:1/elsewhere")!)
+        try await waitUntil("the page to move", limit: .seconds(10)) { controller.webView.url?.port == 1 }
+        #expect(rig.state.space(rig.spaceID)?.tab(tab.id)?.isArtifact == true)
+        let front = try #require(frontTab(rig.state.pluginFront(id)))
+        #expect(front.tab.kind == "web" && front.tab.url == "http://127.0.0.1:1/elsewhere", "got \(front)")
+
+        // That site switched off for the plugin: hidden.
+        rig.state.updateSiteSettings(spaceID: rig.spaceID, site: "http://127.0.0.1:1") { $0.disabledPlugins.insert(id) }
+        #expect(rig.state.pluginFront(id) == .hidden(.siteOff))
+    }
+
     @Test(.timeLimit(.minutes(1))) func aPluginTabAloneHasNothingAndInASplitReachesTheOtherPane() async throws {
         let rig = try await makeRig()
         defer { tearDown(rig) }

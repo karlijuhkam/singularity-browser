@@ -190,6 +190,7 @@ final class AppState {
         plugins.browserServerProvider = { [weak self] in self?.browserServerDescription() ?? .null }
         // A plugin's Space switches change only what its own connection sees, never an outside agent's.
         plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged(pluginsOnly: true) }
+        plugins.onProgramEnded = { [weak self] id in self?.mcp?.closeStaleConnections(ofPlugin: id) }
         // Site settings: the console/network collector for switched-on sites, and plugins switched off per site.
         let captureBridge = CaptureBridge(state: self)
         pluginScripts.onAttach = { controller in captureBridge.install(in: controller) }
@@ -644,8 +645,11 @@ final class AppState {
             let panes = group.root.tabIDs.filter { space.tab($0)?.isPlugin == false }
             other = lastOtherPaneByGroup[group.id].flatMap { panes.contains($0) ? $0 : nil } ?? panes.first
         }
+        // The live page's address counts (a redirect, or an artifact tab that left its server).
         return PluginReach.front(pluginID: pluginID, space: space, spaceIsOpen: open,
-                                 welcomeCoversWindow: welcomeCoversWindow, lastOtherPane: other)
+                                 welcomeCoversWindow: welcomeCoversWindow, lastOtherPane: other,
+                                 liveURL: { [web] id in web.existingController(id)?.webView.url },
+                                 artifactOrigin: space.flatMap { artifacts.host($0.id)?.origin })
     }
 
     /// How a plugin with the `browser` permission starts this copy's browser server: the
