@@ -81,6 +81,19 @@ private func makeFolder(_ files: [String: String]) throws -> URL {
         #expect(!ArtifactScripts.shellPage(scriptName: "app.tsx", importMap: "[1]").contains("importmap"))
         // A file name can't break out of the page either.
         #expect(!ArtifactScripts.shellPage(scriptName: "\"><img src=x>.tsx", importMap: nil).contains("<img"))
+        // Artifacts get no nonce.
+        #expect(!page.contains("nonce"))
+    }
+
+    /// A plugin's page is served with a Content-Security-Policy that allows inline scripts only
+    /// with the response's nonce: both script tags carry it.
+    @Test func shellPageCanCarryANonce() {
+        let map = #"{"imports":{"preact":"/node_modules/preact/dist/preact.mjs"}}"#
+        let page = ArtifactScripts.shellPage(scriptName: "panel.tsx", importMap: map, nonce: "abc123")
+        #expect(page.contains(#"<script type="importmap" nonce="abc123">{"imports""#))
+        #expect(page.contains(#"<script type="module" nonce="abc123" src="./panel.tsx"></script>"#))
+        // The nonce is escaped like everything else that goes into the page.
+        #expect(!ArtifactScripts.shellPage(scriptName: "a.tsx", importMap: nil, nonce: "\"><b>").contains("<b>"))
     }
 
     @Test func errorModuleCarriesTheMessageSafely() {

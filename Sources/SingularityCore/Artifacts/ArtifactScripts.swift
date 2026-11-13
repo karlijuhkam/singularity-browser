@@ -52,13 +52,16 @@ public enum ArtifactScripts {
     /// The page shown when a script is opened directly in a tab: an empty `#root` and the script
     /// as a module. `importMap` is the text of the folder's `importmap.json`, if any; it is only
     /// used when it is valid JSON, and is written so that it can't close its own script tag.
-    public static func shellPage(scriptName: String, importMap: String?) -> String {
+    /// `nonce`: put on both script tags, for a page whose Content-Security-Policy allows scripts
+    /// only with that nonce (a plugin's own page, `PluginPageServer`); artifacts have none.
+    public static func shellPage(scriptName: String, importMap: String?, nonce: String? = nil) -> String {
+        let nonceAttribute = nonce.map { " nonce=\"\(LoadErrorPage.escape($0))\"" } ?? ""
         var map = ""
         if let importMap, let data = importMap.data(using: .utf8),
            (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
             // "<" can only appear inside JSON strings, where < means the same.
             let safe = importMap.replacingOccurrences(of: "<", with: "\\u003c")
-            map = "\n<script type=\"importmap\">\(safe)</script>"
+            map = "\n<script type=\"importmap\"\(nonceAttribute)>\(safe)</script>"
         }
         let name = LoadErrorPage.escape(scriptName)
         let source = LoadErrorPage.escape(scriptName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? scriptName)
@@ -71,7 +74,7 @@ public enum ArtifactScripts {
         </head>
         <body>
         <div id="root"></div>
-        <script type="module" src="./\(source)"></script>
+        <script type="module"\(nonceAttribute) src="./\(source)"></script>
         </body></html>
         """
     }
