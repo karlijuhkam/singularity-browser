@@ -32,9 +32,9 @@ public enum PluginPackages {
     public struct Summary: Equatable, Sendable {
         /// `dependencies` from package.json, sorted by name.
         public let packages: [PluginPackage]
-        /// How many packages bun.lock lists in all (the declared ones plus the packages they need;
-        /// Bun skips optional ones for other platforms, so it may install fewer); 0 when there are
-        /// no dependencies.
+        /// How many packages the install puts in node_modules: the declared ones plus the packages
+        /// they need, without the optional ones (`--omit=optional`); 0 when there are no
+        /// dependencies.
         public let lockedCount: Int
 
         public init(packages: [PluginPackage], lockedCount: Int) {
@@ -342,7 +342,35 @@ public enum PluginPackages {
         for (name, version) in dependencies.sorted(by: { $0.key < $1.key }) where locked[name] != version {
             throw .unsupportedPackage(name)
         }
-        return packages.count
+        return installedCount(packages: packages, locked: Set(locked.keys), rootDependencies: Set(dependencies.keys))
+    }
+
+    /// How many lock entries Bun installs with `--omit=optional`: the declared packages and what
+    /// they need through `dependencies` (or `peerDependencies`), not what only an
+    /// `optionalDependencies` entry pulls in. Bun looks a name up from the requiring package's
+    /// folder outwards, so we do the same with the lock keys.
+    private static func installedCount(packages: [String: JSONValue], locked: Set<String>,
+                                       rootDependencies: Set<String>) -> Int {
+        func resolve(_ name: String, from key: String?) -> String? {
+            var prefix: [String] = key.flatMap(packagePath) ?? []
+            while true {
+                let candidate = (prefix + [name]).joined(separator: "/")
+                if locked.contains(candidate) { return candidate }
+                if prefix.isEmpty { return nil }
+                prefix.removeLast()
+            }
+        }
+        var seen = Set<String>()
+        var queue: [String] = rootDependencies.compactMap { resolve($0, from: nil) }
+        while let key = queue.popLast() {
+            guard seen.insert(key).inserted else { continue }
+            guard case .array(let entry)? = packages[key], case .object(let meta) = entry[2] else { continue }
+            for group in ["dependencies", "peerDependencies"] {
+                guard case .object(let deps)? = meta[group] else { continue }
+                queue += deps.keys.compactMap { resolve($0, from: key) }
+            }
+        }
+        return seen.count
     }
 
     /// The third element of a registry entry (copied from the package's registry metadata). Bun
@@ -451,6 +479,7 @@ public enum PluginPackages {
     /// - `--frozen-lockfile`: install exactly bun.lock, fail if package.json disagrees.
     /// - `--ignore-scripts`: no package install scripts, ever (they would run unsandboxed).
     /// - `--production`: no devDependencies (they are refused anyway).
+    /// - `--omit=optional`: no optional packages (e.g. platform binaries a package could swap in).
     /// - `--registry`: overrides .npmrc, bunfig and the environment.
     /// - `--linker=hoisted`: a plain node_modules tree. The isolated linker is made of symlinks,
     ///   which plugin folders may not contain.
@@ -459,7 +488,7 @@ public enum PluginPackages {
     /// `install`, so the first two are a second line of defence.)
     public static func installArguments(hostFolder: String) -> [String] {
         ["--config=" + hostFolder + "/bunfig.toml", "--no-env-file",
-         "install", "--frozen-lockfile", "--ignore-scripts", "--production",
+         "install", "--frozen-lockfile", "--ignore-scripts", "--production", "--omit=optional",
          "--registry=" + registry, "--linker=hoisted", "--backend=clonefile", "--no-progress"]
     }
 

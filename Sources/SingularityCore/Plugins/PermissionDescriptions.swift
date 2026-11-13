@@ -7,9 +7,10 @@ public enum PermissionDescriptions {
     ///   - hasPageScript: the manifest has a `page` script.
     ///   - hasBackground: the manifest has a `background` program. The network line is about that
     ///     program only, so a page-only plugin gets none.
+    ///   - hasPanel: the manifest has a `panel`.
     public static func lines(for permissions: PluginManifest.Permissions, commandPaths: [String: String],
                              packages: PluginPackages.Summary? = nil, hasPageScript: Bool = false,
-                             hasBackground: Bool = true) -> [String] {
+                             hasBackground: Bool = true, hasPanel: Bool = false) -> [String] {
         func sites(_ list: [String]) -> String {
             list.contains("<all_urls>") ? "on all sites" : "on " + list.joined(separator: ", ")
         }
@@ -27,6 +28,14 @@ public enum PermissionDescriptions {
             // Only the leading words are checked (CommandPolicy.allows): say that the rest is free.
             out.append("Runs \(commandPaths[name] ?? name) (only: \(subs.joined(separator: ", ")) — plus any further arguments)")
         }
+        if hasPanel { out.append("Shows its own panel and tab") }
+        for name in permissions.programs.sorted() {
+            out.append("Keeps \(commandPaths[name] ?? name) running and talks to it. "
+                       + "This program is not sandboxed: it uses the internet and acts as you")
+        }
+        if !permissions.programEnv.isEmpty {
+            out.append("Passes these settings to it: " + permissions.programEnv.sorted().joined(separator: ", "))
+        }
         if let packages, !packages.packages.isEmpty {
             let n = packages.packages.count
             var line = "Installs \(n) \(n == 1 ? "package" : "packages") from the npm registry"
@@ -35,7 +44,7 @@ public enum PermissionDescriptions {
         }
         if hasBackground {
             out.append(permissions.network.isEmpty
-                       ? (permissions.commands.isEmpty
+                       ? (permissions.commands.isEmpty && permissions.programs.isEmpty
                           ? "Its background program never uses the internet"
                           // The background program has no network, but programs it runs (outside its
                           // sandbox) can use it, so don't promise more than that.

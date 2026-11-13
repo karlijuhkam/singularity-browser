@@ -8,6 +8,13 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         public var sites: [String]
     }
 
+    /// A panel the plugin shows as its own tab: a page file inside the plugin folder and the title
+    /// the sidebar shows.
+    public struct Panel: Codable, Equatable, Sendable {
+        public var page: String
+        public var title: String
+    }
+
     /// The manifest's only powers. Missing keys mean "none".
     public struct Permissions: Codable, Equatable, Sendable {
         public var pageAdditions: [String]
@@ -16,13 +23,21 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         public var commands: [String: [String]]
         /// Always empty in round 1.
         public var network: [String]
+        /// Names of programs the background program keeps running (not sandboxed). Resolved and
+        /// pinned like commands, but `singularity.run` never runs them: only `commands` does.
+        public var programs: [String]
+        /// Names of settings Singularity passes on to those programs.
+        public var programEnv: [String]
 
         public init(pageAdditions: [String] = [], fillForms: [String] = [],
-                    commands: [String: [String]] = [:], network: [String] = []) {
+                    commands: [String: [String]] = [:], network: [String] = [],
+                    programs: [String] = [], programEnv: [String] = []) {
             self.pageAdditions = pageAdditions
             self.fillForms = fillForms
             self.commands = commands
             self.network = network
+            self.programs = programs
+            self.programEnv = programEnv
         }
 
         private struct Key: CodingKey {
@@ -35,7 +50,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         /// Decodes by hand so an unknown key (e.g. "cookies") is an error, not silently ignored.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Key.self)
-            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network"]
+            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv"]
             for key in c.allKeys where !known.contains(key.stringValue) {
                 throw PluginError.unknownPermission(key.stringValue)
             }
@@ -46,6 +61,8 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             fillForms = try field("fillForms", [String]())
             commands = try field("commands", [String: [String]]())
             network = try field("network", [String]())
+            programs = try field("programs", [String]())
+            programEnv = try field("programEnv", [String]())
         }
     }
 
@@ -56,7 +73,14 @@ public struct PluginManifest: Codable, Equatable, Sendable {
     public var author: String
     public var background: String?
     public var page: Page?
+    public var panel: Panel?
     public var permissions: Permissions
+
+    /// True when the plugin has a page script (the per-Space switches only matter then).
+    public var hasPageScript: Bool { page != nil }
+
+    /// The Space switches are about page scripts, so only a plugin with one shows them.
+    public var showsSpaceSwitches: Bool { page != nil }
 
     // MARK: Loading
 
@@ -113,11 +137,50 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             }
         }
 
-        for path in [background, page?.script].compactMap({ $0 }) {
+        try validatePrograms()
+        try validatePanel()
+
+        for path in [background, page?.script, panel?.page].compactMap({ $0 }) {
             guard Self.isRegularFile(path, inside: folder) else { throw .missingFile(path) }
         }
 
         try Self.checkPackages(in: folder)
+    }
+
+    /// Program names for `programs` (at most 4, no duplicates, only with a background program) and
+    /// the settings passed to them.
+    private func validatePrograms() throws(PluginError) {
+        let programs = permissions.programs
+        for name in programs where CommandPolicy.isRefused(name) || !CommandPolicy.isValidName(name) {
+            throw .refusedProgram(name)
+        }
+        if Set(programs).count != programs.count || programs.count > 4 {
+            throw .refusedProgram(programs.first { name in programs.filter { $0 == name }.count > 1 } ?? programs[4])
+        }
+        if !programs.isEmpty, background == nil { throw .programsNeedBackground }
+        for name in permissions.programEnv where !Self.isAllowedProgramEnv(name) { throw .invalidProgramEnv(name) }
+        // Settings with no program to receive them make no sense.
+        if !permissions.programEnv.isEmpty, programs.isEmpty { throw .invalidProgramEnv(permissions.programEnv[0]) }
+    }
+
+    /// `^[A-Z][A-Z0-9_]{0,63}$`, minus the names that change how a program starts or where it looks.
+    static func isAllowedProgramEnv(_ name: String) -> Bool {
+        guard (1...64).contains(name.utf8.count) else { return false }
+        for (i, b) in name.utf8.enumerated() {
+            let isUpper = b >= 65 && b <= 90
+            let isDigitOrUnderscore = (b >= 48 && b <= 57) || b == 95
+            if !(isUpper || (i > 0 && isDigitOrUnderscore)) { return false }
+        }
+        let refused: Set<String> = ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "SHELL", "PWD"]
+        return !refused.contains(name) && !name.hasPrefix("DYLD_") && !name.hasPrefix("LD_")
+            && !name.hasPrefix("SINGULARITY_")
+    }
+
+    /// The panel's title is one line of 1 to 40 characters once trimmed.
+    private func validatePanel() throws(PluginError) {
+        guard let panel else { return }
+        let title = panel.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !(1...40).contains(title.count) || panel.title.contains(where: \.isNewline) { throw .invalidPanelTitle }
     }
 
     /// No `.npmrc`; packages only as exact npm registry versions, pinned by a matching `bun.lock`

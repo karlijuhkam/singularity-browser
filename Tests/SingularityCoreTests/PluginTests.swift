@@ -1226,7 +1226,7 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
     @Test func installCommandIsLockedDown() {
         let args = PluginPackages.installArguments(hostFolder: "/App/plugin-host")
         #expect(Array(args.prefix(3)) == ["--config=/App/plugin-host/bunfig.toml", "--no-env-file", "install"])
-        for flag in ["--frozen-lockfile", "--ignore-scripts", "--production", "--registry=https://registry.npmjs.org/",
+        for flag in ["--frozen-lockfile", "--ignore-scripts", "--production", "--omit=optional", "--registry=https://registry.npmjs.org/",
                      "--linker=hoisted", "--backend=clonefile"] {
             #expect(args.contains(flag), "\(flag)")
         }

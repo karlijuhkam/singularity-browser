@@ -84,7 +84,8 @@ public enum PluginLaunch {
                               isExecutable: (String) -> Bool = isExecutableRegularFile,
                               isAllowedProgram: (String) -> Bool = isAllowedProgram) -> Decision {
         guard status == .approved, let approval, let manifest else { return .notApproved }
-        guard !approval.enabledSpaces.isEmpty else { return .switchedOff }
+        // A plugin with a panel works without a Space switch: the panel is its own tab.
+        guard !approval.enabledSpaces.isEmpty || manifest.panel != nil else { return .switchedOff }
         guard manifest.background != nil else { return .nothingToRun }
         for (name, path) in approval.commandPaths.sorted(by: { $0.key < $1.key }) {
             if !isExecutable(path) { return .blocked("\(name) isn't at \(path) any more — review to re-approve") }
@@ -92,7 +93,8 @@ public enum PluginLaunch {
                 return .blocked("\(path) is now a program plugins may not run — review to re-approve")
             }
         }
-        for name in manifest.permissions.commands.keys.sorted() where approval.commandPaths[name] == nil {
+        for name in (Set(manifest.permissions.commands.keys).union(manifest.permissions.programs)).sorted()
+        where approval.commandPaths[name] == nil {
             return .blocked("no approved path for \(name) — review to re-approve")
         }
         return .launch
@@ -268,7 +270,8 @@ public struct PluginReview: Equatable, Sendable {
         } catch { return .failure(error) }
         var paths: [String: String] = [:]
         var missing: [String] = []
-        for name in manifest.permissions.commands.keys.sorted() {
+        // Programs are pinned in the same map as commands (a name in both is resolved once).
+        for name in Set(manifest.permissions.commands.keys).union(manifest.permissions.programs).sorted() {
             if let path = resolve(name) { paths[name] = path } else { missing.append(name) }
         }
         return .success(PluginReview(
@@ -280,7 +283,8 @@ public struct PluginReview: Equatable, Sendable {
 
     public var permissionLines: [String] {
         PermissionDescriptions.lines(for: manifest.permissions, commandPaths: commandPaths, packages: packages,
-                                     hasPageScript: manifest.page != nil, hasBackground: manifest.background != nil)
+                                     hasPageScript: manifest.page != nil, hasBackground: manifest.background != nil,
+                                     hasPanel: manifest.panel != nil)
     }
 
     /// Files changed since `approval`; nil for a first approval, or for an approval recorded

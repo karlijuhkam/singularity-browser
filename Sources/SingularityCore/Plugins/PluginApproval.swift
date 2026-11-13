@@ -275,6 +275,8 @@ extension PluginManifest.Permissions {
             guard let was = approved.commands[name] else { return true }
             if subs.contains(where: { !was.contains($0) }) { return true }
         }
+        if programs.contains(where: { !approved.programs.contains($0) }) { return true }
+        if programEnv.contains(where: { !approved.programEnv.contains($0) }) { return true }
         return false
     }
 }
