@@ -23,10 +23,21 @@
 // we write messages to stdout. Every message has a "kind":
 //
 //   app -> plugin   {"kind":"pageMessage","requestID":1,"tabID":"…","frameHost":"…","payload":…}
+//                   {"kind":"panelMessage","requestID":2,"payload":…}          (from the plugin's own page)
 //                   {"kind":"commandResult","callID":1,"result":{"status":0,"stdout":"…","stderr":"…","timedOut":false}}
+//                   {"kind":"programStarted","programID":1}
+//                   {"kind":"programFailed","programID":1,"reason":"…"}
+//                   {"kind":"programOutput","programID":1,"data":"<base64>"}  (at most 48 KB of bytes)
+//                   {"kind":"programExit","programID":1,"status":0,"signal":null}
 //   plugin -> app   {"kind":"reply","requestID":1,"payload":…}
 //                   {"kind":"runCommand","callID":1,"command":"op","arguments":["item","list"]}
 //                   {"kind":"log","level":"info","message":"…"}
+//                   {"kind":"startProgram","programID":1,"program":"claude","arguments":[…],"environment":{…}}
+//                   {"kind":"programInput","programID":1,"data":"<base64>"}
+//                   {"kind":"closeProgramInput","programID":1}
+//                   {"kind":"killProgram","programID":1,"signal":"SIGTERM"}
+//                   {"kind":"programOutputRead","programID":1,"bytes":49152}
+//                   {"kind":"panelPost","payload":…}
 //
 // Limits: Singularity buffers at most 16 MB of messages that the plugin hasn't read yet. If more
 // would be waiting (the plugin is stuck, or a single message is larger than 16 MB), the plugin is
@@ -37,7 +48,9 @@
 // log (see below) so a stray print can't break a message. The Swift side of this protocol is
 // Sources/SingularityCore/Plugins/PluginWire.swift and PluginProcess.swift.
 
+import { EventEmitter } from "node:events";
 import { mkdir, rename } from "node:fs/promises";
+import { Readable, Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
 
 // ---- Writing messages -------------------------------------------------------------------------
@@ -224,6 +237,194 @@ const storage = Object.freeze({
   },
 });
 
+// ---- Programs ---------------------------------------------------------------------------------
+//
+// singularity.spawn starts one program the manifest lists under permissions.programs. Singularity
+// starts it, outside this sandbox, and carries its stdin and stdout as messages; to the plugin it
+// looks like a Node child process (the shape the Claude Agent SDK's spawnClaudeCodeProcess asks
+// for):
+//
+//     const program = singularity.spawn("claude", ["--print"], { env: { CLAUDE_CONFIG_DIR: dir } });
+//     program.stdout.on("data", (chunk) => …);    // a Readable of Buffers
+//     program.stdin.write("hello\n");              // a Writable; end() closes the program's stdin
+//     program.on("exit", (code, signal) => …);    // once, after the last output
+//     program.on("error", (error) => …);          // the app refused or couldn't start it
+//     program.kill("SIGTERM");                    // also "SIGKILL", "SIGINT"
+//
+// The app builds the program's environment; of `env`, only names listed in the manifest's
+// permissions.programEnv are passed on. One program runs at a time; a second spawn fails with
+// "a program is already running". A refused start emits "error" with the reason, then "exit" with
+// code 126.
+//
+// Backpressure: the app sends at most about 1 MB of output that the plugin hasn't read yet. stdout
+// reports what its reader has taken (in _read), and the app reads the program further only then,
+// so a slow reader slows the program down instead of filling memory.
+
+/** Most bytes of program input in one message (the app takes lines of at most 1 MB; base64 adds a third). */
+const PROGRAM_INPUT_CHUNK = 512 * 1024;
+/** Most bytes of JSON in one singularity.panel.post (the same limit as a page message). */
+const PANEL_POST_MAX_BYTES = 256 * 1024;
+
+type ProgramListener = (...args: any[]) => void;
+
+/** What singularity.spawn returns. */
+class SpawnedProgram {
+  readonly stdin: Writable;
+  readonly stdout: Readable;
+  /** True once kill() has asked for the program to end. */
+  killed = false;
+  /** The exit status once it has exited by itself; null before, and when a signal ended it. */
+  exitCode: number | null = null;
+
+  readonly #id: number;
+  readonly #events = new EventEmitter();
+  #ended = false;
+  #inputClosed = false;
+  /** Bytes pushed into stdout, and how many of them were reported read to the app. */
+  #pushed = 0;
+  #reported = 0;
+
+  constructor(id: number) {
+    this.#id = id;
+    const program = this;
+    this.stdin = new Writable({
+      write(chunk: Buffer | string, encoding: BufferEncoding, done: (error?: Error | null) => void) {
+        program.#write(typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk));
+        done();
+      },
+      final(done: (error?: Error | null) => void) {
+        program.#closeInput();
+        done();
+      },
+      destroy(error: Error | null, done: (error?: Error | null) => void) {
+        program.#closeInput();
+        done(error);
+      },
+    });
+    this.stdout = new Readable({
+      // Called when the reader wants more: whatever left the stream's buffer since the last call
+      // has been taken, so tell the app it may read that much more of the program.
+      read() {
+        program.#reportRead();
+      },
+    });
+  }
+
+  on(event: "exit" | "error", listener: ProgramListener): this {
+    this.#events.on(event, listener);
+    return this;
+  }
+
+  once(event: "exit" | "error", listener: ProgramListener): this {
+    this.#events.once(event, listener);
+    return this;
+  }
+
+  off(event: "exit" | "error", listener: ProgramListener): this {
+    this.#events.off(event, listener);
+    return this;
+  }
+
+  /** Asks the app to end the program ("SIGTERM", the default, "SIGKILL" or "SIGINT"; SIGKILL follows after 2 s). False once it has ended. */
+  kill(signal: string = "SIGTERM"): boolean {
+    if (this.#ended) return false;
+    send({ kind: "killProgram", programID: this.#id, signal: String(signal) });
+    this.killed = true;
+    return true;
+  }
+
+  #write(bytes: Buffer): void {
+    if (this.#ended || this.#inputClosed) return;
+    for (let start = 0; start < bytes.length; start += PROGRAM_INPUT_CHUNK) {
+      const data = bytes.subarray(start, start + PROGRAM_INPUT_CHUNK).toString("base64");
+      send({ kind: "programInput", programID: this.#id, data });
+    }
+  }
+
+  #closeInput(): void {
+    if (this.#inputClosed) return;
+    this.#inputClosed = true;
+    if (!this.#ended) send({ kind: "closeProgramInput", programID: this.#id });
+  }
+
+  #reportRead(): void {
+    const taken = this.#pushed - this.stdout.readableLength;
+    if (taken > this.#reported && !this.#ended) {
+      send({ kind: "programOutputRead", programID: this.#id, bytes: taken - this.#reported });
+      this.#reported = taken;
+    }
+  }
+
+  // From the app (see handleLine).
+
+  output(base64: string): void {
+    const bytes = Buffer.from(base64, "base64");
+    this.#pushed += bytes.length;
+    this.stdout.push(bytes);
+  }
+
+  failed(reason: string): void {
+    if (this.#events.listenerCount("error") > 0) this.#events.emit("error", new Error(reason));
+    else log("error", ["spawn: " + reason]);
+    this.exited(126, null);
+  }
+
+  exited(status: number | null, signal: string | null): void {
+    if (this.#ended) return;
+    this.#ended = true;
+    programs.delete(this.#id);
+    this.exitCode = status;
+    this.stdout.push(null);
+    this.#events.emit("exit", status, signal);
+  }
+}
+
+let nextProgramID = 1;
+const programs = new Map<number, SpawnedProgram>();
+
+function spawn(program: string, args: string[], options?: { env?: Record<string, string> }): SpawnedProgram {
+  if (typeof program !== "string" || !Array.isArray(args) || !args.every((a) => typeof a === "string")) {
+    throw new TypeError("spawn(program: string, args: string[], options?: { env?: Record<string, string> })");
+  }
+  const environment: Record<string, string> = {};
+  for (const [name, value] of Object.entries(options?.env ?? {})) {
+    if (typeof value === "string") environment[name] = value;
+  }
+  const id = nextProgramID++;
+  const spawned = new SpawnedProgram(id);
+  programs.set(id, spawned);
+  send({ kind: "startProgram", programID: id, program, arguments: args, environment });
+  return spawned;
+}
+
+function handleProgramMessage(message: any): void {
+  const program = programs.get(message.programID);
+  if (!program) return;
+  if (message.kind === "programOutput") program.output(message.data);
+  else if (message.kind === "programFailed") program.failed(String(message.reason));
+  else if (message.kind === "programExit") program.exited(message.status ?? null, message.signal ?? null);
+  // "programStarted" needs nothing: the program object exists from spawn() on.
+}
+
+const panel = Object.freeze({
+  /**
+   * Sends a JSON value to the plugin's own page (its panel or tab), where `singularity.onMessage`
+   * receives it. Dropped when the page isn't open. Throws when the value isn't JSON or is larger
+   * than 256 KB.
+   */
+  post(payload: unknown): void {
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(payload);
+    } catch (error) {
+      throw new TypeError("panel.post needs a JSON value: " + errorMessage(error));
+    }
+    if (json === undefined) throw new TypeError("panel.post needs a JSON value");
+    if (Buffer.byteLength(json) > PANEL_POST_MAX_BYTES) throw new RangeError("panel.post: the message is larger than 256 KB");
+    writeToStdout('{"kind":"panelPost","payload":' + json + "}\n");
+  },
+});
+
 // ---- The `singularity` API --------------------------------------------------------------------
 
 type PageMessage = { tabID: string; frameHost: string; payload: unknown };
@@ -261,6 +462,15 @@ const singularity = Object.freeze({
       send({ kind: "runCommand", callID, command, arguments: args });
     });
   },
+
+  /**
+   * Starts a program declared in plugin.json under permissions.programs and returns it as a
+   * child-process-like object (see "Programs" above). One at a time.
+   */
+  spawn,
+
+  /** The plugin's own page: `singularity.panel.post(payload)` (see "Programs" above). */
+  panel,
 
   /**
    * A small key → value store that survives restarts: `await singularity.storage.set("seen", [1, 2])`,
@@ -334,10 +544,20 @@ function handleLine(line: string): void {
       frameHost: message.frameHost,
       payload: message.payload,
     });
+  } else if (message.kind === "panelMessage") {
+    // From the plugin's own page: answered by the same handler, marked as the panel.
+    void answerPageMessage(message.requestID, { tabID: "panel", frameHost: "", payload: message.payload });
   } else if (message.kind === "commandResult") {
     const resolve = pendingCommands.get(message.callID);
     pendingCommands.delete(message.callID);
     resolve?.(message.result);
+  } else if (typeof message.kind === "string" && message.kind.startsWith("program")) {
+    // The plugin's own listeners run in here; one that throws must not stop the reading below.
+    try {
+      handleProgramMessage(message);
+    } catch (error) {
+      log("error", ["uncaught exception: " + describeError(error)]);
+    }
   }
 }
 

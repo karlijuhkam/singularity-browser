@@ -1,0 +1,12 @@
+{
+  "id": "program",
+  "name": "Program",
+  "version": "0.1.0",
+  "description": "Test plugin for PluginProgramTests: starts the fixture program and talks to it.",
+  "author": "Singularity tests",
+  "background": "background.ts",
+  "permissions": {
+    "programs": ["fixture", "unpinned"],
+    "programEnv": ["FIXTURE_SETTING"]
+  }
+}

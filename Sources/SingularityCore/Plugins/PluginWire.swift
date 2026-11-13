@@ -45,6 +45,17 @@ public enum PluginWire: Codable, Equatable, Sendable {
     case pageMessage(requestID: Int, tabID: UUID, frameHost: String, payload: JSONValue)
     /// The outcome of the plugin's `.runCommand` with the same `callID`.
     case commandResult(callID: Int, result: CommandResult)
+    /// A message from the plugin's own page (its panel or tab); the plugin answers with `.reply`.
+    case panelMessage(requestID: Int, payload: JSONValue)
+    /// The program asked for with `.startProgram` is running.
+    case programStarted(programID: Int)
+    /// The program was not started (`reason` says why), or could not be.
+    case programFailed(programID: Int, reason: String)
+    /// Bytes the program wrote to its stdout, base64, at most 48 KB of bytes a message.
+    case programOutput(programID: Int, data: String)
+    /// The program has ended and all its output has been sent. `status` is its exit status when
+    /// it exited, `signal` the signal's name (e.g. "SIGTERM") when a signal ended it.
+    case programExit(programID: Int, status: Int32?, signal: String?)
 
     // Plugin to app
     case reply(requestID: Int, payload: JSONValue)
@@ -52,9 +63,23 @@ public enum PluginWire: Codable, Equatable, Sendable {
     case runCommand(callID: Int, command: String, arguments: [String])
     /// A line for the plugin's log (console output is turned into these by host.ts).
     case log(level: String, message: String)
+    /// Asks the app to start a program from `permissions.programs` and keep it running. The plugin
+    /// picks `programID`; every later message about this program carries it.
+    case startProgram(programID: Int, program: String, arguments: [String], environment: [String: String])
+    /// Bytes for the program's stdin, base64.
+    case programInput(programID: Int, data: String)
+    /// Closes the program's stdin (after the input sent before it).
+    case closeProgramInput(programID: Int)
+    /// Ends the program: "SIGTERM", "SIGKILL" or "SIGINT" (anything else counts as "SIGTERM").
+    case killProgram(programID: Int, signal: String)
+    /// The plugin has taken this many bytes of the program's output; the app reads more.
+    case programOutputRead(programID: Int, bytes: Int)
+    /// A message for the plugin's own page.
+    case panelPost(payload: JSONValue)
 
     private enum Key: String, CodingKey {
         case kind, requestID, tabID, frameHost, payload, callID, result, command, arguments, level, message
+        case programID, program, environment, data, signal, status, reason, bytes
     }
 
     public init(from decoder: Decoder) throws {
@@ -79,6 +104,39 @@ public enum PluginWire: Codable, Equatable, Sendable {
         case "log":
             self = .log(level: try c.decode(String.self, forKey: .level),
                         message: try c.decode(String.self, forKey: .message))
+        case "panelMessage":
+            self = .panelMessage(requestID: try c.decode(Int.self, forKey: .requestID),
+                                 payload: try c.decodeIfPresent(JSONValue.self, forKey: .payload) ?? .null)
+        case "programStarted":
+            self = .programStarted(programID: try c.decode(Int.self, forKey: .programID))
+        case "programFailed":
+            self = .programFailed(programID: try c.decode(Int.self, forKey: .programID),
+                                  reason: try c.decode(String.self, forKey: .reason))
+        case "programOutput":
+            self = .programOutput(programID: try c.decode(Int.self, forKey: .programID),
+                                  data: try c.decode(String.self, forKey: .data))
+        case "programExit":
+            self = .programExit(programID: try c.decode(Int.self, forKey: .programID),
+                                status: try c.decodeIfPresent(Int32.self, forKey: .status),
+                                signal: try c.decodeIfPresent(String.self, forKey: .signal))
+        case "startProgram":
+            self = .startProgram(programID: try c.decode(Int.self, forKey: .programID),
+                                 program: try c.decode(String.self, forKey: .program),
+                                 arguments: try c.decode([String].self, forKey: .arguments),
+                                 environment: try c.decodeIfPresent([String: String].self, forKey: .environment) ?? [:])
+        case "programInput":
+            self = .programInput(programID: try c.decode(Int.self, forKey: .programID),
+                                 data: try c.decode(String.self, forKey: .data))
+        case "closeProgramInput":
+            self = .closeProgramInput(programID: try c.decode(Int.self, forKey: .programID))
+        case "killProgram":
+            self = .killProgram(programID: try c.decode(Int.self, forKey: .programID),
+                                signal: try c.decodeIfPresent(String.self, forKey: .signal) ?? "SIGTERM")
+        case "programOutputRead":
+            self = .programOutputRead(programID: try c.decode(Int.self, forKey: .programID),
+                                      bytes: try c.decode(Int.self, forKey: .bytes))
+        case "panelPost":
+            self = .panelPost(payload: try c.decodeIfPresent(JSONValue.self, forKey: .payload) ?? .null)
         case let other:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown kind \(other)")
         }
@@ -110,6 +168,51 @@ public enum PluginWire: Codable, Equatable, Sendable {
             try c.encode("log", forKey: .kind)
             try c.encode(level, forKey: .level)
             try c.encode(message, forKey: .message)
+        case let .panelMessage(requestID, payload):
+            try c.encode("panelMessage", forKey: .kind)
+            try c.encode(requestID, forKey: .requestID)
+            try c.encode(payload, forKey: .payload)
+        case let .programStarted(programID):
+            try c.encode("programStarted", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+        case let .programFailed(programID, reason):
+            try c.encode("programFailed", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+            try c.encode(reason, forKey: .reason)
+        case let .programOutput(programID, data):
+            try c.encode("programOutput", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+            try c.encode(data, forKey: .data)
+        case let .programExit(programID, status, signal):
+            // Both always present (null when not applicable), so host.ts reads them as they are.
+            try c.encode("programExit", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+            try c.encode(status, forKey: .status)
+            try c.encode(signal, forKey: .signal)
+        case let .startProgram(programID, program, arguments, environment):
+            try c.encode("startProgram", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+            try c.encode(program, forKey: .program)
+            try c.encode(arguments, forKey: .arguments)
+            try c.encode(environment, forKey: .environment)
+        case let .programInput(programID, data):
+            try c.encode("programInput", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+            try c.encode(data, forKey: .data)
+        case let .closeProgramInput(programID):
+            try c.encode("closeProgramInput", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+        case let .killProgram(programID, signal):
+            try c.encode("killProgram", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+            try c.encode(signal, forKey: .signal)
+        case let .programOutputRead(programID, bytes):
+            try c.encode("programOutputRead", forKey: .kind)
+            try c.encode(programID, forKey: .programID)
+            try c.encode(bytes, forKey: .bytes)
+        case let .panelPost(payload):
+            try c.encode("panelPost", forKey: .kind)
+            try c.encode(payload, forKey: .payload)
         }
     }
 }

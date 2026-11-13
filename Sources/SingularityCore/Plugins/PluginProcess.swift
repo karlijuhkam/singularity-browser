@@ -13,6 +13,11 @@ import Foundation
 /// program at the path pinned at approval time (`commandPaths`), and the result goes back as
 /// `.commandResult`. Paths are never looked up again at call time.
 ///
+/// So are the messages of a running program (`.startProgram` and the rest; host.ts's
+/// `singularity.spawn`): one program from `permissions.programs` at a time, at its pinned path,
+/// outside the sandbox, with the environment `programEnvironment` builds, in the data folder (see
+/// `RunningProgram`). It ends with the plugin: on `stop()`, `terminateNow()` and the plugin's exit.
+///
 /// Callbacks run on background threads, one at a time per stream but not on the main thread.
 /// A `PluginProcess` runs once; to restart, make a new one (`PluginSupervisor` does that).
 ///
@@ -34,6 +39,13 @@ public final class PluginProcess: @unchecked Sendable {
     static let maxConcurrentCommands = 4
     /// Longest log message kept (8 KB); longer ones are cut.
     static let maxLogMessageBytes = 8192
+    /// Most bytes of a program's output sent to the plugin and not yet reported read (1 MB); above
+    /// this the app stops reading the program until the plugin catches up.
+    static let maxProgramUnread = 1 << 20
+    /// Most bytes of program output in one `.programOutput` message (48 KB).
+    static let maxProgramOutputChunk = 48 * 1024
+    /// A program's stderr lines go to the plugin's log, cut to this many characters.
+    static let maxProgramLogLine = 2000
 
     public let manifest: PluginManifest
     private let folder: URL
@@ -41,11 +53,18 @@ public final class PluginProcess: @unchecked Sendable {
     private let runtime: URL
     private let host: URL
     private let commandPaths: [String: String]
+    private let programsAllowed: Bool
+    private let programEnvironment: @Sendable (_ requested: [String: String]) -> [String: String]
 
     private let lock = NSLock()
     private var _onReply: (@Sendable (Int, JSONValue) -> Void)?
     private var _onLog: (@Sendable (String, String) -> Void)?
     private var _onExit: (@Sendable (Int32) -> Void)?
+    private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
+    /// The plugin's one program: reserved (`running` nil) while it starts, cleared when its exit
+    /// has been sent.
+    private var program: (id: Int, name: String, running: RunningProgram?)?
+    private var _programUnreadPeak = 0
     private var process: Process?
     private var started = false
     private var stopping = false
@@ -76,15 +95,40 @@ public final class PluginProcess: @unchecked Sendable {
         get { lock.withLock { _onExit } }
         set { lock.withLock { _onExit = newValue } }
     }
+    /// Called with what the plugin sends its own page (`singularity.panel.post`).
+    public var onPanelPost: (@Sendable (JSONValue) -> Void)? {
+        get { lock.withLock { _onPanelPost } }
+        set { lock.withLock { _onPanelPost = newValue } }
+    }
 
+    /// The most program output that was ever sent and not yet reported read (for tests).
+    var programUnreadPeak: Int { lock.withLock { _programUnreadPeak } }
+
+    /// - Parameters:
+    ///   - programsAllowed: false refuses every program start (`ProgramPolicy.spawnAllowed`).
+    ///   - programEnvironment: builds a program's whole environment from the settings the plugin
+    ///     asks for (already narrowed to the manifest's `programEnv`); see `ProgramEnvironment.make`.
     public init(manifest: PluginManifest, folder: URL, dataFolder: URL, runtime: URL, host: URL,
-                commandPaths: [String: String]) {
+                commandPaths: [String: String], programsAllowed: Bool = false,
+                programEnvironment: @escaping @Sendable (_ requested: [String: String]) -> [String: String]
+                    = PluginProcess.minimalProgramEnvironment) {
         self.manifest = manifest
         self.folder = folder
         self.dataFolder = dataFolder
         self.runtime = runtime
         self.host = host
         self.commandPaths = commandPaths
+        self.programsAllowed = programsAllowed
+        self.programEnvironment = programEnvironment
+    }
+
+    /// The fixed part of `ProgramEnvironment` with the system's PATH and nothing the plugin asks
+    /// for; the default until the app passes the real one.
+    public static func minimalProgramEnvironment(_ requested: [String: String]) -> [String: String] {
+        ProgramEnvironment.make(home: NSHomeDirectory(), user: NSUserName(), loginPath: "/usr/bin:/bin:/usr/sbin:/sbin",
+                                tmpdir: NSTemporaryDirectory(),
+                                appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+                                requested: [:], allowed: [])
     }
 
     /// If the owner lets go of a running plugin, don't leave Bun running on its own.
@@ -186,6 +230,7 @@ public final class PluginProcess: @unchecked Sendable {
             return self.process
         }
         if let process { end(process) }
+        runningProgram()?.end(drain: true)
     }
 
     /// Kills the process at once (SIGKILL) and closes its stdin; for app termination, where
@@ -200,6 +245,7 @@ public final class PluginProcess: @unchecked Sendable {
         input.close()
         if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
         commandChildren.killAll()
+        runningProgram()?.killNow()
     }
 
     /// Closes stdin, SIGTERM, and SIGKILL 2 s later if needed.
@@ -271,7 +317,19 @@ public final class PluginProcess: @unchecked Sendable {
             log(level, text)   // log() maps unknown levels to "info"
         case let .runCommand(callID, command, arguments):
             runCommand(callID: callID, command: command, arguments: arguments)
-        case .pageMessage, .commandResult:
+        case let .startProgram(programID, name, arguments, environment):
+            startProgram(programID: programID, name: name, arguments: arguments, requested: environment)
+        case let .programInput(programID, data):
+            writeProgramInput(programID: programID, base64: data)
+        case let .closeProgramInput(programID):
+            runningProgram(programID)?.closeInput()
+        case let .killProgram(programID, signal):
+            runningProgram(programID)?.end(signal: ProgramSignal.number(signal), drain: false)
+        case let .programOutputRead(programID, bytes):
+            runningProgram(programID)?.acknowledge(bytes)
+        case let .panelPost(payload):
+            lock.withLock { _onPanelPost }?(payload)
+        case .pageMessage, .commandResult, .panelMessage, .programStarted, .programFailed, .programOutput, .programExit:
             log("error", "ignored a message the app sends, not the plugin: \(String(decoding: data.prefix(200), as: UTF8.self))")
         }
     }
@@ -327,6 +385,86 @@ public final class PluginProcess: @unchecked Sendable {
         }
     }
 
+    // MARK: - The running program
+
+    /// Starts the program the plugin asks for, or answers `.programFailed` with the reason.
+    private func startProgram(programID: Int, name: String, arguments: [String], requested: [String: String]) {
+        func refuse(_ reason: String) { send(.programFailed(programID: programID, reason: reason)) }
+        guard programsAllowed else { return refuse("programs are off in a test copy") }
+        guard manifest.permissions.programs.contains(name), let path = commandPaths[name] else {
+            return refuse("not allowed by the manifest")
+        }
+        // Checked again at every start: the file at the pinned path may have been replaced.
+        guard PluginLaunch.isAllowedProgram(path) else { return refuse("the program is missing or changed") }
+        enum Reservation { case reserved, busy, stopping }
+        let reservation: Reservation = lock.withLock {
+            if stopping { return .stopping }
+            if program != nil { return .busy }
+            program = (programID, name, nil)
+            return .reserved
+        }
+        switch reservation {
+        case .stopping: return   // the plugin is going away; nobody would hear the answer
+        case .busy: return refuse("a program is already running")
+        case .reserved: break
+        }
+        // Only the settings the manifest lists reach `programEnvironment`.
+        let allowed = requested.filter { manifest.permissions.programEnv.contains($0.key) }
+        let running: RunningProgram
+        do {
+            running = try RunningProgram.start(
+                path: path, arguments: arguments, environment: programEnvironment(allowed),
+                directory: (try? Self.realPath(dataFolder)) ?? dataFolder.path,
+                maxUnread: Self.maxProgramUnread, chunk: Self.maxProgramOutputChunk
+            ) { [weak self] event in
+                self?.programEvent(event, programID: programID, name: name)
+            }
+        } catch {
+            lock.withLock { program = nil }
+            return refuse(error.reason)
+        }
+        let stoppedMeanwhile: Bool = lock.withLock {
+            program = (programID, name, running)
+            return stopping
+        }
+        // Announced before any output can be read (`begin`), so the plugin hears of it first.
+        send(.programStarted(programID: programID))
+        running.begin()
+        if stoppedMeanwhile { running.end(drain: true) }
+    }
+
+    private func programEvent(_ event: RunningProgram.Event, programID: Int, name: String) {
+        switch event {
+        case let .output(data, unread):
+            lock.withLock { _programUnreadPeak = max(_programUnreadPeak, unread) }
+            send(.programOutput(programID: programID, data: data.base64EncodedString()))
+        case .stderrLine(let line):
+            log("info", "\(name): " + String(line.prefix(Self.maxProgramLogLine)))
+        case let .exit(status, signal):
+            // Cleared before the plugin hears of the exit, so it may start the next one at once.
+            lock.withLock { if program?.id == programID { program = nil } }
+            send(.programExit(programID: programID, status: status, signal: signal.map(ProgramSignal.name)))
+        }
+    }
+
+    private func writeProgramInput(programID: Int, base64: String) {
+        guard let running = runningProgram(programID) else { return }   // gone already: dropped
+        guard let data = Data(base64Encoded: base64) else {
+            return log("error", "ignored program input that is not base64")
+        }
+        guard !running.write(data) else { return }
+        log("error", "the program is not reading its input; it was ended")
+        running.end(drain: false)
+    }
+
+    /// The running program, if there is one (and, given an id, only if it has that id).
+    private func runningProgram(_ id: Int? = nil) -> RunningProgram? {
+        lock.withLock {
+            guard let program, id == nil || program.id == id else { return nil }
+            return program.running
+        }
+    }
+
     private func reportExit(_ status: Int32) {
         let callback: (@Sendable (Int32) -> Void)? = lock.withLock {
             guard !exitReported else { return nil }
@@ -334,6 +472,8 @@ public final class PluginProcess: @unchecked Sendable {
             return _onExit
         }
         input.close()
+        // The plugin is gone; its program goes too.
+        runningProgram()?.end(drain: true)
         callback?(status)
     }
 
@@ -463,6 +603,7 @@ public final class PluginSupervisor: @unchecked Sendable {
     private var _onReply: (@Sendable (Int, JSONValue) -> Void)?
     private var _onLog: (@Sendable (String, String) -> Void)?
     private var _onStateChange: (@Sendable (State) -> Void)?
+    private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
 
     /// - Parameters:
     ///   - restartDelay: pause before a restart.
@@ -493,6 +634,11 @@ public final class PluginSupervisor: @unchecked Sendable {
     public var onStateChange: (@Sendable (State) -> Void)? {
         get { lock.withLock { _onStateChange } }
         set { lock.withLock { _onStateChange = newValue } }
+    }
+    /// What the running process sends its own page (`PluginProcess.onPanelPost`).
+    public var onPanelPost: (@Sendable (JSONValue) -> Void)? {
+        get { lock.withLock { _onPanelPost } }
+        set { lock.withLock { _onPanelPost = newValue } }
     }
 
     /// Starts the plugin. Does nothing while a process is running or a restart is pending.
@@ -567,6 +713,7 @@ public final class PluginSupervisor: @unchecked Sendable {
         guard let generation else { return }
         process.onReply = { [weak self] id, payload in self?.onReply?(id, payload) }
         process.onLog = { [weak self] level, message in self?.record(level, message) }
+        process.onPanelPost = { [weak self] payload in self?.onPanelPost?(payload) }
         process.onExit = { [weak self] status in self?.processExited(status: status, generation: generation) }
         do {
             try process.start()
