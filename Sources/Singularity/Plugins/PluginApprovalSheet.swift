@@ -226,9 +226,13 @@ struct PluginApprovalSheet: View {
     private func load() async {
         phase = .loading
         let result = await state.plugins.prepareReview(pluginID)
-        if !choicesSet {
+        // The switches' first state needs the manifest (a plugin that reaches Spaces starts with
+        // none on), so it is set once a review has loaded.
+        if !choicesSet, case .success(let review) = result {
             let approval = state.plugins.plugin(pluginID)?.approval
-            enabledSpaces = approval?.enabledSpaces ?? Set([currentSpaceID].compactMap { $0 })
+            enabledSpaces = PluginReach.initialSpaceSwitches(approval: approval,
+                                                             reachesSpaces: review.manifest.reachesSpaces,
+                                                             currentSpaceID: currentSpaceID)
             developmentMode = approval?.developmentMode ?? false
             choicesSet = true
         }

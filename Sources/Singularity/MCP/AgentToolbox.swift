@@ -134,6 +134,8 @@ final class AgentToolbox {
     private final class CallRecord {
         let started = Date()
         let caller: AgentCaller
+        /// The tool's full name as called (`work.read_page`), for the refusal of a Space closed mid-call.
+        let tool: String
         /// For a plugin's connection: the program it came from (see `listTools(for:program:)`).
         let program: pid_t?
         /// For the log and the inbox card: the plugin's title, or the name the agent introduced itself with.
@@ -145,7 +147,8 @@ final class AgentToolbox {
         /// When set, the log keeps this instead of the result (console and network content is never logged).
         var logResult: String?
 
-        init(client: String, caller: AgentCaller, program: pid_t?) {
+        init(tool: String, client: String, caller: AgentCaller, program: pid_t?) {
+            self.tool = tool
             self.caller = caller
             self.program = program
             self.client = caller.clientName(introducedAs: client)
@@ -156,7 +159,7 @@ final class AgentToolbox {
     /// and appends the call to the Space's agent log.
     func call(_ name: String, arguments: [String: Value], client: String, caller: AgentCaller,
               program: pid_t? = nil) async -> CallTool.Result {
-        let record = CallRecord(client: client, caller: caller, program: program)
+        let record = CallRecord(tool: name, client: client, caller: caller, program: program)
         let result: CallTool.Result
         do {
             result = try await perform(name, arguments: arguments, record: record)
@@ -255,6 +258,12 @@ final class AgentToolbox {
             if tab.id == space.selectedTabID { entry["selected"] = true }
             // On screen right now: the selected tab, or any pane of its split (in the Space being shown).
             if state?.selectedSpaceID == space.id, space.visibleTabIDs.contains(tab.id) { entry["visible"] = true }
+            // A plugin's connection learns only that a terminal is there: its title, folder and
+            // project carry folders and commands (terminals are a later part's decision; `front`
+            // withholds them too).
+            if tab.isTerminal, record.caller.pluginID != nil {
+                return entry.filter { ["tab_id", "kind", "section", "selected", "visible"].contains($0.key) }
+            }
             if let project = space.projectName(of: tab) { entry["project"] = project } // terminals only
             if tab.openedByAgent { entry["opened_by_agent"] = true }
             return entry
@@ -274,6 +283,7 @@ final class AgentToolbox {
         record.tabID = tab.id
         state.beginAgentWork(on: tab.id)
         await controller.waitUntilLoaded()
+        try refuseIfSpaceClosed(space, record) // switched off while the page loaded
         return "Opened tab_id \(tab.id.uuidString.lowercased()).\n" + pageSummary(controller, space, record)
     }
 
@@ -286,6 +296,7 @@ final class AgentToolbox {
             request(record, space, action: "go to a page", detail: url.absoluteString, tabTitle: controller.webView.title))
         controller.load(url)
         await controller.waitUntilLoaded()
+        try refuseIfSpaceClosed(space, record)
         return pageSummary(controller, space, record)
     }
 
@@ -338,10 +349,13 @@ final class AgentToolbox {
         defer { controller.agentNavigationGuard = nil }
 
         return try await whileNotCancelled(cancellation) {
+            // Stopped after it was allowed but before it acts: it doesn't act.
+            try self.refuseIfCancelled(cancellation, record)
             let result = try await controller.callPageAgent("click(ref)", arguments: ["ref": ref])
             // If the click started a navigation, wait for it so the next read sees the new page.
             try? await Task.sleep(for: .milliseconds(300))
             await controller.waitUntilLoaded()
+            try self.refuseIfSpaceClosed(space, record)
             return UntrustedContent.wrap(result, source: self.shownAddress(controller, space, record)) + "\n"
                 + self.pageSummary(controller, space, record)
         }
@@ -366,10 +380,12 @@ final class AgentToolbox {
         defer { controller.agentNavigationGuard = nil }
 
         return try await whileNotCancelled(cancellation) {
+            try self.refuseIfCancelled(cancellation, record)
             let result = try await controller.callPageAgent("type(ref, text, submit)",
                                                             arguments: ["ref": ref, "text": text, "submit": submit])
             try? await Task.sleep(for: .milliseconds(submit ? 300 : 50))
             await controller.waitUntilLoaded()
+            try self.refuseIfSpaceClosed(space, record)
             return UntrustedContent.wrap(result, source: self.shownAddress(controller, space, record)) + "\n"
                 + self.pageSummary(controller, space, record)
         }
@@ -478,6 +494,11 @@ final class AgentToolbox {
                 record.decision += "+nav_cancelled"
                 return false
             }
+            // A plugin's Space switched off while its click or type ran: nothing it started moves the page.
+            if !self.isOpen(current, for: record.caller, program: record.program) {
+                record.decision += "+nav_space_off"
+                return false
+            }
             // A plugin's action never carries a tab onto a site the owner switched it off for.
             if self.siteIsOff(url, current, record.caller) {
                 record.decision += "+nav_site_off"
@@ -494,6 +515,11 @@ final class AgentToolbox {
             request.cancellation = cancellation
             let outcome = await state.approvals.check(context, space: current, request: request)
             record.decision += "+nav_" + outcome.logValue
+            // And as it is after the policy answered (the switch may have gone off meanwhile).
+            if outcome.isAllowed, !(state.space(space.id).map { self.isOpen($0, for: record.caller, program: record.program) } ?? false) {
+                record.decision += "+nav_space_off"
+                return false
+            }
             return outcome.isAllowed
         }
     }
@@ -598,10 +624,31 @@ final class AgentToolbox {
         throw ToolError(AgentCaller.siteOff(title: title))
     }
 
-    /// For a plugin's connection: refuses when the tab's live page is on a switched-off site now.
+    /// For a plugin's connection, after a wait: refuses when the Space is no longer switched on
+    /// for it (`refuseIfSpaceClosed`), or the tab's live page is on a switched-off site now.
     private func refuseIfNowOff(_ controller: WebTabController, _ space: Space, _ record: CallRecord) throws {
+        try refuseIfSpaceClosed(space, record)
         guard case .plugin(_, let title) = record.caller, siteIsOff(controller.webView.url, space, record.caller) else { return }
         throw ToolError(AgentCaller.siteOff(title: title))
+    }
+
+    /// For a plugin's connection: the owner switched the Space off for it (or its program ended)
+    /// while the call waited (a page loading, a click's wait). The call then ends as a call to a
+    /// closed Space does, with nothing from the page. Outside agents: never.
+    private func refuseIfSpaceClosed(_ space: Space, _ record: CallRecord) throws {
+        guard case .plugin = record.caller else { return }
+        guard let now = state?.space(space.id), isOpen(now, for: record.caller, program: record.program) else {
+            throw ToolError("Unknown tool \(record.tool). Call list_spaces to see what is available.")
+        }
+    }
+
+    /// A click or type whose call was stopped (Stop, or the connection closing) after it was
+    /// allowed but before it acts: it doesn't act, and ends as a withdrawn request does.
+    private func refuseIfCancelled(_ cancellation: ApprovalCancellation, _ record: CallRecord) throws {
+        guard Task.isCancelled || cancellation.isCancelled else { return }
+        let outcome = AgentApprovals.Outcome.cancelled
+        record.decision = outcome.logValue
+        throw ToolError(outcome.refusal ?? "The request was withdrawn.")
     }
 
     private func refuseAddress(_ url: URL, _ space: Space, _ record: CallRecord) throws {

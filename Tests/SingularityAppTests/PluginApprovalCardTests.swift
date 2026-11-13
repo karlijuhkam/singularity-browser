@@ -236,6 +236,62 @@ extension AppTests {
     @MainActor final class Flag { var value = false }
     @MainActor final class Clock { var skew: TimeInterval = 0 }
 
+    // MARK: Show Tab from a card in the page
+
+    /// "Show Tab" on a card drawn in the plugin's page: when showing the tab takes that page off
+    /// screen (the page was a tab, or another Space came in front), the inbox panel opens, without
+    /// the keyboard, so the entry stays in view. While the page stays, nothing opens.
+    @Test func showTabThatTakesThePageAwayOpensTheInbox() async throws {
+        let rig = Rig(active: true)
+        defer { rig.tearDown() }
+        rig.pageOnScreen = [Self.pluginID]
+        let pageLeaves = Flag()
+        var request = AgentApprovals.Request(actor: "Assistant", action: "click", detail: "[2] button \"Buy\"",
+                                             url: "https://example.com/", spaceName: "Work", tabTitle: "Shop", text: nil)
+        request.pluginID = Self.pluginID
+        request.tabID = UUID()
+        request.showTab = { [unowned rig] in
+            if pageLeaves.value { rig.pageOnScreen.remove(Self.pluginID) }
+        }
+        let answer = Task { @MainActor in
+            await rig.approvals.check(AgentActionContext(kind: .click, pageOrigin: "https://example.com"),
+                                      space: Self.space, request: request)
+        }
+        let entry = try await rig.waitForEntry()
+        #expect(!rig.center.isPanelShown)
+
+        // The tab is shown beside the page (a split, or the panel): the card stays in view there.
+        rig.center.showApprovalTab(entry.id)
+        #expect(!rig.center.isPanelShown)
+
+        // Showing it takes the page away: the inbox opens by itself, never taking the keyboard.
+        pageLeaves.value = true
+        rig.center.showApprovalTab(entry.id)
+        #expect(rig.center.isPanelShown)
+        let panel = try #require(rig.center.panelController.panel as? InboxPanel)
+        #expect(!panel.allowsKey)
+        #expect(!panel.isKeyWindow)
+        #expect(rig.waiting.map(\.id) == [entry.id])
+        rig.center.decideApproval(entry.id, .denied)
+        #expect(await answer.value.logValue == "denied")
+
+        // An outside agent's approval (no page draws it): Show Tab opens nothing, as before.
+        rig.center.closePanel()
+        rig.active = false
+        var outside = request
+        outside.pluginID = nil
+        outside.showTab = {}
+        let second = Task { @MainActor in
+            await rig.approvals.check(AgentActionContext(kind: .click, pageOrigin: "https://example.com"),
+                                      space: Self.space, request: outside)
+        }
+        let other = try await rig.waitForEntry()
+        rig.center.showApprovalTab(other.id)
+        #expect(!rig.center.isPanelShown)
+        rig.center.decideApproval(other.id, .denied)
+        _ = await second.value
+    }
+
     /// Through the real agent socket, for an outside agent: `notifications/cancelled` for the call,
     /// and the connection closing, each withdraw the call's waiting approval.
     @Test(.timeLimit(.minutes(1))) func aCancelledOrClosedCallWithdrawsItsApproval() async throws {
@@ -673,6 +729,59 @@ extension AppTests {
         let logged = AgentLogStore(file: state.paths.agentLogFile("work")).loadRecent()
         let clickLog = try #require(logged.last { $0.tool == "work.click" })
         #expect(clickLog.decision.contains("nav_cancelled"), "decision: \(clickLog.decision)")
+    }
+
+    /// A click or type stopped after it was allowed (here: allowed by the policy at once) but
+    /// before it acts doesn't act: it ends as a withdrawn request, logged `cancelled`.
+    @Test(.timeLimit(.minutes(1))) func aClickOrTypeStoppedBeforeItActsDoesNotAct() async throws {
+        MainRunLoopGuard.start
+        let server = try TitleFixtureServer.start()
+        defer { server.stop() }
+        let root = TestAppState.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = SpaceStore(paths: Paths(root: root))
+        var space = Space(name: "Work", slug: "work", colorHex: "#5E81F4")
+        space.agentsEnabled = true
+        space.agentPolicy = .allowAll
+        let tab = BrowserTab.web(server.url("/go"))
+        space.append(tab)
+        space.selectedTabID = tab.id
+        try store.save(space)
+        try store.save(AppStateFile(spaceOrder: [space.id], selectedSpaceID: space.id))
+        let state = TestAppState.make(root: root)
+        defer { TestAppState.shutDown(state) }
+        state.inbox.appIsActive = { false }
+        state.inbox.onArrival = { _ in }
+        state.inbox.requestAttention = {}
+        let toolbox = AgentToolbox(state: state)
+        let tabArgument = Value.string(tab.id.uuidString.lowercased())
+
+        let page = await toolbox.call("work.read_page", arguments: ["tab_id": tabArgument], client: "test-agent", caller: .outside)
+        let outline = page.content.compactMap { if case .text(let text, _, _) = $0 { text } else { nil } }.joined()
+        let match = try #require(outline.firstMatch(of: /\[(\d+)\] button "Go"/), "no Go button in \(outline)")
+        let ref = try #require(Int(match.1))
+        let controller = try #require(state.web.existingController(tab.id))
+        // Counts the clicks that reach the page.
+        _ = try await controller.webView.callAsyncJavaScript(
+            "window.__clicks = 0; document.getElementById('go').addEventListener('click', () => { window.__clicks++ }, true)",
+            arguments: [:], in: nil, contentWorld: .page)
+
+        for (tool, arguments) in [("work.click", ["tab_id": tabArgument, "ref": Value.int(ref)]),
+                                  ("work.type", ["tab_id": tabArgument, "ref": Value.int(ref), "text": .string("x")])] {
+            let call = Task { @MainActor in
+                withUnsafeCurrentTask { $0?.cancel() }
+                return await toolbox.call(tool, arguments: arguments, client: "test-agent", caller: .outside)
+            }
+            let result = await call.value
+            let text = result.content.compactMap { if case .text(let text, _, _) = $0 { text } else { nil } }.joined()
+            #expect(result.isError == true && text == "The request was withdrawn.", "\(tool) got \(text)")
+            let logged = AgentLogStore(file: state.paths.agentLogFile("work")).loadRecent()
+            #expect(logged.last?.tool == tool && logged.last?.decision == "cancelled", "\(tool) logged \(String(describing: logged.last))")
+        }
+        let clicks = try await controller.webView.callAsyncJavaScript("return window.__clicks", arguments: [:], in: nil, contentWorld: .page)
+        #expect((clicks as? Int) == 0, "clicks: \(String(describing: clicks))")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(controller.webView.url?.host() == "127.0.0.1" && controller.webView.url?.path() == "/go")
     }
 
     /// `waitUntilLoaded` in a cancelled task returns at once, also in the middle of a load (a

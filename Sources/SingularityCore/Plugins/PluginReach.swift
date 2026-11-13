@@ -36,10 +36,34 @@ public enum PluginReach {
         status == .approved && approval?.enabledSpaces.contains(space.id) == true
     }
 
-    /// The owner switched this plugin off for the site of `url` in this Space.
+    /// The owner switched this plugin off for the site of `url` in this Space. A `blob:` address
+    /// counts as the site that made it (`blob:https://bank.example/…` is on bank.example): its page
+    /// shows that site's content. (`SiteInfo.site` itself keeps saying "no site" for it.)
     public static func siteIsOff(_ space: Space, pluginID: String, url: URL?) -> Bool {
-        guard let site = SiteInfo.site(of: url) else { return false }
+        guard let site = SiteInfo.site(of: innerURL(of: url)) else { return false }
         return space.settings(forSite: site).disabledPlugins.contains(pluginID)
+    }
+
+    /// For `blob:<url>`, the inner `<url>` (unwrapped again if that is a `blob:` too); any other
+    /// address as it is.
+    static func innerURL(of url: URL?) -> URL? {
+        var current = url
+        while let url = current, url.scheme?.lowercased() == "blob" {
+            let text = url.absoluteString
+            guard let colon = text.firstIndex(of: ":") else { return nil }
+            current = URL(string: String(text[text.index(after: colon)...]))
+        }
+        return current
+    }
+
+    /// What the approval sheet's per-Space switches start as: an approved plugin's own set (a
+    /// re-approval keeps it); for a new plugin that reaches Spaces (`frontTab` or `browser`), none,
+    /// so the owner switches each Space on; for any other new plugin, the Space in front, as before.
+    public static func initialSpaceSwitches(approval: PluginApproval?, reachesSpaces: Bool,
+                                            currentSpaceID: UUID?) -> Set<UUID> {
+        if let approval { return approval.enabledSpaces }
+        if reachesSpaces { return [] }
+        return Set([currentSpaceID].compactMap { $0 })
     }
 
     /// Listed in the site settings panel: switched on for the Space and (a page script that runs

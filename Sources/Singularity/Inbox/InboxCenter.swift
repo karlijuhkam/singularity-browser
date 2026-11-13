@@ -290,8 +290,20 @@ final class InboxCenter {
     /// "Show Tab" on the card: shows the tab the request is about and gives the owner the full
     /// time again. Does not answer, and does not take the entry away (going to a tab never
     /// removes approvals, see `wentToTerminal`).
+    ///
+    /// A plugin's approval that its page area drew as a card (`pluginPageOnScreen`): when showing
+    /// the tab takes that page off screen (the page was a tab, or another Space came in front),
+    /// the inbox panel opens, without the keyboard, so the entry is still in view.
     func showApprovalTab(_ id: UUID) {
         guard let waiting = waitingApprovals[id] else { return }
+        let pluginID = waiting.pending.request.pluginID
+        let wasInPluginPage = InboxRules.shownInPluginPage(entryPluginID: pluginID, pageOnScreen: pluginPageOnScreen)
+        defer {
+            if wasInPluginPage, waitingApprovals[id] != nil,
+               !InboxRules.shownInPluginPage(entryPluginID: pluginID, pageOnScreen: pluginPageOnScreen) {
+                showPanel(takingFocus: false)
+            }
+        }
         if let showTab = waiting.pending.request.showTab {
             showTab()
         } else if let tabID = waiting.pending.request.tabID {

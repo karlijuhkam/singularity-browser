@@ -302,8 +302,10 @@ struct PluginDoorTests {
 
     /// One Space with agents OFF and two web tabs (a.example, b.example), the plugin(s) approved,
     /// running and doorfix switched on for the Space; its program started in `mode` ("exec",
-    /// "child", or nil for none yet).
-    private func makeRig(mode: String? = "child", browser: Bool = true, second: Bool = false) async throws -> Rig {
+    /// "child", or nil for none yet). `terminal`: the Space also has a terminal tab, first and not
+    /// selected (so no shell starts), titled with a command, in a project.
+    private func makeRig(mode: String? = "child", browser: Bool = true, second: Bool = false,
+                         terminal: Bool = false) async throws -> Rig {
         let launcher = try Self.launcher()
         let ws = try DoorWorkspace(browser: browser, second: second)
         try ws.approve()
@@ -311,13 +313,24 @@ struct PluginDoorTests {
         let manager = PluginManager(paths: ws.paths, runtime: bunPath, host: hostScript,
                                     programs: .live(environment: [:], loginPath: { "/usr/bin:/bin" }))
         let appRoot = TestAppState.makeRoot()
+        if terminal {
+            let project = Project(name: "secret-project", path: "~/Developer/secret-project")
+            var space = Space(name: "Work", slug: "work", colorHex: "#5E81F4", workingDirectory: "~", projects: [project])
+            var tab = BrowserTab.terminal(workingDirectory: "~/Developer/secret-project")
+            tab.title = "claude --resume ~/Developer/secret-project"
+            tab.projectID = project.id
+            space.append(tab)
+            let store = SpaceStore(paths: Paths(root: appRoot))
+            try store.save(space)
+            try store.save(AppStateFile(spaceOrder: [space.id], selectedSpaceID: space.id))
+        }
         let state = TestAppState.make(root: appRoot, plugins: manager)
         state.closeWelcome()
         let spaceID = try #require(state.selectedSpaceID)
         #expect(state.space(spaceID)?.agentsEnabled == false)
         state.openInNewTab(URL(string: "https://a.example/page")!)
         state.openInNewTab(URL(string: "https://b.example/")!)
-        let tabs = try #require(state.selectedSpace?.tabs)
+        let tabs = try #require(state.selectedSpace?.tabs.filter { !$0.isTerminal })
         manager.start()
         for id in ws.ids {
             try await waitUntil("the plugin to run", limit: .seconds(20)) { manager.plugin(id)?.runState == .running }
@@ -552,6 +565,83 @@ struct PluginDoorTests {
         let close = await toolbox.call(rig.tool("close"), arguments: ["tab_id": .string(id)], client: "x", caller: caller, program: program)
         #expect(close.isError == true && text(close) == "Door Helper is switched off for this site.", "got \(text(close))")
         #expect(rig.state.space(rig.space.id)?.tab(tab.id) != nil)
+    }
+
+    /// Item of the final review: a plugin's `read_page` that was in flight (its page loading) when
+    /// the owner switched the Space off for the plugin ends refused, as a call to a closed Space,
+    /// with nothing from the page.
+    @Test(.timeLimit(.minutes(1))) func aReadInFlightWhenTheSpaceGoesOffReturnsNothing() async throws {
+        MainRunLoopGuard.start
+        let server = try TitleFixtureServer.start()
+        defer { server.stop() }
+        let rig = try await makeRig(mode: "child")
+        defer { tearDown(rig) }
+        let caller = AgentCaller.plugin(id: DoorWorkspace.id, title: DoorWorkspace.title)
+        let program = try #require(rig.manager.programPID(of: DoorWorkspace.id))
+        let toolbox = AgentToolbox(state: rig.state)
+        rig.state.openInNewTab(server.url("/slow-titled?t=SecretTitle"))
+        let tab = try #require(rig.state.selectedSpace?.tabs.last)
+        let read = Task { @MainActor in
+            await toolbox.call(rig.tool("read_page"), arguments: ["tab_id": .string(tab.id.uuidString.lowercased())],
+                               client: "x", caller: caller, program: program)
+        }
+        // The call has started (it marks the tab) and waits for the page, which is still loading
+        // (the server answers after a second).
+        try await waitUntil("the call to wait for the page", limit: .seconds(10)) {
+            rig.state.isAgentBusy(tab.id) && rig.state.web.existingController(tab.id)?.webView.isLoading == true
+        }
+        rig.manager.setEnabled(DoorWorkspace.id, space: rig.space.id, false)
+        let result = await read.value
+        let got = text(result)
+        #expect(result.isError == true && got == "Unknown tool \(rig.tool("read_page")). Call list_spaces to see what is available.",
+                "got \(got)")
+        #expect(!got.contains("SecretTitle") && !got.contains("titled") && !got.contains(String(server.port)))
+        // The page did load: only the answer was withheld.
+        #expect(rig.state.web.existingController(tab.id)?.webView.title == "SecretTitle")
+
+        // An outside agent's read of the same page is not affected by the plugin's switch.
+        rig.state.setAgentsEnabled(true, spaceID: rig.space.id)
+        let theirs = await toolbox.call(rig.tool("read_page"), arguments: ["tab_id": .string(tab.id.uuidString.lowercased())],
+                                        client: "x", caller: .outside)
+        #expect(theirs.isError != true && text(theirs).contains("titled"), "got \(text(theirs))")
+    }
+
+    /// A plugin's connection learns of a terminal tab only its id, kind, section and whether it is
+    /// selected or on screen: no title, folder or project. An outside agent's list is as before.
+    @Test(.timeLimit(.minutes(1))) func aPluginsTabListNamesNoTerminal() async throws {
+        let rig = try await makeRig(mode: "child", terminal: true)
+        defer { tearDown(rig) }
+        let terminal = try #require(rig.state.space(rig.space.id)?.tabs.first { $0.isTerminal })
+        let id = terminal.id.uuidString.lowercased()
+        let caller = AgentCaller.plugin(id: DoorWorkspace.id, title: DoorWorkspace.title)
+        let program = try #require(rig.manager.programPID(of: DoorWorkspace.id))
+        let toolbox = AgentToolbox(state: rig.state)
+
+        func entries(_ result: CallTool.Result) throws -> [[String: Any]] {
+            let lines = text(result).split(separator: "\n", omittingEmptySubsequences: false)
+            let json = lines.dropFirst().prefix { !$0.hasPrefix("</untrusted_page_content") }.joined(separator: "\n")
+            return try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]], "got \(text(result))")
+        }
+
+        let mine = try entries(await toolbox.call(rig.tool("list_tabs"), arguments: [:], client: "x", caller: caller, program: program))
+        let myTerminal = try #require(mine.first { $0["tab_id"] as? String == id })
+        #expect(Set(myTerminal.keys) == ["tab_id", "kind", "section"], "got \(myTerminal)")
+        #expect(myTerminal["kind"] as? String == "terminal" && myTerminal["section"] as? String == "open")
+        // Web tabs keep their title and address.
+        let web = try #require(mine.first { $0["tab_id"] as? String == rig.b.id.uuidString.lowercased() })
+        #expect(web["url"] as? String == "https://b.example/" && web["title"] != nil)
+        // (Not selected here: selecting a terminal would start a shell.)
+        #expect(!text(await toolbox.call(rig.tool("list_tabs"), arguments: [:], client: "x", caller: caller, program: program))
+            .contains("secret-project"))
+
+        // An outside agent: title, folder and project, as before.
+        rig.state.setAgentsEnabled(true, spaceID: rig.space.id)
+        let theirs = try entries(await toolbox.call(rig.tool("list_tabs"), arguments: [:], client: "x", caller: .outside))
+        let theirTerminal = try #require(theirs.first { $0["tab_id"] as? String == id })
+        #expect(theirTerminal["title"] as? String == "claude --resume ~/Developer/secret-project")
+        #expect(theirTerminal["directory"] as? String == "~/Developer/secret-project")
+        #expect(theirTerminal["project"] as? String == "secret-project")
+        #expect(theirTerminal["kind"] as? String == "terminal" && theirTerminal["section"] as? String == "open")
     }
 
     private func text(_ result: CallTool.Result) -> String {

@@ -96,6 +96,37 @@ import Testing
         #expect(!PluginReach.siteIsOff(off, pluginID: "t", url: nil))
     }
 
+    /// A `blob:` address is judged by the site that made it, so a page shown from a blob of a
+    /// switched-off site is off too. `SiteInfo.site` itself is unchanged for everyone else.
+    @Test func aBlobAddressCountsAsTheSiteThatMadeIt() {
+        let off = space([], selected: nil, sites: ["https://bank.example": SiteSettings(disabledPlugins: ["t"])])
+        let blob = URL(string: "blob:https://bank.example/6f1c2a7e-0d4b-4c8e-9a51-3b2f7c9d1e00")!
+        #expect(SiteInfo.site(of: blob) == nil)
+        #expect(PluginReach.siteIsOff(off, pluginID: "t", url: blob))
+        #expect(PluginReach.siteIsOff(off, pluginID: "t", url: URL(string: "BLOB:https://bank.example/x")!))
+        #expect(PluginReach.siteIsOff(off, pluginID: "t", url: URL(string: "blob:blob:https://bank.example/x")!))
+        #expect(!PluginReach.siteIsOff(off, pluginID: "other", url: blob))
+        #expect(!PluginReach.siteIsOff(off, pluginID: "t", url: URL(string: "blob:https://other.example/x")!))
+        #expect(!PluginReach.siteIsOff(off, pluginID: "t", url: URL(string: "blob:nonsense")!))
+        // The tab in front on such an address is hidden too.
+        let tab = BrowserTab.web(blob, title: "Statement")
+        let shown = space([tab], selected: tab, sites: off.siteSettings)
+        #expect(front(shown) == .hidden(.siteOff))
+    }
+
+    /// The approval sheet's Space switches: off for a new plugin that reaches Spaces (design §1),
+    /// the Space in front for any other new plugin (as before), and an approved plugin's own set.
+    @Test func theSheetsSwitchesStartOffForAPluginThatReachesSpaces() {
+        let current = UUID()
+        let other = UUID()
+        #expect(PluginReach.initialSpaceSwitches(approval: nil, reachesSpaces: true, currentSpaceID: current).isEmpty)
+        #expect(PluginReach.initialSpaceSwitches(approval: nil, reachesSpaces: false, currentSpaceID: current) == [current])
+        #expect(PluginReach.initialSpaceSwitches(approval: nil, reachesSpaces: false, currentSpaceID: nil).isEmpty)
+        // A re-approval keeps what the owner chose, either way.
+        #expect(PluginReach.initialSpaceSwitches(approval: approval([other]), reachesSpaces: true, currentSpaceID: current) == [other])
+        #expect(PluginReach.initialSpaceSwitches(approval: approval([]), reachesSpaces: false, currentSpaceID: current).isEmpty)
+    }
+
     @Test func listedForSiteNeedsTheSpaceAndAReason() throws {
         let url = URL(string: "https://example.com/x")!
         let s = space([], selected: nil)
