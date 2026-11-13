@@ -14,11 +14,13 @@ import {
   applyDelta,
   billingLabel,
   billingNotice,
+  canEdit,
   canType,
   EMPTY_CHAT,
   firstStaleIndex,
   keyAction,
   STALE_LINE,
+  START_RETRY_AFTER_MS,
   STARTING,
   statusNotice,
   versionsLine,
@@ -41,6 +43,9 @@ stylesheet.rel = "stylesheet";
 stylesheet.href = "./panel.css";
 document.head.appendChild(stylesheet);
 
+/** A message to the background: its `type` and its fields (see background.ts). */
+type Payload = { type: string; [field: string]: unknown };
+
 function isState(value: unknown): value is ViewState {
   const v = value as Partial<ViewState> | null;
   return v !== null && typeof v === "object" && Array.isArray(v.messages) && typeof v.status === "string"
@@ -62,16 +67,30 @@ function App() {
   /** Takes a state unless a newer one is already shown. */
   const accept = (next: ViewState) => setState((current) => (current === null || next.version >= current.version ? next : current));
 
-  /** Sends a message to the background; a state in the answer is shown. Returns the answer. */
-  async function request(payload: object): Promise<unknown> {
+  /**
+   * Sends a message to the background; a state in the answer is shown. Returns the answer. The
+   * answer to `hello` is always taken, whatever its version: it is the whole state as it is now
+   * (a background that started again counts from 0).
+   */
+  async function request(payload: Payload): Promise<unknown> {
     let reply: unknown;
     try {
       reply = await window.singularity.send(payload);
     } catch (error) {
       reply = { error: error instanceof Error ? error.message : String(error) };
     }
-    if (isState(reply)) accept(reply);
+    if (isState(reply)) {
+      if (payload.type === "hello") setState(reply);
+      else accept(reply);
+    }
     return reply;
+  }
+
+  /** The first `hello`, and Try Again after it failed. */
+  async function greet() {
+    setProblem(null);
+    const reply = await request({ type: "hello" });
+    if (!isState(reply)) setProblem(errorOf(reply) ?? "The Assistant didn't answer.");
   }
 
   /** Asks for the whole state again (a change was missed). */
@@ -97,15 +116,20 @@ function App() {
         });
       }
     });
-    void request({ type: "hello" }).then((reply) => {
-      if (!isState(reply)) setProblem(errorOf(reply) ?? "The Assistant didn't answer.");
-    });
+    void greet();
   }, []);
 
   if (state === null) {
     return (
       <div class="app">
-        <p class="notice quiet">{problem ?? STARTING}</p>
+        {problem === null
+          ? <p class="notice quiet">{STARTING}</p>
+          : (
+            <div class="notice warn">
+              <p>{problem}</p>
+              <button type="button" onClick={() => void greet()}>Try Again</button>
+            </div>
+          )}
       </div>
     );
   }
@@ -122,7 +146,7 @@ function App() {
   );
 }
 
-type Request = (payload: object) => Promise<unknown>;
+type Request = (payload: Payload) => Promise<unknown>;
 
 function Header(props: { state: ViewState; request: Request; settingsOpen: boolean; toggleSettings: () => void }) {
   const { state, request } = props;
@@ -205,6 +229,16 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
   const notice = statusNotice(state);
   const billing = billingNotice(state);
   const typing = canType(state.status);
+  const editable = canEdit(state.status);
+  const slowStart = useSlowStart(state.status, state.version);
+
+  // When the page loads and whenever typing becomes possible again, the input takes the focus,
+  // unless something else on the page has it (the settings' field, a button).
+  useEffect(() => {
+    const element = input.current;
+    const active = document.activeElement;
+    if (editable && !hidden && element && (active === null || active === document.body)) element.focus();
+  }, [editable, hidden]);
 
   // Grow with the text, up to the limit in panel.css.
   useLayoutEffect(() => {
@@ -219,9 +253,11 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
     if (text === "" || !typing) return;
     const reply = await ask({ type: "send", text });
     if (isState(reply)) setDraft("");
+    // Stays enabled while the answer is written: ready for the next message.
+    input.current?.focus();
   }
 
-  async function ask(payload: object): Promise<unknown> {
+  async function ask(payload: Payload): Promise<unknown> {
     const reply = await request(payload);
     setProblem(isState(reply) ? null : errorOf(reply) ?? "The Assistant didn't answer.");
     return reply;
@@ -229,7 +265,13 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
 
   return (
     <footer class="footer" hidden={hidden}>
-      {state.status === "starting" && <p class="notice quiet">{STARTING}</p>}
+      {state.status === "starting" && (
+        <div class="notice quiet">
+          <p>{STARTING}</p>
+          {/* A start that never finishes (no ready after 15 s) can be tried again. */}
+          {slowStart && <button type="button" onClick={() => ask({ type: "retry" })}>Try Again</button>}
+        </div>
+      )}
       {notice && (
         <div class="notice warn">
           <p>{notice.text}</p>
@@ -249,7 +291,7 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
           ref={input}
           rows={1}
           value={draft}
-          disabled={!typing}
+          disabled={!editable}
           aria-label="Message"
           placeholder="Message"
           onInput={(event) => setDraft((event.currentTarget as HTMLTextAreaElement).value)}
@@ -266,6 +308,21 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
       </div>
     </footer>
   );
+}
+
+/**
+ * True once the status has been "starting" for START_RETRY_AFTER_MS with no new state (Try Again
+ * makes a new one, so the wait starts over).
+ */
+function useSlowStart(status: ViewState["status"], version: number): boolean {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (status !== "starting") return;
+    const timer = setTimeout(() => setSlow(true), START_RETRY_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [status, version]);
+  return slow;
 }
 
 function Settings({ state, request, close }: { state: ViewState; request: Request; close: () => void }) {

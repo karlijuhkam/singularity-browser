@@ -22,7 +22,11 @@ import {
   initializeResponseAPI,
   initMessage,
   limitTurn,
+  limitTurnPlainText,
+  limitWithExtraUsageTurn,
+  noConversationTurn,
   result,
+  resultOnlyTurn,
   signedOutTurn,
 } from "./recording.ts";
 
@@ -284,6 +288,86 @@ test("usage limit", async () => {
   expect(of(events, "error")[0].kind).toBe("limit");
   expect(of(events, "done")).toEqual([]);
   provider.stop();
+});
+
+test("a rejected rate limit event, then a successful result: the answer, not the limit notice", async () => {
+  const { provider, events } = start([chat([limitWithExtraUsageTurn("sess-1"), helloTurn("sess-1")])]);
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  provider.send("Hi");
+  await waitFor(() => of(events, "done").length > 0, "done");
+  expect(of(events, "text").map((e) => e.delta)).toEqual(["Hello", " there."]);
+  expect(of(events, "error")).toEqual([]);
+  // And the next turn is not held against it either.
+  provider.send("Again");
+  await waitFor(() => of(events, "done").length > 1, "the second done");
+  expect(of(events, "error")).toEqual([]);
+  provider.stop();
+});
+
+test("a refused turn after a rejected rate limit event is the limit, whatever its text", async () => {
+  const { provider, events } = start([chat([limitTurnPlainText("sess-1")])]);
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  provider.send("Hi");
+  await waitFor(() => of(events, "error").length > 0, "an error");
+  expect(of(events, "error")[0].kind).toBe("limit");
+  expect(of(events, "done")).toEqual([]);
+  provider.stop();
+});
+
+test("a turn with no streamed text shows its result text as the answer", async () => {
+  const { provider, events } = start([chat([resultOnlyTurn("sess-1", "Unknown command: /nothing"), resultOnlyTurn("sess-1", "  ")])]);
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  provider.send("/nothing");
+  await waitFor(() => of(events, "done").length > 0, "done");
+  expect(of(events, "text").map((e) => e.delta)).toEqual(["Unknown command: /nothing"]);
+  // Blank result text: nothing to show, just the end of the turn.
+  provider.send("/blank");
+  await waitFor(() => of(events, "done").length > 1, "the second done");
+  expect(of(events, "text").length).toBe(1);
+  expect(of(events, "error")).toEqual([]);
+  provider.stop();
+});
+
+test("a failed resume reported at the first message: one error, then a new conversation", async () => {
+  const { provider, events, programs } = start([chat([noConversationTurn("old-session")]), chat([helloTurn("sess-2")])],
+    { resume: "old-session" });
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  provider.send("Hi");
+  await waitFor(() => of(events, "error").length > 0, "an error");
+  expect(of(events, "error")).toEqual([{
+    type: "error",
+    kind: "other",
+    message: "The earlier conversation couldn't be continued, so a new one was started.",
+    resumeFailed: true,
+  }]);
+  await waitFor(() => programs.length === 2 && of(events, "ready").length > 1, "the new program's ready");
+  expect(programs[0].ended).toBe(true);
+  expect(programs[1].args.some((arg) => arg.startsWith("--resume"))).toBe(false);
+  provider.send("Hi");
+  await waitFor(() => of(events, "done").length > 0, "done");
+  expect(of(events, "session").at(-1)).toEqual({ type: "session", id: "sess-2" });
+  expect(of(events, "error").length).toBe(1);
+  provider.stop();
+});
+
+test("\"No conversation found\" without resume, or after a turn worked, is an ordinary error", async () => {
+  const fresh = start([chat([noConversationTurn("x")])]);
+  await waitFor(() => of(fresh.events, "ready").length > 0, "ready");
+  fresh.provider.send("Hi");
+  await waitFor(() => of(fresh.events, "error").length > 0, "an error");
+  expect(of(fresh.events, "error")[0]).toMatchObject({ kind: "other" });
+  expect(of(fresh.events, "error")[0].resumeFailed).toBeUndefined();
+  fresh.provider.stop();
+
+  const resumed = start([chat([helloTurn("s1"), noConversationTurn("s1")])], { resume: "s1" });
+  await waitFor(() => of(resumed.events, "ready").length > 0, "ready");
+  resumed.provider.send("Hi");
+  await waitFor(() => of(resumed.events, "done").length > 0, "done");
+  resumed.provider.send("Again");
+  await waitFor(() => of(resumed.events, "error").length > 0, "an error");
+  expect(of(resumed.events, "error")[0].resumeFailed).toBeUndefined();
+  expect(resumed.programs.length).toBe(1);
+  resumed.provider.stop();
 });
 
 test("the program ending mid-conversation", async () => {

@@ -5,11 +5,13 @@ import {
   applyDelta,
   billingLabel,
   billingNotice,
+  canEdit,
   canType,
   EMPTY_CHAT,
   firstStaleIndex,
   keyAction,
   STALE_LINE,
+  START_RETRY_AFTER_MS,
   statusNotice,
   type ViewState,
 } from "../../../Plugins/assistant/view.ts";
@@ -55,11 +57,17 @@ test("billing label and notice", () => {
   expect(billingNotice(state({ billing: "api", billingNoticeSeen: true }))).toBeNull();
 });
 
-test("typing only while ready", () => {
+test("sending only while ready; the input takes typing while an answer is written too", () => {
   expect(canType("ready")).toBe(true);
   for (const status of ["starting", "answering", "signedOut", "limit", "programEnded", "programsOff", "error"] as const) {
     expect(canType(status)).toBe(false);
   }
+  expect(canEdit("ready")).toBe(true);
+  expect(canEdit("answering")).toBe(true);
+  for (const status of ["starting", "signedOut", "limit", "programEnded", "programsOff", "error"] as const) {
+    expect(canEdit(status)).toBe(false);
+  }
+  expect(START_RETRY_AFTER_MS).toBe(15_000);
 });
 
 test("Return sends, Shift-Return makes a new line", () => {
@@ -67,6 +75,9 @@ test("Return sends, Shift-Return makes a new line", () => {
   expect(keyAction({ key: "Enter", shiftKey: true, isComposing: false })).toBe("newline");
   // While an input method is composing, Return belongs to it.
   expect(keyAction({ key: "Enter", shiftKey: false, isComposing: true })).toBe("newline");
+  // WebKit's Return that confirms an input method's text: isComposing false, keyCode 229.
+  expect(keyAction({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 229 })).toBe("newline");
+  expect(keyAction({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 13 })).toBe("send");
   expect(keyAction({ key: "a", shiftKey: false, isComposing: false })).toBe("other");
 });
 

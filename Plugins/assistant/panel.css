@@ -216,6 +216,10 @@ button.icon {
   margin: 0 0 6px;
 }
 
+.notice p:last-child {
+  margin-bottom: 0;
+}
+
 .notice.quiet {
   background: none;
   padding: 0;

@@ -195,6 +195,12 @@ class Run {
   #answering = false;
   #interrupted = false;
   #turnFailure: Failure | null = null;
+  /** A rate_limit_event of this turn said "rejected"; it counts only if the turn fails too. */
+  #limitRejected = false;
+  /** Some of this turn's answer was streamed as text. */
+  #textThisTurn = false;
+  /** A turn of this run ended well: from then on `resume` worked. */
+  #turnSucceeded = false;
   // What `ready` last said.
   #models: { id: string; name: string; resolved?: string }[] = [];
   #billing: "plan" | "api" = "plan";
@@ -357,6 +363,7 @@ class Run {
         const event = message.event;
         if (!message.parent_tool_use_id && event?.type === "content_block_delta" && event.delta?.type === "text_delta"
             && typeof event.delta.text === "string" && event.delta.text !== "") {
+          this.#textThisTurn = true;
           this.#emit({ type: "text", delta: event.delta.text });
         }
         break;
@@ -367,9 +374,9 @@ class Run {
         }
         break;
       case "rate_limit_event":
-        if (message.rate_limit_info?.status === "rejected") {
-          this.#turnFailure ??= { kind: "limit", message: "" };
-        }
+        // "rejected" alone doesn't mean this turn failed: a plan with extra usage switched on
+        // goes on and answers. It decides the kind only when the turn fails (#endTurn).
+        if (message.rate_limit_info?.status === "rejected") this.#limitRejected = true;
         break;
       case "result":
         this.#noteSession(message.session_id);
@@ -388,21 +395,57 @@ class Run {
   #endTurn(result: any): void {
     const interrupted = this.#interrupted;
     const failure = this.#turnFailure;
+    const limited = this.#limitRejected;
+    const streamed = this.#textThisTurn;
     this.#answering = false;
     this.#interrupted = false;
     this.#turnFailure = null;
+    this.#limitRejected = false;
+    this.#textThisTurn = false;
+    const resultText = (typeof result?.result === "string" ? result.result
+      : Array.isArray(result?.errors) ? result.errors.filter((e: unknown) => typeof e === "string").join("\n") : "").slice(0, 1000);
     if (interrupted) {
       this.#emit({ type: "done" });
     } else if (failure) {
-      this.#emit({ type: "error", kind: failure.kind, message: failure.message || String(result?.result ?? "") });
+      this.#turnFailed(failure.kind, failure.message || resultText, resultText);
     } else if (result?.is_error || result?.subtype !== "success") {
-      const text = typeof result?.result === "string" ? result.result
-        : Array.isArray(result?.errors) ? result.errors.join("\n") : "";
-      const found = failureFromText(text.slice(0, 1000));
-      this.#emit({ type: "error", kind: found.kind, message: found.message });
+      const found = failureFromText(resultText);
+      // A refused turn after a "rejected" rate limit event: that is the reason.
+      this.#turnFailed(limited ? "limit" : found.kind, found.message, resultText);
     } else {
+      this.#turnSucceeded = true;
+      // A turn the program answered without streaming (a "/command" it handles itself): its
+      // result text is the answer.
+      if (!streamed && typeof result?.result === "string" && result.result.trim() !== "") {
+        this.#emit({ type: "text", delta: result.result });
+      }
       this.#emit({ type: "done" });
     }
+  }
+
+  /**
+   * A turn ended in failure. While resuming, before any turn worked, "No conversation found" means
+   * the program couldn't find the conversation to continue (it may say so at the first message
+   * rather than end before `initialize`): that is a failed resume.
+   */
+  #turnFailed(kind: Failure["kind"], message: string, resultText: string): void {
+    if (this.options.resume && !this.#turnSucceeded && /no conversation found/i.test(message + "\n" + resultText)) {
+      this.#resumeFailed();
+      return;
+    }
+    this.#emit({ type: "error", kind, message });
+  }
+
+  /** Exactly one error with `resumeFailed`, then a new run without `resume`. */
+  #resumeFailed(): void {
+    this.#emit({
+      type: "error",
+      kind: "other",
+      message: "The earlier conversation couldn't be continued, so a new one was started.",
+      resumeFailed: true,
+    });
+    this.#finished = true;
+    this.restartWithoutResume();
   }
 
   /** The program is gone (or never started): say why, once. */
@@ -414,14 +457,7 @@ class Run {
     } else if (this.options.resume && !this.#initialized) {
       // The program started (no refusal) but ended before it answered: `claude --resume <id>`
       // does that when it can't find or read that conversation.
-      this.#emit({
-        type: "error",
-        kind: "other",
-        message: "The earlier conversation couldn't be continued, so a new one was started.",
-        resumeFailed: true,
-      });
-      this.#finished = true;
-      this.restartWithoutResume();
+      this.#resumeFailed();
     } else {
       this.#fail({ kind: "programEnded", message: "The connection to Claude ended." });
     }
@@ -438,6 +474,8 @@ class Run {
     this.#answering = true;
     this.#interrupted = false;
     this.#turnFailure = null;
+    this.#limitRejected = false;
+    this.#textThisTurn = false;
     this.#input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null });
   }
 

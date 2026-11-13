@@ -28,6 +28,8 @@ import type { Status, ViewState } from "./view.ts";
 const STATE_BUDGET_BYTES = 200 * 1024;
 const MAX_TEXT_LENGTH = 100_000;
 const MAX_PATH_LENGTH = 1024;
+/** After Stop, how long the end of the turn may take before the provider is started again. */
+const STOP_WAIT_MS = 5000;
 
 type Storage = {
   get(key: string): Promise<unknown>;
@@ -40,6 +42,8 @@ type Dependencies = {
   provider: Provider;
   conversation: ConversationFile;
   sdkVersion: string;
+  /** Tests make it shorter (default STOP_WAIT_MS). */
+  stopWaitMs?: number;
 };
 
 /** The newest messages that fit in `budget` bytes of JSON (at least the last one, cut if it must be). */
@@ -88,6 +92,34 @@ export function createAssistant(deps: Dependencies) {
   let held: string | null = null;
   let started = false;
   let loading: Promise<void> | null = null;
+  /** Counts the messages sent to the provider, so a late Stop timer knows its turn is over. */
+  let turn = 0;
+  let stopTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Saves the conversation now rather than after the file's short delay. */
+  const flush = () => void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
+
+  function clearStopTimer(): void {
+    if (stopTimer !== null) clearTimeout(stopTimer);
+    stopTimer = null;
+  }
+
+  /**
+   * After Stop the answer normally ends at once (`done`). If it doesn't within a few seconds, the
+   * provider is started again; the conversation and its session are kept, so nothing is lost.
+   */
+  function armStopTimer(): void {
+    clearStopTimer();
+    const stopped = turn;
+    stopTimer = setTimeout(() => {
+      stopTimer = null;
+      if (status !== "answering" || turn !== stopped) return;
+      log("no end of the answer after Stop; starting again");
+      restartProvider();
+      changed();
+      postState();
+    }, deps.stopWaitMs ?? STOP_WAIT_MS);
+  }
 
   /** Writes to storage in the background; a failure is logged (the value is still used now). */
   const store = (key: string, value: unknown) => {
@@ -156,6 +188,7 @@ export function createAssistant(deps: Dependencies) {
 
   function restartProvider(): void {
     dropHeld();
+    clearStopTimer();
     provider.stop();
     startProvider();
   }
@@ -195,25 +228,30 @@ export function createAssistant(deps: Dependencies) {
         return;
       }
       case "done":
+        clearStopTimer();
         if (status === "answering") status = "ready";
-        void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
+        flush();
         break;
       case "error":
+        clearStopTimer();
         if (event.resumeFailed) {
           // The earlier conversation can't be continued: the provider goes on with a new one.
           // Keep what the user saw, greyed out, and forget the old session. (Only this flag means
-          // that; any other error keeps the session and the messages as they are.)
+          // that; any other error keeps the session and the messages as they are.) It may come
+          // at the first message (the program found no such conversation then): the new one
+          // reports `ready` again.
           messages = markStale(messages);
           session = undefined;
           unstore("session");
+          status = "starting";
           conversation.update(messages);
-          void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
+          flush();
           break;
         }
         status = statusFor[event.kind];
         error = event.kind === "other" ? event.message.slice(0, 2000) : null;
         dropHeld();
-        void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
+        flush();
         log("provider error: " + event.kind);
         break;
       case "session":
@@ -242,6 +280,7 @@ export function createAssistant(deps: Dependencies) {
   function sendNow(text: string): void {
     status = "answering";
     error = null;
+    turn += 1;
     provider.send(text);
   }
 
@@ -263,9 +302,12 @@ export function createAssistant(deps: Dependencies) {
         const text = message.text.trim();
         if (text === "") return { error: "There's nothing to send." };
         if (text.length > MAX_TEXT_LENGTH) return { error: "That message is too long." };
-        if (status !== "ready" || held !== null) return { error: "The Assistant isn't ready for a message." };
+        if (held !== null) return { error: "Press OK on the note above first." };
+        if (status !== "ready") return { error: "The Assistant isn't ready for a message." };
         messages.push({ role: "user", text });
         conversation.update(messages);
+        // Saved now: a quit right after sending must not lose it (Claude's session has it).
+        flush();
         if (billingNoticeSeen) sendNow(text);
         else held = text;
         changed();
@@ -273,11 +315,17 @@ export function createAssistant(deps: Dependencies) {
       }
 
       case "stop":
-        if (status === "answering") provider.interrupt();
+        if (status === "answering") {
+          provider.interrupt();
+          armStopTimer();
+        }
         return state();
 
       case "newChat":
+        clearStopTimer();
         provider.stop();
+        // Until the new start: a message sent meanwhile is refused (visibly), not dropped.
+        status = "starting";
         held = null;
         messages = [];
         session = undefined;

@@ -87,6 +87,10 @@ type MakeOptions = {
   failFirstGet?: boolean;
   /** conversation.delete and storage.delete reject. */
   failDeletes?: boolean;
+  /** The conversation file's write delay (10 ms unless given). */
+  conversationDelayMs?: number;
+  /** How long after Stop the background waits for the end of the turn (default: its own 5 s). */
+  stopWaitMs?: number;
 };
 
 async function make(
@@ -106,7 +110,7 @@ async function make(
   const provider = new FakeProvider();
   const logs: string[] = [];
   let getFailures = options.failFirstGet ? 1 : 0;
-  const file = new ConversationFile(dir, { delayMs: 10 });
+  const file = new ConversationFile(dir, { delayMs: options.conversationDelayMs ?? 10 });
   if (options.failDeletes) file.delete = async () => Promise.reject(new Error("disk says no"));
   const assistant = createAssistant({
     singularity: {
@@ -130,6 +134,7 @@ async function make(
     provider: options.provider ?? provider,
     conversation: file,
     sdkVersion: "0.3.323",
+    stopWaitMs: options.stopWaitMs,
   });
   const send = (payload: unknown) => assistant.handle(payload) as Promise<any>;
   const lastState = () => posts.filter((p) => p.type === "state").at(-1);
@@ -391,6 +396,92 @@ test("New Chat starts the provider again even when removing the old conversation
   expect(provider.starts.length).toBe(2);
   expect(provider.starts.at(-1)?.resume).toBeUndefined();
   expect(logs.some((line) => line.includes("disk says no"))).toBe(true);
+});
+
+test("New Chat refuses a message sent while it is still starting the new conversation", async () => {
+  const { provider, send } = await make({ session: "s1" });
+  await send({ type: "hello" });
+  provider.emit(ready());
+  // Return pressed right after New Chat: both arrive before New Chat has finished.
+  const newChat = send({ type: "newChat" });
+  const early = await send({ type: "send", text: "Hi" });
+  expect(early.error).toBe("The Assistant isn't ready for a message.");
+  expect(provider.sent).toEqual([]);
+  const state = await newChat;
+  expect(state.status).toBe("starting");
+  expect(state.messages).toEqual([]);
+});
+
+test("a message the user sends is saved at once, not only after the write delay", async () => {
+  const { dir, provider, send } = await make({}, undefined, { conversationDelayMs: 60_000 });
+  await send({ type: "hello" });
+  provider.emit(ready());
+  await send({ type: "send", text: "Keep me" });
+  await settle();
+  expect(await new ConversationFile(dir).load()).toEqual([{ role: "user", text: "Keep me" }]);
+});
+
+test("a second message while the billing note waits is refused with its own words", async () => {
+  const { provider, send } = await make();
+  await send({ type: "hello" });
+  provider.emit(ready("api"));
+  await send({ type: "send", text: "Hi" });
+  expect((await send({ type: "send", text: "And this" })).error).toBe("Press OK on the note above first.");
+  expect(provider.sent).toEqual([]);
+});
+
+test("Stop with no end of the answer: the provider starts again, keeping the conversation", async () => {
+  const { provider, send, lastState, storage } = await make({ session: "s1" }, [{ role: "user", text: "earlier" }],
+    { stopWaitMs: 40 });
+  await send({ type: "hello" });
+  provider.emit(ready());
+  await send({ type: "send", text: "Hi" });
+  provider.emit({ type: "text", delta: "Half an ans" });
+  await send({ type: "stop" });
+  expect(provider.interrupts).toBe(1);
+  expect(provider.starts.length).toBe(1);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(provider.stops).toBe(1);
+  expect(provider.starts.length).toBe(2);
+  expect(provider.starts.at(-1)?.resume).toBe("s1");
+  expect(lastState().status).toBe("starting");
+  expect(lastState().messages).toEqual([
+    { role: "user", text: "earlier" },
+    { role: "user", text: "Hi" },
+    { role: "assistant", text: "Half an ans" },
+  ]);
+  expect(storage.get("session")).toBe("s1");
+  provider.emit(ready());
+  expect(lastState().status).toBe("ready");
+});
+
+test("Stop followed by the end of the answer restarts nothing", async () => {
+  const { provider, send, lastState } = await make({}, undefined, { stopWaitMs: 40 });
+  await send({ type: "hello" });
+  provider.emit(ready());
+  await send({ type: "send", text: "Hi" });
+  await send({ type: "stop" });
+  provider.emit({ type: "done" });
+  // The next message is already on its way when the old timer would have fired.
+  const next = await send({ type: "send", text: "Next" });
+  expect(next.status).toBe("answering");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(provider.starts.length).toBe(1);
+  expect(provider.stops).toBe(0);
+  expect(provider.sent).toEqual(["Hi", "Next"]);
+  expect(lastState().status).toBe("ready");
+});
+
+test("a failed resume at the first message: the answer that was asked for is not awaited", async () => {
+  const { provider, send, lastState } = await make({ session: "gone" }, [{ role: "user", text: "old" }]);
+  await send({ type: "hello" });
+  provider.emit(ready());
+  await send({ type: "send", text: "Hi" });
+  provider.emit({ type: "error", kind: "other", message: "x", resumeFailed: true });
+  expect(lastState().status).toBe("starting");
+  expect(lastState().messages.every((m: { stale?: boolean }) => m.stale)).toBe(true);
+  provider.emit(ready());
+  expect(lastState().status).toBe("ready");
 });
 
 // ---- With the real Claude provider and a fake program (one program at a time, as in the app) --

@@ -115,7 +115,59 @@ export function limitTurn(session: string) {
   ];
 }
 
-export function result(session: string, fields: { subtype: string; is_error: boolean; result?: string }) {
+/** A rate limit event; "rejected" with extra usage paying is not a failed turn. */
+function rateLimitEvent(session: string, info: object) {
+  return {
+    type: "rate_limit_event",
+    rate_limit_info: info,
+    uuid: "00000000-0000-4000-8000-000000000041",
+    session_id: session,
+  };
+}
+
+/**
+ * Past the plan's limit with extra usage switched on: the event says "rejected" (with overage
+ * allowed and in use), and the answer still comes in full and ends well.
+ */
+export function limitWithExtraUsageTurn(session: string) {
+  const turn = helloTurn(session);
+  const info = { status: "rejected", rateLimitType: "five_hour", resetsAt: 1_900_000_000, overageStatus: "allowed",
+    isUsingOverage: true, overageInUse: true };
+  return [turn[0], rateLimitEvent(session, info), ...turn.slice(1)];
+}
+
+/**
+ * A turn refused at the limit whose result text says nothing about it (only the event does): the
+ * event names the reason.
+ */
+export function limitTurnPlainText(session: string) {
+  return [
+    initMessage(session),
+    rateLimitEvent(session, { status: "rejected", rateLimitType: "seven_day", resetsAt: 1_900_000_000 }),
+    result(session, { subtype: "success", is_error: true, result: "API Error: 429" }),
+  ];
+}
+
+/** A turn the program answers itself, with no streamed text: only the result carries the answer. */
+export function resultOnlyTurn(session: string, text: string) {
+  return [initMessage(session), result(session, { subtype: "success", is_error: false, result: text })];
+}
+
+/**
+ * A resumed program that answered `initialize` but can't find the conversation: the first turn
+ * fails with "No conversation found".
+ */
+export function noConversationTurn(session: string) {
+  return [
+    result(session, {
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: [`No conversation found with session ID: ${session}`],
+    }),
+  ];
+}
+
+export function result(session: string, fields: { subtype: string; is_error: boolean; result?: string; errors?: string[] }) {
   return {
     // SDKResultError (every subtype but "success") carries `errors`; the SDK reads it.
     ...(fields.subtype === "success" ? {} : { errors: [] as string[] }),

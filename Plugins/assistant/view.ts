@@ -23,6 +23,8 @@ export type ViewState = {
 export const EMPTY_CHAT = "Ask anything. In this version the Assistant can't see your pages or act for you yet.";
 export const STALE_LINE = "Earlier conversation. The Assistant no longer remembers it.";
 export const STARTING = "Connecting to Claude…";
+/** How long "Connecting to Claude…" may take before it gets a Try Again button. */
+export const START_RETRY_AFTER_MS = 15_000;
 
 /** The line shown instead of the input's normal state, and whether it has a Try Again button. */
 export function statusNotice(state: ViewState): { text: string; retry: boolean } | null {
@@ -56,14 +58,27 @@ export function billingNotice(state: ViewState): string | null {
     : "This chat now uses your Claude plan.";
 }
 
+/** Whether a message can be sent now. */
 export function canType(status: Status): boolean {
   return status === "ready";
 }
 
-/** Return sends, Shift-Return makes a new line; while an input method composes, Return is its own. */
-export function keyAction(event: { key: string; shiftKey: boolean; isComposing: boolean }): "send" | "newline" | "other" {
+/**
+ * Whether the input takes typing: also while an answer is written, so the next message can be
+ * drafted (it is sent only once `canType`).
+ */
+export function canEdit(status: Status): boolean {
+  return status === "ready" || status === "answering";
+}
+
+/**
+ * Return sends, Shift-Return makes a new line; while an input method composes, Return is its own.
+ * WebKit reports the Return that confirms an input method's text with `isComposing` false but
+ * `keyCode` 229, so that counts as composing too.
+ */
+export function keyAction(event: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }): "send" | "newline" | "other" {
   if (event.key !== "Enter") return "other";
-  return event.shiftKey || event.isComposing ? "newline" : "send";
+  return event.shiftKey || event.isComposing || event.keyCode === 229 ? "newline" : "send";
 }
 
 /**
