@@ -96,7 +96,7 @@ type MakeOptions = {
   /** The tab in front (what singularity.front() answers); leave out for a copy without that API. */
   front?: { current: FrontTab | null | "fail" };
   /** What singularity.browser.server() answers ("fail": it rejects). */
-  browser?: { command: string; args: string[]; env: Record<string, string> } | null | "fail";
+  browser?: { command: string; args: string[]; env: Record<string, string> } | null | "fail" | (() => Promise<{ command: string; args: string[]; env: Record<string, string> }>);
 };
 
 async function make(
@@ -133,6 +133,7 @@ async function make(
         browser: {
           server: async () => {
             if (options.browser === "fail") throw new Error("no server");
+            if (typeof options.browser === "function") return options.browser();
             return options.browser as { command: string; args: string[]; env: Record<string, string> } | null;
           },
         },
@@ -788,4 +789,85 @@ test("the real provider with a fake program: the sent text carries the block, a 
   await file.flush();
   expect(await Bun.file(dir + "/conversation.json").text()).not.toContain("SECRET");
   provider.stop();
+});
+
+test("a Stop that brings no end restarts the provider: a running tool line says not done", async () => {
+  const front = { current: FRONT as FrontTab | null };
+  const { provider, send, lastState, file, dir } = await readyAssistant({ front, stopWaitMs: 20 });
+  await send({ type: "send", text: "Go" });
+  provider.emit({ type: "tool", id: "a", name: "work.click", input: { tab_id: "T1" }, status: "running" });
+  await send({ type: "stop" });
+  await new Promise((r) => setTimeout(r, 80));
+  expect(provider.stops).toBe(1);
+  expect(lastState().messages.at(-1).tools).toEqual([{ text: "Clicked on Invoice 42 — not done", status: "failed" }]);
+  await file.flush();
+  expect(await Bun.file(dir + "/conversation.json").text()).toContain("Clicked on Invoice 42 — not done");
+});
+
+test("the browser's server can't be asked: a line, the chat starts without tools, Try Again asks again", async () => {
+  const made = await make({}, undefined, { browser: "fail" });
+  const state = await made.send({ type: "hello" });
+  expect(state.browserProblem).toBe(false);
+  await settle();
+  expect(made.provider.starts.length).toBe(1);
+  expect(made.provider.starts[0].browser).toBeNull();
+  made.provider.emit(ready());
+  expect(made.lastState().browserProblem).toBe(true);
+  expect(made.lastState().status).toBe("ready");
+  // The chat works.
+  await made.send({ type: "send", text: "hi" });
+  expect(made.provider.sent).toEqual(["hi"]);
+  made.provider.emit({ type: "done" });
+  // Try Again restarts the provider, which asks for the server again.
+  await made.send({ type: "retry" });
+  await settle();
+  expect(made.provider.stops).toBe(1);
+  expect(made.provider.starts.length).toBe(2);
+});
+
+test("no browser server (null, or no door at all): no line", async () => {
+  for (const options of [{ browser: null }, {}] as MakeOptions[]) {
+    const made = await make({}, undefined, options);
+    await made.send({ type: "hello" });
+    await settle();
+    made.provider.emit(ready());
+    expect(made.lastState().browserProblem).toBe(false);
+    // Try Again does nothing when everything is fine.
+    await made.send({ type: "retry" });
+    expect(made.provider.stops).toBe(0);
+  }
+});
+
+test("a server that doesn't connect: a line; one that does clears it", async () => {
+  const made = await make({}, undefined, { browser: SERVER });
+  await made.send({ type: "hello" });
+  await settle();
+  made.provider.emit(ready());
+  made.provider.emit({ type: "browser", connected: false });
+  expect(made.lastState().browserProblem).toBe(true);
+  made.provider.emit({ type: "browser", connected: true });
+  expect(made.lastState().browserProblem).toBe(false);
+  made.provider.emit({ type: "browser", connected: false });
+  const after = await made.send({ type: "retry" });
+  await settle();
+  expect(made.provider.starts.length).toBe(2);
+  expect(after.browserProblem).toBe(false);
+});
+
+test("New Chat while the browser's server is still being asked for starts the provider once, with the new start", async () => {
+  const waiting: ((server: typeof SERVER) => void)[] = [];
+  const made = await make({}, undefined, { browser: () => new Promise((resolve) => waiting.push(resolve)) });
+  await made.send({ type: "hello" });
+  expect(waiting.length).toBe(1);
+  const newChat = made.send({ type: "newChat" });
+  await settle();
+  expect(waiting.length).toBe(2);
+  // The old answer arrives first: it must not start anything.
+  waiting[0]({ ...SERVER, command: "/old" });
+  await settle();
+  expect(made.provider.starts.length).toBe(0);
+  waiting[1]({ ...SERVER, command: "/new" });
+  await newChat;
+  await settle();
+  expect(made.provider.starts.map((o) => (o.browser as any).command)).toEqual(["/new"]);
 });

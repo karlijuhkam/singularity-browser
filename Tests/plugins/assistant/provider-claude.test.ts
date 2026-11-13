@@ -528,3 +528,29 @@ test("tool calls: running, then done or failed, with the door's name and the cal
   provider.stop();
   await waitFor(() => programs[0].ended, "the program to end");
 });
+
+test("the init message's status for the browser's server is reported", async () => {
+  for (const [status, connected] of [["failed", false], ["connected", true]] as const) {
+    const turn = helloTurn("sess-1");
+    turn[0] = { ...(turn[0] as object), mcp_servers: [{ name: "singularity", status }] } as any;
+    const { provider, events, programs } = start([chat([turn])], { browser } as any);
+    await waitFor(() => of(events, "ready").length > 0, "ready");
+    provider.send("Hi");
+    await waitFor(() => of(events, "done").length > 0, "done");
+    expect(of(events, "browser")).toEqual([{ type: "browser", connected }]);
+    provider.stop();
+    await waitFor(() => programs[0].ended, "the program to end");
+  }
+});
+
+test("no browser server given: no browser status", async () => {
+  const turn = helloTurn("sess-1");
+  turn[0] = { ...(turn[0] as object), mcp_servers: [{ name: "singularity", status: "failed" }] } as any;
+  const { provider, events, programs } = start([chat([turn])]);
+  await waitFor(() => of(events, "ready").length > 0, "ready");
+  provider.send("Hi");
+  await waitFor(() => of(events, "done").length > 0, "done");
+  expect(of(events, "browser")).toEqual([]);
+  provider.stop();
+  await waitFor(() => programs[0].ended, "the program to end");
+});

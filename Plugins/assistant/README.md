@@ -57,9 +57,12 @@ The Assistant can look at your browser, only where you allow it.
   already on such a site is not shared. A click or a redirect can carry a tab onto such a site
   afterwards; the next call on it is then refused.
 - **Tool lines.** Each call shows as a small line in the chat ("Read Invoice 42", "Opened ...",
-  "Clicked on ..."), in order with the answer; "waiting for your OK" appears when an approval is
-  open. Lines are made from the call itself (its address, its search text, the title of the tab
-  that was in front). What a tool answered, such as page text, is never shown in a line or saved.
+  "Clicked on ..."), in order with the answer. A line for an acting call (open, go to, close,
+  click, type) that runs longer than a moment adds "waiting for your OK"; a slow read does not.
+  Lines are made from the call itself (its address, its search text, the title of the tab that
+  was in front). What a tool answered, such as page text, is never shown in a line or saved.
+- **If the browser's tools can't start**, the chat still works without them and a line above the
+  message box says so, with Try Again.
 - Without the app's browser door (a bare debug build) the Assistant is the plain chat it was in
   version 0.1.
 

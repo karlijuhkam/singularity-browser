@@ -15,7 +15,7 @@
 //   { type: "front", chip }              the tab in front changed (the chip above the input)
 //   { type: "state", ...state }          after every other change the provider causes
 // The state: { messages, status, model, models, billing, billingNoticeSeen, configFolder,
-// providerVersion, sdkVersion, error, chip, version } (see view.ts, ViewState).
+// providerVersion, sdkVersion, error, chip, browserProblem, version } (see view.ts, ViewState).
 //
 // Where the user is: at every send the tab in front (singularity.front()) is put, as a note
 // (front.ts, frontBlock), before the user's text in what goes to the provider. The chat and
@@ -114,6 +114,8 @@ export function createAssistant(deps: Dependencies) {
   const runningTools = new Map<string, ToolLine>();
   /** Counts the provider's starts, so a start waiting for the browser server can tell it was replaced. */
   let startCount = 0;
+  /** The browser's tools couldn't start or connect: the page says so and offers Try Again. */
+  let browserProblem = false;
 
   /** A message sent while the billing notice waits for OK, and the tab in front when it was sent. */
   let held: string | null = null;
@@ -193,6 +195,7 @@ export function createAssistant(deps: Dependencies) {
       sdkVersion: deps.sdkVersion,
       error,
       chip: chipText(latestFront),
+      browserProblem,
       version,
     };
   }
@@ -212,6 +215,7 @@ export function createAssistant(deps: Dependencies) {
   function startProvider(): void {
     status = "starting";
     error = null;
+    browserProblem = false;
     const mine = ++startCount;
     const begin = (browser: BrowserServer | null | undefined) => {
       if (mine !== startCount) return; // stopped or started again while waiting for the server
@@ -221,10 +225,15 @@ export function createAssistant(deps: Dependencies) {
     };
     const server = deps.singularity.browser?.server;
     if (!server) return begin(undefined);
-    // No server (or one that can't be asked) means a chat without the browser's tools.
+    // A server that can't be asked for means a chat without the browser's tools, and a line
+    // above the input saying so (null is no error: this build or plugin has no browser door).
     server().then(begin, (e: unknown) => {
       log("couldn't get the browser's tools: " + String(e));
+      if (mine !== startCount) return;
+      browserProblem = true;
       begin(null);
+      changed();
+      postState();
     });
   }
 
@@ -232,7 +241,8 @@ export function createAssistant(deps: Dependencies) {
     dropHeld();
     clearStopTimer();
     startCount += 1;
-    runningTools.clear();
+    // A call still running will never end now: its line says so, rather than running for ever.
+    settleTools();
     provider.stop();
     startProvider();
   }
@@ -284,6 +294,9 @@ export function createAssistant(deps: Dependencies) {
         }
         return;
       }
+      case "browser":
+        browserProblem = !event.connected;
+        break;
       case "tool": {
         let line = runningTools.get(event.id);
         const text = toolLine(event.name, event.input, event.status, frontAtSend).text;
@@ -418,6 +431,8 @@ export function createAssistant(deps: Dependencies) {
 
       case "newChat":
         clearStopTimer();
+        // A start still waiting for the browser's server must not start the provider afterwards.
+        startCount += 1;
         runningTools.clear();
         provider.stop();
         // Until the new start: a message sent meanwhile is refused (visibly), not dropped.
@@ -463,7 +478,8 @@ export function createAssistant(deps: Dependencies) {
 
       case "retry":
         // Any time no answer is on its way (also while "starting", in case a start never finishes).
-        if (status !== "ready" && status !== "answering") {
+        // Also when only the browser's tools failed (the chat works): that asks for the server again.
+        if ((status !== "ready" && status !== "answering") || (browserProblem && status === "ready")) {
           restartProvider();
           changed();
         }

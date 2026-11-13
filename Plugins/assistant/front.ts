@@ -21,9 +21,12 @@ const NOTHING_VISIBLE = "Nothing in front is visible to you.";
 /** An address or a search text in a line is cut here (the model chooses them). */
 const MAX_SHOWN = 200;
 
-/** Replaces < and > (page text must not be able to close the wrapper). */
+/**
+ * Replaces < and > (page text must not be able to close the wrapper) and turns every run of
+ * whitespace, newlines included, into one space (a title can't start a line of its own).
+ */
 function defang(text: string): string {
-  return text.replace(/</g, "‹").replace(/>/g, "›");
+  return text.replace(/\s+/g, " ").trim().replace(/</g, "‹").replace(/>/g, "›");
 }
 
 /** The note put before the user's text in what is sent to Claude (never shown, never saved). */
@@ -112,4 +115,13 @@ export function toolLine(
   if (status === "waiting") text += WAITING_SUFFIX;
   else if (status === "failed") text += FAILED_SUFFIX;
   return space === undefined ? { text } : { text, space };
+}
+
+/**
+ * Whether a line may be waiting for the user's OK when it runs long: only the acting tools ask
+ * (open, navigate, close, click, type). A slow read is just slow. Judged by the line's own
+ * text, which toolLine writes.
+ */
+export function mayWaitForOK(lineText: string): boolean {
+  return /^(Opened |Went to |Closed |Clicked on |Typed on )/.test(lineText);
 }

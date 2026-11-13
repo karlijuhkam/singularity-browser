@@ -33,11 +33,15 @@ export type ProviderEvent =
     }
   /**
    * A call of one of the browser's tools (see BrowserServer), as it starts (`running`) and as it
-   * ends (`done`, or `failed` when the tool answered with an error or the turn was interrupted).
+   * ends (`done`, or `failed` when the tool answered with an error; after an interrupt `claude`
+   * answers a pending call with an error, so it ends `failed` too). A call whose end never comes
+   * is settled by the receiver when the turn ends.
    * `name` is the tool as the agent door names it ("work.read_page", "list_spaces"); `input` is the
    * call's own arguments. Nothing a tool answered is ever passed on.
    */
   | ToolEvent
+  /** Whether Singularity's tool server connected (sent with the program's start message, only when one was given). */
+  | { type: "browser"; connected: boolean }
   /** The id under which the program keeps this conversation; give it as `resume` to continue it. */
   | { type: "session"; id: string };
 

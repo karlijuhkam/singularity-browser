@@ -377,6 +377,10 @@ class Run {
       case "system":
         if (message.subtype === "init") {
           this.#noteSession(message.session_id);
+          if (this.options.browser && Array.isArray(message.mcp_servers)) {
+            const server = message.mcp_servers.find((s: any) => s?.name === "singularity");
+            if (server) this.#emit({ type: "browser", connected: server.status === "connected" });
+          }
           this.#billing = billingFrom(message.apiKeySource);
           if (typeof message.claude_code_version === "string") this.#providerVersion = message.claude_code_version;
           if (typeof message.model === "string") {

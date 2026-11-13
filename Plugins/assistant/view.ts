@@ -18,12 +18,15 @@ export type ViewState = {
   error: string | null;
   /** What the chip above the input says (front.ts, chipText); absent in an older background. */
   chip?: string;
+  /** The browser's tools couldn't start or connect (the chat still works); absent in an older background. */
+  browserProblem?: boolean;
   /** Counts every change; a `delta` carries the number it makes. */
   version: number;
 };
 
 export const EMPTY_CHAT = "Ask anything. The Assistant can look at the tab in front when you share it.";
 export const STALE_LINE = "Earlier conversation. The Assistant no longer remembers it.";
+export const BROWSER_PROBLEM = "The browser tools couldn't start.";
 export const STARTING = "Connecting to Claude…";
 /** How long "Connecting to Claude…" may take before it gets a Try Again button. */
 export const START_RETRY_AFTER_MS = 15_000;

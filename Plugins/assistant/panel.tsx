@@ -9,10 +9,11 @@
 import { Fragment, render } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { Message, ToolLine } from "./conversation.ts";
-import { chipText, WAITING_AFTER_MS, WAITING_SUFFIX } from "./front.ts";
+import { chipText, mayWaitForOK, WAITING_AFTER_MS, WAITING_SUFFIX } from "./front.ts";
 import { render as renderMarkdown } from "./markdown.ts";
 import {
   applyDelta,
+  BROWSER_PROBLEM,
   billingLabel,
   billingNotice,
   canEdit,
@@ -230,7 +231,7 @@ function ToolItem({ tool }: { tool: ToolLine }) {
   const [waiting, setWaiting] = useState(false);
   useEffect(() => {
     setWaiting(false);
-    if (tool.status !== "running") return;
+    if (tool.status !== "running" || !mayWaitForOK(tool.text)) return;
     const timer = setTimeout(() => setWaiting(true), WAITING_AFTER_MS);
     return () => clearTimeout(timer);
   }, [tool.status]);
@@ -309,6 +310,12 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
         <div class="notice">
           <p>{billing}</p>
           <button type="button" onClick={() => ask({ type: "billingSeen" })}>OK</button>
+        </div>
+      )}
+      {state.browserProblem && state.status === "ready" && (
+        <div class="notice warn">
+          <p>{BROWSER_PROBLEM}</p>
+          <button type="button" onClick={() => ask({ type: "retry" })}>Try Again</button>
         </div>
       )}
       {problem && <p class="problem">{problem}</p>}
