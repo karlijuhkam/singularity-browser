@@ -113,6 +113,9 @@ final class AppState {
     @ObservationIgnored private var activeTerminalBySpace: [UUID: UUID] = [:]
     /// Per Space: the tab selected before the current one (⌘\ splits the current tab with it).
     @ObservationIgnored private var previousTabBySpace: [UUID: UUID] = [:]
+    /// Per split (`SplitGroup.id`): the pane the owner focused last that is not a plugin tab. A
+    /// plugin tab in a split reaches this pane as "the tab in front" (`pluginFront`).
+    @ObservationIgnored private var lastOtherPaneByGroup: [UUID: UUID] = [:]
     /// Artifact tabs whose file is gone (deleted, renamed, moved). The sidebar marks them; the tab
     /// itself shows the server's "file is missing" page and comes back when the file does.
     private(set) var missingArtifactTabs: Set<UUID> = []
@@ -183,6 +186,9 @@ final class AppState {
         web.pluginScripts = pluginScripts
         pluginScripts.tabID = { [weak web] webView in web?.tabID(for: webView) }
         plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
+        plugins.frontProvider = { [weak self] id in self?.pluginFront(id) ?? .hidden(.nothing) }
+        plugins.browserServerProvider = { [weak self] in self?.browserServerDescription() ?? .null }
+        plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged() }
         // Site settings: the console/network collector for switched-on sites, and plugins switched off per site.
         let captureBridge = CaptureBridge(state: self)
         pluginScripts.onAttach = { controller in captureBridge.install(in: controller) }
@@ -512,6 +518,7 @@ final class AppState {
     /// is no longer switched on is dropped right away.
     private func siteSettingsDidChange(_ spaceID: UUID) {
         pluginScripts.scheduleRefresh()
+        plugins.frontDidChange()
         guard let space = space(spaceID) else { return }
         for controller in web.controllers(in: spaceID)
         where !InspectionRules.isAllowed(space, site: SiteInfo.site(of: controller.webView.url)) {
@@ -537,6 +544,7 @@ final class AppState {
         scheduleSave()
         loadSelectedTab()
         inboxNoteVisibleTabs()
+        plugins.frontDidChange()
     }
 
     /// The owner chose what is on screen (a tab, a split, a Space): for the inbox, he went to each
@@ -605,8 +613,47 @@ final class AppState {
             previousTabBySpace[spaceID] = current
         }
         mutateSpace(spaceID) { $0.selectedTabID = tabID }
+        if let space = space(spaceID), let group = space.splitGroup(containing: tabID), space.tab(tabID)?.isPlugin == false {
+            lastOtherPaneByGroup[group.id] = tabID
+        }
         loadSelectedTab()
         inboxNoteVisibleTabs()
+        plugins.frontDidChange()
+    }
+
+    // MARK: - The tab in front, for plugins
+
+    /// The tab in front of the main window as plugin `pluginID` may know it (`PluginReach.front`).
+    /// Little windows are never in front: only the main window's selected Space and tab count.
+    func pluginFront(_ pluginID: String) -> PluginReach.Front {
+        let space = selectedSpace
+        var open = false
+        if let space, let plugin = plugins.plugin(pluginID) {
+            open = PluginReach.spaceIsOpen(space, approval: plugin.approval, status: plugin.status)
+        }
+        // For a plugin tab in a split: the pane focused last that is not a plugin tab, else the
+        // first such pane.
+        var other: UUID?
+        if let space, let selected = space.selectedTabID, space.tab(selected)?.isPlugin == true,
+           let group = space.splitGroup(containing: selected) {
+            let panes = group.root.tabIDs.filter { space.tab($0)?.isPlugin == false }
+            other = lastOtherPaneByGroup[group.id].flatMap { panes.contains($0) ? $0 : nil } ?? panes.first
+        }
+        return PluginReach.front(pluginID: pluginID, space: space, spaceIsOpen: open,
+                                 welcomeCoversWindow: welcomeCoversWindow, lastOtherPane: other)
+    }
+
+    /// How a plugin with the `browser` permission starts this copy's browser server: the
+    /// `singularity-mcp` launcher beside the app's executable, with this copy's socket when the
+    /// data folder isn't the default. Null for a bare binary with no launcher beside it.
+    /// `executable` and `environment` are parameters so tests need no bundle.
+    func browserServerDescription(executable: URL? = Bundle.main.executableURL,
+                                  environment: [String: String] = ProcessInfo.processInfo.environment) -> JSONValue {
+        guard let launcher = executable?.deletingLastPathComponent().appending(path: "singularity-mcp"),
+              FileManager.default.isExecutableFile(atPath: launcher.path) else { return .null }
+        var env: [String: JSONValue] = [:]
+        if environment["SINGULARITY_HOME"] != nil { env["SINGULARITY_MCP_SOCKET"] = .string(paths.mcpSocket.path) }
+        return .object(["command": .string(launcher.path), "args": .array([]), "env": .object(env)])
     }
 
     /// Switches to the tab's Space (if needed) and selects the tab.
@@ -1008,6 +1055,7 @@ final class AppState {
     /// Called by WebTabController when the page title or URL changes.
     func webTabDidChange(tabID: UUID, spaceID: UUID, title: String?, url: URL?) {
         let host = artifacts.host(spaceID)
+        defer { plugins.frontDidChange() } // the front tab's title or address may be what changed
         mutateSpace(spaceID) { space in
             space.updateTab(tabID) { tab in
                 if let title { tab.title = title }

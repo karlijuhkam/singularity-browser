@@ -77,7 +77,7 @@ struct SiteSettingsPanel: View {
                         .toggleStyle(.switch)
                         .controlSize(.small)
                     }
-                    Text("Off stops the plugin's page script on this site. It can't give a plugin anything it doesn't already have.")
+                    Text("Off stops the plugin's page script on this site and keeps this site's tab from the plugin. It can't give a plugin anything it doesn't already have.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -169,12 +169,12 @@ struct SiteSettingsPanel: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// Plugins that run their page script on this page in this Space (so switching one off changes something).
+    /// Plugins this Space's switch reaches on this page: a page script that runs here, or a plugin
+    /// that reaches Spaces (front tab, browser). Switching one off changes something.
     private func pluginsHere(_ space: Space) -> [(id: String, name: String)] {
         state.plugins.plugins.compactMap { plugin in
-            guard plugin.status == .approved, let approval = plugin.approval, approval.enabledSpaces.contains(space.id),
-                  let manifest = plugin.validManifest, manifest.page != nil,
-                  PluginPageAccess(manifest: manifest, approved: approval.permissions).runsOn(url) else { return nil }
+            guard plugin.status == .approved, let approval = plugin.approval, let manifest = plugin.validManifest,
+                  PluginReach.listedForSite(manifest: manifest, approval: approval, space: space, url: url) else { return nil }
             return (plugin.id, manifest.name)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }

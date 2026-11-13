@@ -61,6 +61,8 @@ public final class PluginProcess: @unchecked Sendable {
     private var _onLog: (@Sendable (String, String) -> Void)?
     private var _onExit: (@Sendable (Int32) -> Void)?
     private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
+    private var _onFrontRequest: (@Sendable (Int) -> Void)?
+    private var _onBrowserServerRequest: (@Sendable (Int) -> Void)?
     /// The plugin's one program: reserved (`running` nil) while it starts, cleared when its exit
     /// has been sent.
     private var program: (id: Int, name: String, running: RunningProgram?)?
@@ -101,6 +103,17 @@ public final class PluginProcess: @unchecked Sendable {
     public var onPanelPost: (@Sendable (JSONValue) -> Void)? {
         get { lock.withLock { _onPanelPost } }
         set { lock.withLock { _onPanelPost = newValue } }
+    }
+
+    /// Called with the request id when the plugin asks for the tab in front; answer with `.reply`.
+    public var onFrontRequest: (@Sendable (Int) -> Void)? {
+        get { lock.withLock { _onFrontRequest } }
+        set { lock.withLock { _onFrontRequest = newValue } }
+    }
+    /// Called with the request id when the plugin asks how to start the browser server.
+    public var onBrowserServerRequest: (@Sendable (Int) -> Void)? {
+        get { lock.withLock { _onBrowserServerRequest } }
+        set { lock.withLock { _onBrowserServerRequest = newValue } }
     }
 
     /// The most program output that was ever sent and not yet reported read (for tests).
@@ -178,7 +191,7 @@ public final class PluginProcess: @unchecked Sendable {
         //   --no-install: never try to auto-install a missing package (it would fail anyway: no network).
         let bunfig = (hostPath as NSString).deletingLastPathComponent + "/bunfig.toml"
         process.arguments = ["-p", profile, runtimePath, "--config=" + bunfig, "--no-env-file", "--no-install",
-                             "run", hostPath, backgroundPath]
+                             "run", hostPath, backgroundPath, Self.permissionFlags(manifest.permissions)]
         process.currentDirectoryURL = URL(filePath: folderPath, directoryHint: .isDirectory)
         process.environment = Self.environment(dataFolder: dataPath)
 
@@ -332,7 +345,12 @@ public final class PluginProcess: @unchecked Sendable {
             runningProgram(programID)?.acknowledge(bytes)
         case let .panelPost(payload):
             lock.withLock { _onPanelPost }?(payload)
-        case .pageMessage, .commandResult, .panelMessage, .programStarted, .programFailed, .programOutput, .programExit:
+        case let .frontRequest(requestID):
+            lock.withLock { _onFrontRequest }?(requestID)
+        case let .browserServerRequest(requestID):
+            lock.withLock { _onBrowserServerRequest }?(requestID)
+        case .pageMessage, .commandResult, .panelMessage, .programStarted, .programFailed, .programOutput, .programExit,
+             .frontChanged:
             log("error", "ignored a message the app sends, not the plugin: \(String(decoding: data.prefix(200), as: UTF8.self))")
         }
     }
@@ -486,6 +504,12 @@ public final class PluginProcess: @unchecked Sendable {
 
     /// Exactly what Bun gets; nothing is inherited from the app (whose environment may hold tokens,
     /// SSH_AUTH_SOCK and the like). No PATH: the sandbox forbids starting programs anyway.
+    /// The manifest's two reach permissions as JSON, passed to host.ts as its third argument so the
+    /// API can refuse `front()` locally (the app refuses again; this only gives a clear error).
+    static func permissionFlags(_ permissions: PluginManifest.Permissions) -> String {
+        #"{"frontTab":\#(permissions.frontTab),"browser":\#(permissions.browser)}"#
+    }
+
     static func environment(dataFolder: String) -> [String: String] {
         [
             "HOME": dataFolder,
@@ -609,6 +633,8 @@ public final class PluginSupervisor: @unchecked Sendable {
     private var _onLog: (@Sendable (String, String) -> Void)?
     private var _onStateChange: (@Sendable (State) -> Void)?
     private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
+    private var _onFrontRequest: (@Sendable (Int) -> Void)?
+    private var _onBrowserServerRequest: (@Sendable (Int) -> Void)?
 
     /// - Parameters:
     ///   - restartDelay: pause before a restart.
@@ -644,6 +670,16 @@ public final class PluginSupervisor: @unchecked Sendable {
     public var onPanelPost: (@Sendable (JSONValue) -> Void)? {
         get { lock.withLock { _onPanelPost } }
         set { lock.withLock { _onPanelPost = newValue } }
+    }
+
+    /// What the running process asks (`PluginProcess.onFrontRequest`, `onBrowserServerRequest`).
+    public var onFrontRequest: (@Sendable (Int) -> Void)? {
+        get { lock.withLock { _onFrontRequest } }
+        set { lock.withLock { _onFrontRequest = newValue } }
+    }
+    public var onBrowserServerRequest: (@Sendable (Int) -> Void)? {
+        get { lock.withLock { _onBrowserServerRequest } }
+        set { lock.withLock { _onBrowserServerRequest = newValue } }
     }
 
     /// Starts the plugin. Does nothing while a process is running or a restart is pending.
@@ -719,6 +755,8 @@ public final class PluginSupervisor: @unchecked Sendable {
         process.onReply = { [weak self] id, payload in self?.onReply?(id, payload) }
         process.onLog = { [weak self] level, message in self?.record(level, message) }
         process.onPanelPost = { [weak self] payload in self?.onPanelPost?(payload) }
+        process.onFrontRequest = { [weak self] id in self?.onFrontRequest?(id) }
+        process.onBrowserServerRequest = { [weak self] id in self?.onBrowserServerRequest?(id) }
         process.onExit = { [weak self] status in self?.processExited(status: status, generation: generation) }
         do {
             try process.start()

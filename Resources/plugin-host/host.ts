@@ -29,6 +29,8 @@
 //                   {"kind":"programFailed","programID":1,"reason":"…"}
 //                   {"kind":"programOutput","programID":1,"data":"<base64>"}  (at most 48 KB of bytes)
 //                   {"kind":"programExit","programID":1,"status":0,"signal":null}
+//                   {"kind":"reply","requestID":3,"payload":…}                   (answer to frontRequest / browserServerRequest)
+//                   {"kind":"frontChanged","payload":…}                          (a FrontTab, or null)
 //   plugin -> app   {"kind":"reply","requestID":1,"payload":…}
 //                   {"kind":"runCommand","callID":1,"command":"op","arguments":["item","list"]}
 //                   {"kind":"log","level":"info","message":"…"}
@@ -38,6 +40,8 @@
 //                   {"kind":"killProgram","programID":1,"signal":"SIGTERM"}
 //                   {"kind":"programOutputRead","programID":1,"bytes":49152}
 //                   {"kind":"panelPost","payload":…}
+//                   {"kind":"frontRequest","requestID":3}                        (needs permissions.frontTab)
+//                   {"kind":"browserServerRequest","requestID":4}                (needs permissions.browser)
 //
 // Limits: Singularity buffers at most 16 MB of messages that the plugin hasn't read yet. If more
 // would be waiting (the plugin is stuck, or a single message is larger than 16 MB), the plugin is
@@ -437,6 +441,47 @@ let pageMessageHandler: PageMessageHandler | null = null;
 let nextCallID = 1;
 const pendingCommands = new Map<number, (result: CommandResult) => void>();
 
+// ---- The tab in front and the browser server ---------------------------------------------------
+
+/** The tab in front, as `list_tabs` describes it (see FrontTab in PluginReach.swift). */
+type FrontTab = {
+  space: { slug: string; name: string };
+  tab: { id: string; kind: "web" | "artifact" | "terminal"; title?: string; url?: string };
+};
+type BrowserServer = { command: string; args: string[]; env: Record<string, string> };
+
+// What the manifest grants, passed by the app as our third argument (a JSON object).
+let reach = { frontTab: false, browser: false };
+try {
+  reach = { ...reach, ...JSON.parse(process.argv[3] ?? "{}") };
+} catch {
+  // keep both false
+}
+
+let nextAppRequestID = 1;
+/** Questions the plugin asked the app (frontRequest, browserServerRequest), by request id. */
+const pendingAppRequests = new Map<number, (payload: unknown) => void>();
+let frontChangeHandler: ((front: FrontTab | null) => void) | null = null;
+
+function askApp(kind: "frontRequest" | "browserServerRequest"): Promise<unknown> {
+  const requestID = nextAppRequestID++;
+  return new Promise((resolve) => {
+    pendingAppRequests.set(requestID, resolve);
+    send({ kind, requestID });
+  });
+}
+
+const browser = Object.freeze({
+  /**
+   * How to start Singularity's browser server for an MCP client: `{ command, args, env }`, or null
+   * when this plugin has no `browser` permission or this copy has no launcher beside it.
+   */
+  async server(): Promise<BrowserServer | null> {
+    if (!reach.browser) return null;
+    return (await askApp("browserServerRequest")) as BrowserServer | null;
+  },
+});
+
 const singularity = Object.freeze({
   /**
    * Handles messages from this plugin's page script. Whatever the handler returns (or resolves
@@ -473,6 +518,25 @@ const singularity = Object.freeze({
 
   /** The plugin's own page: `singularity.panel.post(payload)` (see "Programs" above). */
   panel,
+
+  /**
+   * The tab in front of the main window (needs permissions.frontTab), or null when none may be
+   * shown: no Space switched on, the site switched off, or nothing selected.
+   */
+  front(): Promise<FrontTab | null> {
+    if (!reach.frontTab) return Promise.reject(new Error("needs the frontTab permission"));
+    return askApp("frontRequest") as Promise<FrontTab | null>;
+  },
+
+  /** Called with the new front tab (or null) whenever it changes. Needs permissions.frontTab. */
+  onFrontChange(handler: (front: FrontTab | null) => void): void {
+    if (!reach.frontTab) throw new Error("needs the frontTab permission");
+    if (typeof handler !== "function") throw new TypeError("onFrontChange needs a function");
+    frontChangeHandler = handler;
+  },
+
+  /** Singularity's browser server for an MCP client (needs permissions.browser): `browser.server()`. */
+  browser,
 
   /**
    * A small key → value store that survives restarts: `await singularity.storage.set("seen", [1, 2])`,
@@ -549,6 +613,19 @@ function handleLine(line: string): void {
   } else if (message.kind === "panelMessage") {
     // From the plugin's own page: answered by the same handler, marked as the panel.
     void answerPageMessage(message.requestID, { tabID: "panel", frameHost: "", payload: message.payload });
+  } else if (message.kind === "reply") {
+    const resolve = pendingAppRequests.get(message.requestID);
+    pendingAppRequests.delete(message.requestID);
+    resolve?.(message.payload === undefined ? null : message.payload);
+  } else if (message.kind === "frontChanged") {
+    // Wait for the plugin's top-level code, so a handler it registers there sees the first one.
+    void pluginLoaded.then(() => {
+      try {
+        frontChangeHandler?.(message.payload ?? null);
+      } catch (error) {
+        log("error", ["onFrontChange handler threw: " + describeError(error)]);
+      }
+    });
   } else if (message.kind === "commandResult") {
     const resolve = pendingCommands.get(message.callID);
     pendingCommands.delete(message.callID);

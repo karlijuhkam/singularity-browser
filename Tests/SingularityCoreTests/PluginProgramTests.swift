@@ -27,6 +27,10 @@ private let hasBun = FileManager.default.isExecutableFile(atPath: bunPath.path)
             .programExit(programID: 2, status: 0, signal: nil),
             .programExit(programID: 3, status: nil, signal: "SIGKILL"),
             .panelMessage(requestID: 9, payload: .string("ping")),
+            .frontRequest(requestID: 4),
+            .browserServerRequest(requestID: 5),
+            .frontChanged(payload: .object(["tab": .object(["id": .string("x")])])),
+            .frontChanged(payload: .null),
         ]
         for m in messages {
             let data = try JSONEncoder().encode(m)

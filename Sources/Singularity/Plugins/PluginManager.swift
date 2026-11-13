@@ -132,6 +132,18 @@ final class PluginManager {
     /// the row changes whenever a page is torn down.
     @ObservationIgnored private var pageHosts: [String: PluginPageHost] = [:]
 
+    /// What the app knows of the tab in front, for a plugin with `frontTab` (set by `AppState`).
+    @ObservationIgnored var frontProvider: ((String) -> PluginReach.Front)?
+    /// How to start the browser server, as `{command, args, env}` JSON or null (set by `AppState`).
+    @ObservationIgnored var browserServerProvider: (() -> JSONValue)?
+    /// Called after a plugin was switched on or off in a Space (`AppState` tells the MCP hub).
+    @ObservationIgnored var onSpacesChanged: (() -> Void)?
+    /// At most one `frontChanged` this often per plugin; a change inside the window is sent when it ends.
+    static let frontChangeInterval: Duration = .milliseconds(500)
+    /// What each running plugin was last told (by a reply or a `frontChanged`), and when.
+    @ObservationIgnored private var frontSent: [String: (value: JSONValue, at: ContinuousClock.Instant)] = [:]
+    @ObservationIgnored private var frontTimers: [String: Task<Void, Never>] = [:]
+
     private struct PendingRequest {
         let pluginID: String
         let continuation: CheckedContinuation<JSONValue?, Never>
@@ -364,6 +376,25 @@ final class PluginManager {
         supervisor.onReply = { [weak self] requestID, payload in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.finishRequest(requestID, pluginID: id, payload) } }
         }
+        supervisor.onFrontRequest = { [weak self, weak supervisor] requestID in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let supervisor, self.supervisors[id] === supervisor else { return }
+                    let answer = self.frontPayload(id)
+                    self.frontSent[id] = (answer, .now) // the plugin now knows this one
+                    supervisor.send(.reply(requestID: requestID, payload: answer))
+                }
+            }
+        }
+        supervisor.onBrowserServerRequest = { [weak self, weak supervisor] requestID in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let supervisor, self.supervisors[id] === supervisor else { return }
+                    let allowed = self.plugin(id)?.validManifest?.permissions.browser == true
+                    supervisor.send(.reply(requestID: requestID, payload: allowed ? self.browserServerProvider?() ?? .null : .null))
+                }
+            }
+        }
         supervisor.onPanelPost = { [weak self, weak supervisor] payload in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -410,6 +441,8 @@ final class PluginManager {
         tearDownPage(id)
         guard let supervisor = supervisors.removeValue(forKey: id) else { return }
         supervisor.stop()
+        frontSent[id] = nil
+        frontTimers.removeValue(forKey: id)?.cancel()
         update(id) { $0.runState = .stopped }
         failRequests(of: id)
         appendLog(id, "info", reason.map { "stopped: \($0)" } ?? "stopped")
@@ -440,6 +473,47 @@ final class PluginManager {
         return await request(pluginID, supervisor) { requestID in
             .panelMessage(requestID: requestID, payload: payload)
         }
+    }
+
+    // MARK: - The tab in front
+
+    /// The tab in front as a plugin may know it: a `FrontTab` as JSON, or null (no permission, no
+    /// provider, or nothing to show).
+    private func frontPayload(_ id: String) -> JSONValue {
+        guard plugin(id)?.validManifest?.permissions.frontTab == true,
+              case .tab(let front)? = frontProvider?(id),
+              let data = try? JSONEncoder().encode(front),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return .null }
+        return value
+    }
+
+    /// Something that decides what is in front changed (tab, Space, title, address, a switch).
+    /// Tells every running plugin with `frontTab` whose answer is now different, at most once per
+    /// 0.5 s each; a change inside that time is sent when it is over, with what is true then.
+    func frontDidChange() {
+        for (id, supervisor) in supervisors where plugin(id)?.validManifest?.permissions.frontTab == true
+            && supervisor.state == .running {
+            guard frontTimers[id] == nil else { continue } // one is already waiting; it reads the latest
+            let wait = frontSent[id].map { Self.frontChangeInterval - ($0.at.duration(to: .now)) } ?? .zero
+            if wait <= .zero {
+                sendFrontChange(id)
+            } else {
+                frontTimers[id] = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: wait)
+                    guard !Task.isCancelled, let self else { return }
+                    self.frontTimers[id] = nil
+                    self.sendFrontChange(id)
+                }
+            }
+        }
+    }
+
+    private func sendFrontChange(_ id: String) {
+        guard let supervisor = supervisors[id], supervisor.state == .running else { return }
+        let answer = frontPayload(id)
+        guard answer != frontSent[id]?.value else { return }
+        frontSent[id] = (answer, .now)
+        supervisor.send(.frontChanged(payload: answer))
     }
 
     /// Sends `message(requestID)` to the plugin and waits for the `.reply` with that id; nil after
@@ -679,6 +753,8 @@ final class PluginManager {
         if on { approval.enabledSpaces.insert(space) } else { approval.enabledSpaces.remove(space) }
         saveQuietly(id, approval)
         reapply(id)
+        frontDidChange()
+        onSpacesChanged?()
     }
 
     /// Development mode: while on, edited files restart the plugin instead of pausing it.

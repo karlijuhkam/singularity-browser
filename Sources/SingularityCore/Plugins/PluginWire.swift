@@ -56,6 +56,8 @@ public enum PluginWire: Codable, Equatable, Sendable {
     /// The program has ended and all its output has been sent. `status` is its exit status when
     /// it exited, `signal` the signal's name (e.g. "SIGTERM") when a signal ended it.
     case programExit(programID: Int, status: Int32?, signal: String?)
+    /// The tab in front changed: a `FrontTab` as JSON, or null when there is none to show.
+    case frontChanged(payload: JSONValue)
 
     // Plugin to app
     case reply(requestID: Int, payload: JSONValue)
@@ -76,6 +78,11 @@ public enum PluginWire: Codable, Equatable, Sendable {
     case programOutputRead(programID: Int, bytes: Int)
     /// A message for the plugin's own page.
     case panelPost(payload: JSONValue)
+    /// Asks for the tab in front; the app answers with `.reply` (a `FrontTab` as JSON, or null).
+    case frontRequest(requestID: Int)
+    /// Asks how to start the browser server (`singularity-mcp`); the app answers with `.reply`
+    /// (`{command, args, env}`, or null when the plugin may not or there is none).
+    case browserServerRequest(requestID: Int)
 
     private enum Key: String, CodingKey {
         case kind, requestID, tabID, frameHost, payload, callID, result, command, arguments, level, message
@@ -137,6 +144,12 @@ public enum PluginWire: Codable, Equatable, Sendable {
                                       bytes: try c.decode(Int.self, forKey: .bytes))
         case "panelPost":
             self = .panelPost(payload: try c.decodeIfPresent(JSONValue.self, forKey: .payload) ?? .null)
+        case "frontChanged":
+            self = .frontChanged(payload: try c.decodeIfPresent(JSONValue.self, forKey: .payload) ?? .null)
+        case "frontRequest":
+            self = .frontRequest(requestID: try c.decode(Int.self, forKey: .requestID))
+        case "browserServerRequest":
+            self = .browserServerRequest(requestID: try c.decode(Int.self, forKey: .requestID))
         case let other:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown kind \(other)")
         }
@@ -213,6 +226,15 @@ public enum PluginWire: Codable, Equatable, Sendable {
         case let .panelPost(payload):
             try c.encode("panelPost", forKey: .kind)
             try c.encode(payload, forKey: .payload)
+        case let .frontChanged(payload):
+            try c.encode("frontChanged", forKey: .kind)
+            try c.encode(payload, forKey: .payload)
+        case let .frontRequest(requestID):
+            try c.encode("frontRequest", forKey: .kind)
+            try c.encode(requestID, forKey: .requestID)
+        case let .browserServerRequest(requestID):
+            try c.encode("browserServerRequest", forKey: .kind)
+            try c.encode(requestID, forKey: .requestID)
         }
     }
 }
