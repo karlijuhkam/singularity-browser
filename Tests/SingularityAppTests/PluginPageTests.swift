@@ -325,13 +325,92 @@ extension AppTests {
         #expect(calls == 1)
     }
 
+    // MARK: The Assistant's real page
+
+    /// The bundled Assistant's own files (a copy of `Plugins/assistant`), served, compiled and shown
+    /// as in the app, against a fake background. Its packages are never installed in tests (that
+    /// needs the network): a small stand-in for Preact takes the real package's place.
+    @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
+    func theAssistantsPageShowsTheEmptyChatAndAnAnswer() async throws {
+        let plugin = try AssistantCopy()
+        defer { plugin.remove() }
+        #expect(plugin.manifest.id == "assistant")
+        #expect(plugin.manifest.panel?.page == "panel.tsx")
+        #expect(plugin.manifest.panel?.title == "Assistant")
+
+        // Its files are served and compile with the real compiler.
+        let scripts = ArtifactScriptService(runtime: bunPath, hostFolder: hostFolder)
+        let server = PluginPageServer(pluginID: "assistant", folder: plugin.folder, entry: "panel.tsx",
+                                      compile: { await scripts.javascript(for: $0) })
+        for file in ["panel.tsx", "markdown.ts", "view.ts"] {
+            let reply = await fetch(server, url: "singularity-plugin://assistant/" + file)
+            #expect(reply.status == 200, "\(file): \(reply.status)")
+            #expect(reply.headers["Content-Type"] == "text/javascript; charset=utf-8", "\(file)")
+            #expect(!reply.text.contains("Could not compile"), "\(file): \(reply.text.prefix(500))")
+        }
+        let css = await fetch(server, url: "singularity-plugin://assistant/panel.css")
+        #expect(css.status == 200)
+        #expect(css.headers["Content-Type"]?.hasPrefix("text/css") == true)
+        // The shell page maps every package name panel.tsx imports.
+        let shell = await fetch(server, url: "singularity-plugin://assistant/")
+        for name in ["preact", "preact/hooks", "preact/jsx-runtime"] {
+            #expect(shell.text.contains("\"\(name)\":"), "the import map has no \(name)")
+        }
+
+        // In a web view: the page's first message is `hello`, and the answer is drawn.
+        var received: [JSONValue] = []
+        let (host, window) = makeHost(pluginID: "assistant", folder: plugin.folder, manifest: plugin.manifest) { payload in
+            received.append(payload)
+            return Self.readyState
+        }
+        defer { close(host, window) }
+        let emptyChat = "Ask anything. In this version the Assistant can't see your pages or act for you yet."
+        await wait("the empty chat") { await text(host, "p.empty") == emptyChat }
+        #expect(await text(host, "p.empty") == emptyChat)
+        #expect(received.first == .object(["type": .string("hello")]))
+        #expect(await text(host, ".billing") == "Claude plan")
+        // The stylesheet the page adds by itself is allowed by the policy and applied.
+        await wait("the stylesheet") {
+            (try? await host.webView.evaluateJavaScript(
+                "[...document.styleSheets].some((s) => (s.href ?? '').endsWith('/panel.css') && s.cssRules.length > 0)")) as? Bool == true
+        }
+
+        // A piece of an answer pushed by the background: Markdown is drawn, HTML stays text.
+        host.post(.object(["type": .string("delta"), "text": .string("Hello **there** <img src=x>"), "version": .number(2)]))
+        await wait("the answer") { await text(host, ".message.assistant strong") == "there" }
+        #expect(await text(host, ".message.assistant") == "Hello there <img src=x>")
+        #expect(try await host.webView.evaluateJavaScript("document.querySelectorAll('img').length") as? Int == 0)
+        #expect(await text(host, "p.empty") == "")
+    }
+
+    /// What the Assistant's background answers `hello` with once Claude is ready (see view.ts, ViewState).
+    private static let readyState: JSONValue = .object([
+        "messages": .array([]), "status": .string("ready"), "model": .null, "models": .array([]),
+        "billing": .string("plan"), "billingNoticeSeen": .bool(true), "configFolder": .string(""),
+        "providerVersion": .string("2.1.323"), "sdkVersion": .string("0.3.323"), "error": .null,
+        "version": .number(1),
+    ])
+
+    /// The text of the first element matching `selector`; "" when there is none.
+    private func text(_ host: PluginPageHost, _ selector: String) async -> String {
+        let result = try? await host.webView.callAsyncJavaScript(
+            "return document.querySelector(selector)?.textContent ?? ''", arguments: ["selector": selector],
+            in: nil, contentWorld: .page)
+        return result as? String ?? ""
+    }
+
     // MARK: Helpers
 
     private func makeHost(_ plugin: FixturePlugin,
                           send: @escaping (JSONValue) async -> JSONValue? = { _ in nil }) -> (PluginPageHost, NSWindow) {
+        makeHost(pluginID: "demo", folder: plugin.folder, manifest: plugin.manifest, send: send)
+    }
+
+    private func makeHost(pluginID: String, folder: URL, manifest: PluginManifest,
+                          send: @escaping (JSONValue) async -> JSONValue?) -> (PluginPageHost, NSWindow) {
         MainRunLoopGuard.start
         let scripts = ArtifactScriptService(runtime: bunPath, hostFolder: hostFolder)
-        let host = PluginPageHost(pluginID: "demo", folder: plugin.folder, manifest: plugin.manifest,
+        let host = PluginPageHost(pluginID: pluginID, folder: folder, manifest: manifest,
                                   compile: { await scripts.javascript(for: $0) }, send: send)
         // Off screen and never key (a key window of the test process can take the owner's keyboard).
         let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 600, height: 400),
@@ -506,6 +585,136 @@ private struct FixturePlugin {
         try write(".git/config", "hidden")
         try Data("outside the plugin".utf8).write(to: base.appending(path: "outside.txt"))
         try fm.createSymbolicLink(atPath: folder.appending(path: "leak.txt").path, withDestinationPath: "../outside.txt")
+
+        self.base = base
+        self.folder = folder
+        manifest = try PluginManifest.load(from: folder)
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: base) }
+}
+
+/// A copy of the bundled Assistant plugin (`Plugins/assistant`) in a temporary directory, with a
+/// hand-written stand-in for Preact in `node_modules/preact`: laid out like the real package
+/// (`exports` for ".", "./hooks" and "./jsx-runtime") and providing exactly what `panel.tsx` uses:
+/// `Fragment`, `render`, `useState`, `useRef`, `useEffect`, `useLayoutEffect`, `jsx` and `jsxs`.
+/// It has no diffing: every change builds the page's DOM again.
+private struct AssistantCopy {
+    let base: URL
+    let folder: URL
+    let manifest: PluginManifest
+
+    init() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appending(path: "sg-as-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
+        let folder = base.appending(path: "assistant", directoryHint: .isDirectory)
+        try fm.createDirectory(at: base, withIntermediateDirectories: true)
+        try fm.copyItem(at: repoRoot.appending(path: "Plugins/assistant", directoryHint: .isDirectory), to: folder)
+        // Packages someone installed by hand in the repository are not what this test is about.
+        try? fm.removeItem(at: folder.appending(path: "node_modules"))
+        func write(_ path: String, _ text: String) throws {
+            let file = folder.appending(path: "node_modules/preact/" + path)
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: file)
+        }
+        try write("package.json", """
+            {"name": "preact", "version": "11.2.0", "type": "module",
+             "exports": {".": {"import": "./dist/preact.mjs"},
+                         "./hooks": {"import": "./hooks/dist/hooks.mjs"},
+                         "./jsx-runtime": {"import": "./jsx-runtime/dist/jsxRuntime.mjs"}}}
+            """)
+        try write("dist/preact.mjs", """
+            // Hook state lives in slots named by the component's place in the tree (as in real
+            // Preact, hooks.mjs reaches it through `options`).
+            const slots = new Map();
+            let frame = null, root = null, queued = false, layoutEffects = [], effects = [];
+
+            export function Fragment(props) { return props.children; }
+
+            export const options = {
+              slot() {
+                const key = frame.path + "#" + frame.next++;
+                return { fresh: !slots.has(key), get: () => slots.get(key), set: (value) => slots.set(key, value) };
+              },
+              rerender() {
+                if (queued) return;
+                queued = true;
+                queueMicrotask(() => { queued = false; draw(); });
+              },
+              layoutEffect(run) { layoutEffects.push(run); },
+              effect(run) { effects.push(run); },
+            };
+
+            function build(node, path) {
+              if (node === null || node === undefined || typeof node === "boolean") return [];
+              if (Array.isArray(node)) return node.flatMap((child, i) => build(child, path + "." + i));
+              if (typeof node !== "object") return [document.createTextNode(String(node))];
+              const { type, props } = node;
+              if (typeof type === "function") {
+                const outer = frame;
+                frame = { path: path + "/" + type.name, next: 0 };
+                try { return build(type(props), frame.path); } finally { frame = outer; }
+              }
+              const element = document.createElement(type);
+              for (const [name, value] of Object.entries(props)) {
+                if (name === "children") continue;
+                if (name === "ref") { if (value) value.current = element; }
+                else if (name === "class") element.className = value ?? "";
+                else if (name.startsWith("on") && typeof value === "function") element.addEventListener(name.slice(2).toLowerCase(), value);
+                else if (!name.includes("-") && name in element) element[name] = value;
+                else if (value !== false && value !== null && value !== undefined) element.setAttribute(name, String(value));
+              }
+              element.append(...build(props.children, path));
+              return [element];
+            }
+
+            function draw() {
+              layoutEffects = [];
+              root.parent.replaceChildren(...build(root.vnode, ""));
+              for (const run of layoutEffects.splice(0)) run();
+              const later = effects.splice(0);
+              if (later.length > 0) setTimeout(() => { for (const run of later) run(); }, 0);
+            }
+
+            export function render(vnode, parent) { root = { vnode, parent }; draw(); }
+            """)
+        try write("hooks/dist/hooks.mjs", """
+            import { options } from "preact";
+
+            function changed(before, after) {
+              return before === undefined || after === undefined || before.length !== after.length
+                || before.some((value, i) => !Object.is(value, after[i]));
+            }
+
+            export function useState(initial) {
+              const slot = options.slot();
+              if (slot.fresh) slot.set(typeof initial === "function" ? initial() : initial);
+              const set = (next) => {
+                const value = typeof next === "function" ? next(slot.get()) : next;
+                if (!Object.is(value, slot.get())) { slot.set(value); options.rerender(); }
+              };
+              return [slot.get(), set];
+            }
+
+            export function useRef(initial) {
+              const slot = options.slot();
+              if (slot.fresh) slot.set({ current: initial });
+              return slot.get();
+            }
+
+            export function useEffect(run, deps) {
+              const slot = options.slot();
+              if (changed(slot.fresh ? undefined : slot.get(), deps)) { slot.set(deps); options.effect(run); }
+            }
+
+            // Every change makes new elements, so a layout effect (which works on them) runs every time.
+            export function useLayoutEffect(run) { options.layoutEffect(run); }
+            """)
+        try write("jsx-runtime/dist/jsxRuntime.mjs", """
+            export { Fragment } from "preact";
+            export function jsx(type, props) { return { type, props }; }
+            export const jsxs = jsx;
+            """)
 
         self.base = base
         self.folder = folder
