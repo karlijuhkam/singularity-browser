@@ -1,4 +1,4 @@
-# Agent (the built-in helper), part 1: a plugin's own panel and tab, a running program, a plain chat: design
+# Assistant (the built-in helper), part 1: a plugin's own panel and tab, a running program, a plain chat: design
 
 Date: 2026-11-13. Status: written for the owner's approval; nothing is built yet.
 
@@ -21,7 +21,7 @@ order, each with its own design:
 
 1. **Part 1 (this document): the ground floor.** A plugin can show its own page in a panel at the
    right of the window or in a tab, and can keep one approved program running and talk to it. The
-   Agent plugin uses both to give a plain chat on the user's own Claude Code sign-in. It cannot see
+   Assistant plugin uses both to give a plain chat on the user's own Claude Code sign-in. It cannot see
    pages or act yet.
 2. **Part 2: browse with the helper.** It knows the page in front, reads it and acts in the browser,
    through the door agents already use (`singularity-mcp`), under each Space's policy, approvals and
@@ -29,14 +29,16 @@ order, each with its own design:
 3. **Part 3: on top of the work.** It sees the terminals of every Space the owner lets it see, and
    can type into one only after the owner approved the exact text, every time (owner decision).
 
-**Name (owner decision):** the plugin is called **Agent** ("Lets use Agent as name and maybe bring
-in other providers too later"). Its id and folder are `agent`. Part 1 has one provider, Claude.
+**Name (owner decision):** the plugin is called **Assistant**. "Agent" was tried first and dropped
+by the owner because the app already says "agents" for outside agents ("it will get confusing,
+lets use Assistant"). Its id and folder are `assistant`. Other providers may come later (owner:
+"maybe bring in other providers too later"); part 1 has one, Claude.
 
 Everything below marked **(my call)** was decided by the writer, not said by the owner.
 
 ## What success looks like (part 1)
 
-1. A fresh copy of Singularity lists "Agent" among its bundled plugins. The owner adds it; the
+1. A fresh copy of Singularity lists "Assistant" among its bundled plugins. The owner adds it; the
    approval sheet says in plain words that it shows its own panel and tab and that it keeps
    `/Users/…/claude` running, a program that uses the internet and acts as the user.
 2. The owner presses the panel's shortcut. A panel opens at the right of the window, beside the page.
@@ -54,7 +56,7 @@ Everything below marked **(my call)** was decided by the writer, not said by the
 ## Goals, non-goals, anti-goals
 
 **Goals:** the two new plugin abilities (own page in a panel or tab; one running program), built
-only as far as the Agent plugin needs them; the Agent plugin with a plain streaming chat.
+only as far as the Assistant plugin needs them; the Assistant plugin with a plain streaming chat.
 
 **Non-goals for part 1** (not built, not scaffolded):
 - Any tool for the helper: reading pages, acting, terminals (parts 2 and 3). It is started with no
@@ -87,12 +89,10 @@ only as far as the Agent plugin needs them; the Agent plugin with a plain stream
   This moved three times in 2026 (ban in February, a separate-credit plan in May, its pause in
   June). If it moves again the chat must fail with a clear message, not silently bill something.
 - The SDK overview's branding rule: "Claude Code" may not appear in a product's name or interface.
-  The plugin is named "Agent"; where the provider is named, it is "Claude". The pinned path on the
-  approval sheet is the one place the program's own name shows.
-- "Agent" is also the app's word for outside agents (Settings → Agents, the agent inbox, "Let
-  agents use this Space"). In the interface the plugin is always the proper name "Agent", with a
-  capital and no article; the builder checks each new string against the existing ones so the two
-  are not confused.
+  The plugin is named "Assistant"; where the provider is named, it is "Claude". The pinned path on
+  the approval sheet is the one place the program's own name shows.
+- "Agent" stays the app's word for outside agents (Settings → Agents, the agent inbox, "Let agents
+  use this Space"). No new string calls the Assistant an agent.
 - Plugins stay reviewable: plain source, pinned packages, an approval sheet in plain words.
 
 ## Approaches
@@ -137,7 +137,7 @@ frame** ("easier to support generative UI in chat this way"). Recorded here as t
 **Manifest.** A new top-level key **(my call on the shape)**:
 
 ```json
-"panel": { "page": "panel.tsx", "title": "Agent" }
+"panel": { "page": "panel.tsx", "title": "Assistant" }
 ```
 
 `page` is a regular file in the folder, like `background`. No new permission key: having `panel` is
@@ -164,7 +164,7 @@ agent tool can list or read it.
 the background pushes with a new `singularity.panel.post(payload)`. Pushes are how text streams in;
 they are dropped when no page is open. Same size limit as today (256 KB a message).
 
-**UI library (my call).** The Agent plugin's page uses Preact, as a pinned plugin package: it loads
+**UI library (my call).** The Assistant plugin's page uses Preact, as a pinned plugin package: it loads
 as plain ES module files with no bundling step, which React's packages do not. It is a plugin
 package, not an app dependency; the owner may prefer otherwise.
 
@@ -230,7 +230,7 @@ plugin's log.
 - **The app builds the environment, not the plugin:** the user's real `HOME`, `USER`, the login
   shell's `PATH`, `TMPDIR`, `LANG`, and `CLAUDE_AGENT_SDK_CLIENT_APP=singularity/<version>`. From
   what the plugin passes, only names listed in the manifest's `programEnv` are taken **(my call)**;
-  the Agent plugin lists `CLAUDE_CONFIG_DIR` and the SDK's own three (`CLAUDE_AGENT_SDK_VERSION`,
+  the Assistant plugin lists `CLAUDE_CONFIG_DIR` and the SDK's own three (`CLAUDE_AGENT_SDK_VERSION`,
   `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SDK_READS_SESSION_STATE`). The approval sheet lists them.
   Nothing else from the app's own environment is inherited.
 - Arguments are free, as further arguments of `commands` are. See "Known weaknesses".
@@ -244,7 +244,7 @@ plugin's log.
 today. The install must leave out optional packages, or it pulls a 329 MB copy of Claude Code that
 is never used; the builder checks how `PluginPackages` does that with `--frozen-lockfile`.
 
-## 4. The Agent plugin (`Plugins/agent/`, shipped in the app)
+## 4. The Assistant plugin (`Plugins/assistant/`, shipped in the app)
 
 - **Other providers later (owner's wish; not built in part 1).** `background.ts` keeps everything
   that knows about Claude in one file behind a small interface the rest of the plugin uses: start
@@ -317,7 +317,7 @@ is never used; the builder checks how `PluginPackages` does that with `--frozen-
 
 ## 6. Documents
 
-- `CLAUDE.md`: scope-change lines for Agent (parts 1 to 3, with the owner's decisions:
+- `CLAUDE.md`: scope-change lines for the Assistant (parts 1 to 3, with the owner's decisions:
   approach B, TSX in a native frame, type-into-terminals only with approval, lifting "no agent
   orchestration" for the helper only in part 3), `TabKind.plugin`, the new plugin abilities, the
   session-transcript exception.
