@@ -6,6 +6,8 @@
 //   { type: "hello" }                    starts the provider the first time (not at plugin start,
 //                                        so nothing runs or counts against a plan until the panel opens)
 //   { type: "send", text }               { type: "stop" }       { type: "newChat" }
+//                                        (a stop with no end of the answer within 5 s starts the
+//                                        provider again, keeping the session and the messages)
 //   { type: "setModel", id }             { type: "setConfigFolder", path }   (restarts the provider)
 //   { type: "retry" }                    { type: "billingSeen" }
 // Pushed to the page (singularity.panel.post):

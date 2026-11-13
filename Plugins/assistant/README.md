@@ -1,7 +1,11 @@
 # Assistant
 
 A chat in Singularity's side panel (or in a tab). You type, the Assistant answers, and the answer
-streams in as it is written.
+streams in as it is written. You can type your next message while an answer is written; it is sent
+once the answer is done (Return does nothing until then).
+
+To add it: Settings → Plugins → Included with Singularity → Add (or View → Show Assistant, which
+opens that page while it isn't added), then approve it.
 
 ## How it works
 
@@ -14,6 +18,8 @@ installed yourself, with the sign-in that program already has. So:
 - Singularity never sees, stores or asks for a password, token or API key.
 - If `claude` isn't signed in, the panel says so: open a terminal tab, run `claude`, sign in, then
   press Try Again.
+- If your plan's limit is reached, the panel says so, unless the answer still comes (for example
+  because extra usage is switched on).
 - The model menu lists the models your `claude` offers. Bigger models use up a plan faster.
 - If you keep several Claude accounts apart with `CLAUDE_CONFIG_DIR`, set the folder under the
   panel's settings (the gear). Empty means Claude's usual folder.
@@ -21,7 +27,12 @@ installed yourself, with the sign-in that program already has. So:
 The conversation continues after a restart: Claude keeps its own copy of the session in its config
 folder, and the plugin keeps the messages you see in its data folder. New Chat starts afresh and
 deletes that copy. If Claude can no longer continue the old conversation, the old messages stay
-greyed out and a new conversation starts.
+greyed out and a new conversation starts (also when Claude only says so at your first message; then
+type that message again).
+
+Ways out when something hangs: Stop that brings no end of the answer within 5 seconds starts
+`claude` again (the conversation is kept); "Connecting to Claude…" gets Try Again after 15 seconds;
+and a page that couldn't reach the plugin at all has Try Again too.
 
 ## What it can't do (yet)
 
@@ -31,7 +42,8 @@ greyed out and a new conversation starts.
   ones in your own Claude config), without your Claude settings files (so none of your hooks,
   plugins or CLAUDE.md) and without skills (see `provider-claude.ts`). So all it can do is write
   text. Two things stay as they are: settings your organisation manages for Claude, and a message
-  that starts with "/", which `claude` may read as one of its own commands.
+  that starts with "/", which `claude` may read as one of its own commands (what it answers then is
+  shown as the answer).
 - Answers are shown as text (with simple formatting). Links are shown as their address, never as
   something to click, and HTML in an answer is shown as it is, never run.
 
@@ -40,7 +52,7 @@ greyed out and a new conversation starts.
 - **Shows its own panel and tab**: the chat page (`panel.tsx`). It can't reach the internet or
   any website; it only talks to this plugin's background program.
 - **Keeps `claude` running and talks to it**: the one program it may start, found on your PATH
-  when you approve the plugin. That program is not sandboxed: it uses the internet and acts as you.
+  when you approve the plugin (also a PATH set in `.zshrc`). That program is not sandboxed: it uses the internet and acts as you.
   What keeps it harmless is how `provider-claude.ts` starts it (no tools); review that file.
 - **Passes these settings to it**: `CLAUDE_CONFIG_DIR` (only when you set a folder) and three
   names the Claude Agent SDK sets for its program (`CLAUDE_AGENT_SDK_VERSION`,

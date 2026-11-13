@@ -360,8 +360,10 @@ Where this section and the design above disagree, this section is what the code 
 
 **1. A plugin's own page.**
 - The manifest key is as designed: `"panel": { "page": "panel.tsx", "title": "Assistant" }`. The
-  title is one line of 1 to 40 characters ("its panel needs a title of 1 to 40 characters"). The
-  approval sheet line is "Shows its own panel and tab".
+  title is one line of 1 to 40 characters ("its panel needs a title of 1 to 40 characters"). A
+  panel needs a `background` ("its panel needs a background program"): its page exists only while
+  the background runs, so without one it would never show. The approval sheet line is "Shows its
+  own panel and tab".
 - The scheme is `singularity-plugin://<id>/`; `/` is the page. GET only. Files go through the
   artifact server's containment rules (no `..`, no hidden files, nothing outside the folder after
   symlinks).
@@ -414,8 +416,8 @@ Where this section and the design above disagree, this section is what the code 
   that same plugin. While a plugin's page is a tab, the panel stays hidden for it and the shortcut
   selects the tab.
 - **The not-running page** says "<Title> isn't running", the reason from `PluginScan` (or "This
-  plugin isn't installed."), and has an "Open Plugin Settings" button. At launch it can show for a
-  moment while plugins are being scanned.
+  plugin isn't installed."), and has an "Open Plugin Settings" button. (At launch it now says
+  "starting" instead while plugins are being scanned; see below.)
 - **Space switches (a deviation):** shown when the plugin has a page script *or* has no panel at
   all. The design said "not shown for a plugin that has no page script", but a plugin with only a
   background needs them to start. A panel plugin without a page script records no Space at
@@ -423,6 +425,21 @@ Where this section and the design above disagree, this section is what the code 
 - Plugin tabs are invisible to agents: `list_tabs` leaves them out (and `list_spaces` doesn't
   count them); `close`, `read_page`, `screenshot`, `click`, `type`, `read_console` and the rest
   answer "Tab <id> is not a web page." Web-only commands are off for a plugin tab.
+- **Shown width (final fix wave):** the panel is drawn no wider than leaves the web page 320 points
+  beside the sidebar (or its 8 point margin when hidden), and never narrower than 300 while the
+  window has room for both; in a narrower window it takes what is left after the page's 320, and
+  below 200 it isn't drawn (the toggle still works). `PluginPanelLayout.shownWidth`; the stored
+  width doesn't change.
+- **"Starting…" (final fix wave):** while the page is on its way the page area says "<Title> is
+  starting" with a spinner instead of the not-running page: before the first scan of the plugins
+  folder has finished, and while an approved plugin's background is about to run
+  (`PluginSurface.pageIsStarting`). A dead web content process reloads the page, at once the first
+  time and then at most once per 5 s; link previews are off on the page.
+- **A route for people who updated (final fix wave):** Settings → Plugins lists the plugins shipped
+  with the app that aren't added yet under "Included with Singularity", each with Add (the welcome
+  flow's step 4 row, shared: copy, then the normal approval sheet). With no panel plugin installed,
+  View → "Show Assistant" (⌃⌘J) stays on and opens Settings → Plugins; a bare debug binary ships
+  no plugins and keeps the disabled "Show Plugin Panel".
 
 **3. A running program.**
 - The manifest is as designed, with rules added: at most 4 names in `programs`, no name twice, and
@@ -445,8 +462,11 @@ Where this section and the design above disagree, this section is what the code 
   a failed start answers "could not start: <reason>". To the plugin a refusal is an `error` event,
   then `exit` with 126.
 - **The environment** is the designed one plus `LOGNAME`; empty values and values with a NUL are
-  dropped, and a requested name can never replace a fixed one. The login shell's PATH is asked
-  once per run.
+  dropped, and a requested name can never replace a fixed one. **PATH (final fix wave):** the
+  plain login shell's (`-l -c`) followed by what an interactive login shell (`-l -i -c`, stdin
+  `/dev/null`) adds, because many Macs put `~/.local/bin` or nvm on PATH only in `.zshrc`. It is
+  kept once a shell answered; while none has, each start asks again. Finding a program at approval
+  asks the plain shell first and the interactive one only when the name isn't on the plain PATH.
 - **Output and input:** output in pieces of at most 48 KB, and the app stops reading the program
   while more than 1 MB is unread by the plugin. Input in pieces of 512 KB; **more than 16 MB of
   input the program hasn't taken ends it** (not in the design: without it a plugin could make the
@@ -500,10 +520,27 @@ Where this section and the design above disagree, this section is what the code 
   copy (no Try Again), and other errors in the program's own words (with Try Again, and Claude's
   and the SDK's versions, e.g. "Claude 2.1.323 · SDK 0.3.323"). Try Again is taken in every state
   except ready and answering.
-- **A failed resume** is recognised only when the start asked to resume, was not refused, and the
-  program ended before it answered `initialize`; then the old messages are greyed under "Earlier
-  conversation. The Assistant no longer remembers it." and a new session starts. Every other
-  error keeps the session and the messages.
+- **A failed resume** is recognised when the start asked to resume, was not refused, and the
+  program ended before it answered `initialize`, or (final fix wave) when a turn fails with "No
+  conversation found" before any turn of that start worked; then the old messages, the message
+  just sent included, are greyed under "Earlier conversation. The Assistant no longer remembers
+  it.", the status goes back to starting and a new session starts. Every other error keeps the
+  session and the messages.
+- **Final fix wave, the plugin:**
+  - A `rate_limit_event` saying "rejected" no longer fails a turn by itself (extra usage may pay):
+    a successful result wins, and the limit notice shows only when the turn itself failed or was
+    refused.
+  - A successful turn with no streamed text shows its result text as the answer (a "/command"
+    `claude` handles itself).
+  - The input stays enabled while an answer is written (sending still waits for ready; Return then
+    does nothing) and takes the focus when the page loads and after a message is sent.
+  - Ways out: a failed first `hello` has Try Again; "Connecting to Claude…" gets Try Again after
+    15 s; Stop with no end of the answer within 5 s starts the program again with the same
+    session and messages.
+  - New Chat sets the status to starting at once, so a message sent meanwhile is refused visibly.
+  - Return with `keyCode` 229 belongs to the input method. A sent message is saved at once. A
+    second message while the billing note waits is refused with "Press OK on the note above
+    first." The page always takes the answer to `hello`, whatever its version.
 - **Restarts wait for the old program** (New Chat, Try Again, a new config folder): Singularity
   runs one program per plugin, so a new start waits up to 5 s for the last one's exit.
 - **The page's state** carries two more fields than designed, `error` and `version`; every change
@@ -539,6 +576,12 @@ round 2 section.
 - `RealAssistantTests` (opt-in, `SINGULARITY_REAL_ASSISTANT=1`): installs the packages, runs the
   real `claude` on the owner's account and sends one message. Written, not run by the builders;
   the owner decides when. A throwaway `CLAUDE_CONFIG_DIR` can't be used (it would be signed out).
+- `RealAssistantPageTests` (opt-in, `SINGULARITY_REAL_ASSISTANT_PAGE=1`, final fix wave): installs
+  the two packages into a temporary copy (network) and shows the real page with the real Preact
+  in a real `PluginPageHost`, in an off-screen window that never becomes key, against a fake
+  background. It starts no program. Run on 2026-11-13: the page rendered (empty chat, billing
+  label, `panel.css` applied, the input focused on load and still enabled and focused after Send,
+  a pushed delta and state drawn as text with HTML left as text).
 
 ### Known small gaps (left on purpose for now)
 
@@ -546,10 +589,7 @@ round 2 section.
   very long answers.
 - After a crash restart, a page message sent in the moment before the new background is in place
   can wait 75 s for its answer.
-- A failed login-shell PATH lookup is kept for the rest of the run (a success should be the only
-  thing cached).
-- A plugin tab made before the plugins were scanned stores an empty title until the scan ends;
-  `list_tabs` shows no selected tab while a plugin tab is selected; the panel's menu item stays
+- `list_tabs` shows no selected tab while a plugin tab is selected; the panel's menu item stays
   enabled while a little window is in front (it brings the main window forward first).
 - A write to a program that doesn't read can hold one thread until the program reads or ends.
 - The page host compiles with its own copy of the TypeScript cache rather than the app's shared one.
@@ -558,4 +598,5 @@ round 2 section.
 
 The panel's look and feel in light and dark mode, dragging its edge, ⌃⌘J in the real menu bar,
 streaming and Stop with the real program, Open as Tab and back, a restart that continues the
-conversation, a signed-out Claude Code, and the page in real Preact (the tests use a stand-in).
+conversation, and a signed-out Claude Code. (The page in real Preact is now covered by the opt-in
+`RealAssistantPageTests`, off screen.)

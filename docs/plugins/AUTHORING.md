@@ -1,6 +1,6 @@
 # Writing a Singularity plugin
 
-This guide is for agents first and people second. It describes what is on the `plugins-round1` branch. If the guide and the code disagree, the code wins; the sources are named in each section.
+This guide is for agents first and people second. It describes plugins as Singularity runs them today. If the guide and the code disagree, the code wins; the sources are named in each section.
 
 Paths like `Plugins/template/` and `Resources/plugin-host/` are in the Singularity repository (relative to its root).
 
@@ -74,7 +74,7 @@ Rules for the folder:
 | `name`, `version`, `description`, `author` | yes | Shown in Settings and on the approval sheet. |
 | `background` | no | Path of the background file, relative to the folder. A regular file inside the folder, no `..`. |
 | `page` | no | `{ "script": "page.ts", "sites": [patterns] }`. The script runs only on these sites. |
-| `panel` | no | `{ "page": "panel.tsx", "title": "Assistant" }`. The plugin's own page (a regular file inside the folder, like `background`) and the title of its panel and tab (one line, 1 to 40 characters). Having `panel` is the permission: the approval sheet says "Shows its own panel and tab". See A plugin's own page. |
+| `panel` | no | `{ "page": "panel.tsx", "title": "Assistant" }`. The plugin's own page (a regular file inside the folder, like `background`) and the title of its panel and tab (one line, 1 to 40 characters). Needs a `background`: the page exists only while it runs. Having `panel` is the permission: the approval sheet says "Shows its own panel and tab". See A plugin's own page. |
 | `permissions` | yes | See below. Any key inside may be left out and means "none". An unknown key is an error. |
 
 A minimal **page-only** manifest (no `background`, no commands):
@@ -136,7 +136,7 @@ Details:
 
 - Sub-commands match word for word and case-sensitively at the start of the arguments. `"item list"` allows `item list --format json` and `item list --anything`: **only the leading words are checked; later arguments are free.** A program with an empty list, or an empty sub-command, is refused.
 - A program name is a bare name: letters, digits, `.`, `_`, `-`, starting with a letter or digit. No slashes.
-- The program is found on the user's login `PATH` when the plugin is approved, and that path is pinned. A different program with the same name later is not run.
+- The program is found on the user's login `PATH` when the plugin is approved, and that path is pinned. A different program with the same name later is not run. Singularity asks the login shell first; when the name isn't on that `PATH`, it asks once more with an interactive login shell, which also reads `.zshrc` (where many installers put their `PATH` line).
 - These program names are refused (also with a version suffix such as `python3.12`): `sh bash zsh fish dash ksh csh tcsh env sudo su curl wget ssh scp sftp nc ncat telnet ftp rsync osascript open python python3 perl ruby php node bun deno npx bunx rbash nodejs pip pip3 npm pnpm yarn xargs nice nohup exec command launchctl swift lua awk gawk tclsh expect arch caffeinate time timeout gtimeout stdbuf watch script sandbox-exec taskpolicy ssh-agent xcrun find tmux screen lldb gdb sqlite3 vim vi ex nvim emacs`. In short: shells, interpreters, network tools, package managers, and programs that run other programs.
 - `programs` follow the same rules as `commands`: bare names, the refused list above, found on the login `PATH` at approval and pinned. A program that can't be found blocks the approval. The pinned path is checked again every time the program starts.
 - A name in `programEnv` is upper-case letters, digits and `_`, starting with a letter, at most 64 characters. These are refused, because they change how a program starts or where it looks: `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, `LANG`, `SHELL`, `PWD`, and anything starting with `DYLD_`, `LD_` or `SINGULARITY_`.
@@ -144,7 +144,7 @@ Details:
 
 ### Manifest errors
 
-Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "This folder isn't a plugin Singularity can use: <text>." Permission keys are checked while `plugin.json` is read, before the id. Check order: JSON shape and permission keys, id format, id equals folder, site patterns, page sites, network, commands, programs and `programEnv`, panel title, files, packages.
+Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "This folder isn't a plugin Singularity can use: <text>." Permission keys are checked while `plugin.json` is read, before the id. Check order: JSON shape and permission keys, id format, id equals folder, site patterns, page sites, network, commands, programs and `programEnv`, panel title, panel without background, files, packages.
 
 | Mistake | Exact message |
 |---|---|
@@ -160,6 +160,7 @@ Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "Thi
 | `programs` without a `background` | `it asks to keep a program running but has no background program` |
 | Refused or malformed name in `programEnv`, or `programEnv` without `programs` | `it asks to set “PATH” for its program, which plugins may not` |
 | `panel.title` empty, longer than 40 characters, or more than one line | `its panel needs a title of 1 to 40 characters` |
+| `panel` without a `background` | `its panel needs a background program` |
 | `background`, `page.script` or `panel.page` missing, absolute, or contains `..` | `the file background.ts is missing` |
 | Symbolic link in the folder | `it contains a symbolic link (path/to/link)` |
 | FIFO, socket or device | `it contains a special file (path)` |
@@ -282,7 +283,7 @@ program.on("error", (error) => { /* Singularity refused or couldn't start it */ 
 
 Rules:
 
-- **Singularity builds the program's environment, not the plugin**: the user's real `HOME`, `USER` and `LOGNAME`, the login shell's `PATH`, `TMPDIR`, `LANG`, and `CLAUDE_AGENT_SDK_CLIENT_APP=singularity/<version>`. Of `options.env`, only names listed in `programEnv` are passed on (empty values are dropped); the rest is dropped without a word. Nothing else is inherited from the app.
+- **Singularity builds the program's environment, not the plugin**: the user's real `HOME`, `USER` and `LOGNAME`, the login shell's `PATH` (with what an interactive login shell adds from `.zshrc`), `TMPDIR`, `LANG`, and `CLAUDE_AGENT_SDK_CLIENT_APP=singularity/<version>`. Of `options.env`, only names listed in `programEnv` are passed on (empty values are dropped); the rest is dropped without a word. Nothing else is inherited from the app.
 - It starts at the path pinned at approval, with the arguments as they are (no shell), in the plugin's data folder.
 - **One program at a time** per plugin. Wait for `exit` before starting the next one.
 - **It ends with the plugin**: when the plugin stops, is paused, changed or removed, or the app quits, the program and everything it started get SIGTERM, then SIGKILL 2 seconds later (at quit, SIGKILL at once).
@@ -386,7 +387,8 @@ With `panel` in the manifest, the plugin has a page of its own, not inside any w
 
 - **One page, one place.** A plugin has exactly one page. Open as Tab moves it into a tab (and closes the panel); Move to Side Panel moves it back. Hiding the panel or closing the tab hides the page; the background and what it keeps go on. So the page can always assume it is the only copy of itself on screen. It may still be closed and opened again at any time: ask the background for the current state when it starts (the Assistant sends `hello`).
 - **It runs whenever it is approved.** A plugin with a panel needs no Space switch: its background starts as soon as it is approved, and messages from its page are answered in every Space. The per-Space switches only matter for a page script, and are shown only when the plugin has one.
-- **Only while the background runs.** The page is served only while the plugin's background is running and its files are the approved ones. Otherwise the panel and the tab show Singularity's own "<title> isn't running" page with the reason (not approved, changed since approval, a program missing, stopped after crashes) and a button to Settings -> Plugins. When the background restarts after a crash, the page is loaded again.
+- **Only while the background runs.** The page is served only while the plugin's background is running and its files are the approved ones. Otherwise the panel and the tab show Singularity's own "<title> isn't running" page with the reason (not approved, changed since approval, a program missing, stopped after crashes) and a button to Settings -> Plugins; while the page is on its way (just after Singularity starts, or an approved background is starting) they say "<title> is starting". When the background restarts after a crash, or the page's web content process dies, the page is loaded again.
+- **Its width.** The user sets the panel's width by dragging its left edge. In a narrow window it is drawn narrower, so the web page beside it keeps at least 320 points; below 200 points the panel isn't drawn at all. Lay the page out for widths from 200 points up.
 
 ### The page API
 
