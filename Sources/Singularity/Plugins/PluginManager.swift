@@ -318,7 +318,7 @@ final class PluginManager {
         let dataFolder = paths.pluginsDataDirectory(id)
         let runtime = runtime, host = host, approvals = launchApprovals, programs = programs
         // Asking the login shell for its PATH takes seconds: start now, so the plugin's first
-        // program start doesn't wait for it (the answer is kept for the rest of the app run).
+        // program start doesn't wait for it (once a shell answered, it is kept for the app run).
         if programs.allowed, scans[id]?.validManifest?.permissions.programs.isEmpty == false {
             Task.detached(priority: .utility) { _ = programs.loginPath() }
         }
@@ -842,8 +842,8 @@ struct ProgramLaunchSettings: Sendable {
     /// The login shell's PATH. May block for seconds the first time: never call on the main actor.
     let loginPath: @Sendable () -> String
 
-    /// The real values: the user's home folder and name, the login shell's PATH (asked once per app
-    /// run), the bundle's short version. `environment` is the app's own (it decides `allowed`).
+    /// The real values: the user's home folder and name, the login shell's PATH (`LoginShellPATH`:
+    /// kept once found), the bundle's short version. `environment` is the app's own (it decides `allowed`).
     static func live(environment: [String: String] = ProcessInfo.processInfo.environment,
                      loginPath: @escaping @Sendable () -> String = { LoginShellPATH.value }) -> ProgramLaunchSettings {
         ProgramLaunchSettings(
@@ -866,10 +866,33 @@ struct ProgramLaunchSettings: Sendable {
 }
 
 /// The PATH the user's login shell sets up, as a terminal tab would have it (a Dock-started app
-/// gets a minimal one). Asked once per app run, when first read; a `static let` is set up once and
-/// thread-safely, and other readers wait for it. Blocks up to ~5 s: never read on the main actor.
+/// gets a minimal one): the plain login shell's entries, then those its interactive files add
+/// (`CommandBroker.programPath`), so a program found only through `.zshrc` runs with it too.
+/// Kept for the rest of the app run once a shell answered; while none has, every read asks again
+/// (a slow shell at login must not leave the minimal PATH until relaunch) and gets the minimal one.
+/// Blocks up to ~10 s: never read on the main actor.
 enum LoginShellPATH {
-    static let value: String = CommandBroker.loginPath(loginShell: LoginShell.path()) ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+    static let minimal = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+    static var value: String {
+        if let known = cache.get() { return known }
+        guard let found = CommandBroker.programPath(loginPath: { interactive in
+            CommandBroker.loginPath(loginShell: LoginShell.path(), interactive: interactive)
+        }) else { return minimal }
+        cache.set(found)
+        return found
+    }
+
+    private static let cache = LockedPATH()
+}
+
+/// The one PATH `LoginShellPATH` found, behind a lock (read from several background threads).
+/// `@unchecked Sendable`: `value` is only touched while holding `lock`.
+private final class LockedPATH: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+    func get() -> String? { lock.withLock { value } }
+    func set(_ path: String) { lock.withLock { value = path } }
 }
 
 /// Plugin id -> approval behind a lock, for the supervisors' background threads.

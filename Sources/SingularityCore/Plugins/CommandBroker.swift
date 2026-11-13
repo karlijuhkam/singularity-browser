@@ -27,23 +27,56 @@ public enum CommandBroker {
     /// The first executable regular file named `name` on the user's login PATH. That is exactly
     /// what `PluginProcess` will run: it execs the path directly, never through a shell, so shell
     /// aliases, functions and builtins (zsh's `echo`) don't count. GUI apps don't inherit the
-    /// shell's PATH, so the login shell is asked for it. Returns nil for invalid or refused names
+    /// shell's PATH, so the login shell is asked for it (see the closure variant below for the
+    /// order). Returns nil for invalid or refused names
     /// (checked before any shell runs), and when nothing suitable is found.
     ///
-    /// Blocks up to ~6 s (runs the login shell). Never call on the main actor.
+    /// Blocks up to ~12 s (runs the login shell, at most twice). Never call on the main actor.
     public static func resolve(_ name: String, loginShell: String) -> String? {
-        guard CommandPolicy.isValidName(name), !CommandPolicy.isRefused(name),
-              let path = loginPath(loginShell: loginShell) else { return nil }
-        return find(name, inPath: path)
+        resolve(name) { interactive in loginPath(loginShell: loginShell, interactive: interactive) }
+    }
+
+    /// `resolve` with the shell's answer given by `loginPath(interactive)` (tests pass a fake).
+    /// The plain login shell first; only when its PATH has no such program, once more with an
+    /// interactive one: many Macs set PATH only in `.zshrc` (Claude's own installer and nvm suggest
+    /// it), which a shell reads only when it is interactive. Invalid or refused names never ask.
+    public static func resolve(_ name: String, loginPath: (_ interactive: Bool) -> String?) -> String? {
+        guard CommandPolicy.isValidName(name), !CommandPolicy.isRefused(name) else { return nil }
+        if let plain = loginPath(false), let found = find(name, inPath: plain) { return found }
+        guard let interactive = loginPath(true) else { return nil }
+        return find(name, inPath: interactive)
+    }
+
+    /// The PATH a plugin's programs get: the plain login shell's entries first, then those only an
+    /// interactive login shell adds (from `.zshrc`), so every program `resolve` can find is on it,
+    /// in the same order `resolve` looks. nil when neither shell answered.
+    public static func programPath(loginPath: (_ interactive: Bool) -> String?) -> String? {
+        mergePaths(loginPath(false), loginPath(true))
+    }
+
+    /// `first`'s entries, then `second`'s that `first` doesn't have; nil when both are nil.
+    static func mergePaths(_ first: String?, _ second: String?) -> String? {
+        guard first != nil || second != nil else { return nil }
+        var entries: [String] = []
+        for path in [first, second].compactMap({ $0 }) {
+            for entry in path.split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+                where !entries.contains(entry) {
+                entries.append(entry)
+            }
+        }
+        return entries.isEmpty ? nil : entries.joined(separator: ":")
     }
 
     /// The PATH a login shell sets up (what a terminal would use); nil when the shell fails or
-    /// takes longer than 5 s. Blocks while the shell runs: never call on the main actor.
-    public static func loginPath(loginShell: String) -> String? {
+    /// takes longer than 5 s. `interactive`: also read the interactive files (`.zshrc`), as a
+    /// terminal tab does (`-l -i -c`, like `AgentLoginShell`); stdin is /dev/null either way.
+    /// Blocks while the shell runs: never call on the main actor.
+    public static func loginPath(loginShell: String, interactive: Bool = false) -> String? {
         // A fixed script: nothing from a plugin goes into it. The marker line lets us skip
         // whatever rc files print first; `printenv` (not `echo $PATH`) also works in fish.
         let script = "echo \(pathMarker); /usr/bin/printenv PATH"
-        guard let output = runShortProcess(loginShell, ["-l", "-c", script], timeout: 5) else { return nil }
+        let arguments = interactive ? ["-l", "-i", "-c", script] : ["-l", "-c", script]
+        guard let output = runShortProcess(loginShell, arguments, timeout: 5) else { return nil }
         return loginPath(fromShellOutput: output)
     }
 

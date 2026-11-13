@@ -669,7 +669,54 @@ private let bunPath = repoRoot.appending(path: "Vendor/bun/bun")
         #expect(CommandBroker.resolve("uptime", loginShell: "/bin/zsh") == "/usr/bin/uptime")
         // A zsh builtin, but PluginProcess execs files, so the file is what counts.
         #expect(CommandBroker.resolve("echo", loginShell: "/bin/zsh") == "/bin/echo")
-        #expect(CommandBroker.resolve("definitely-not-a-real-command-xyz", loginShell: "/bin/zsh") == nil)
+        // (A missing name is checked with a fake shell below: the real one would then start the
+        // owner's interactive shell.)
+    }
+
+    @Test func resolveAsksAnInteractiveShellOnlyWhenThePlainOneHasNoSuchProgram() {
+        /// A fake login shell: records which kinds were asked, answers from the two PATHs given.
+        final class FakeShell {
+            var asked: [Bool] = []
+            let plain: String?, interactive: String?
+            init(plain: String?, interactive: String?) { self.plain = plain; self.interactive = interactive }
+            func path(_ isInteractive: Bool) -> String? {
+                asked.append(isInteractive)
+                return isInteractive ? interactive : plain
+            }
+        }
+        // Found by the plain login shell: the interactive one is never started.
+        let plainHasIt = FakeShell(plain: "/usr/bin:/bin", interactive: "/opt/x/bin:/usr/bin:/bin")
+        #expect(CommandBroker.resolve("uptime", loginPath: plainHasIt.path) == "/usr/bin/uptime")
+        #expect(plainHasIt.asked == [false])
+        // Only on the interactive shell's PATH (set in .zshrc): found there, after the plain one.
+        let onlyInteractive = FakeShell(plain: "/nonexistent-a", interactive: "/nonexistent-a:/usr/bin")
+        #expect(CommandBroker.resolve("uptime", loginPath: onlyInteractive.path) == "/usr/bin/uptime")
+        #expect(onlyInteractive.asked == [false, true])
+        // The plain shell failed (nil): the interactive one is still asked.
+        let plainFailed = FakeShell(plain: nil, interactive: "/usr/bin")
+        #expect(CommandBroker.resolve("uptime", loginPath: plainFailed.path) == "/usr/bin/uptime")
+        #expect(plainFailed.asked == [false, true])
+        // Nowhere, or neither shell answered: nil, after asking each once.
+        let nowhere = FakeShell(plain: "/usr/bin", interactive: "/bin")
+        #expect(CommandBroker.resolve("definitely-not-a-real-command-xyz", loginPath: nowhere.path) == nil)
+        #expect(nowhere.asked == [false, true])
+        let silent = FakeShell(plain: nil, interactive: nil)
+        #expect(CommandBroker.resolve("uptime", loginPath: silent.path) == nil)
+        #expect(silent.asked == [false, true])
+        // Invalid or refused names never ask at all.
+        let never = FakeShell(plain: "/usr/bin", interactive: "/usr/bin")
+        #expect(CommandBroker.resolve("ls; id", loginPath: never.path) == nil)
+        #expect(CommandBroker.resolve("bash", loginPath: never.path) == nil)
+        #expect(never.asked.isEmpty)
+    }
+
+    @Test func programPathIsThePlainPathThenWhatTheInteractiveShellAdds() {
+        func shell(_ plain: String?, _ interactive: String?) -> (Bool) -> String? { { $0 ? interactive : plain } }
+        #expect(CommandBroker.programPath(loginPath: shell("/usr/bin:/bin", "/Users/a/.local/bin:/usr/bin:/bin:/opt/n/bin"))
+                == "/usr/bin:/bin:/Users/a/.local/bin:/opt/n/bin")
+        #expect(CommandBroker.programPath(loginPath: shell("/usr/bin:/bin", nil)) == "/usr/bin:/bin")
+        #expect(CommandBroker.programPath(loginPath: shell(nil, "/a::/b:/a")) == "/a:/b")
+        #expect(CommandBroker.programPath(loginPath: shell(nil, nil)) == nil)
     }
 
     @Test func resolveRejectsBadNamesWithoutRunningAShell() {
