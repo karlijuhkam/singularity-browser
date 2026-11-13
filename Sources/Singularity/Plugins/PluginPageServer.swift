@@ -1,6 +1,10 @@
 import Foundation
 import SingularityCore
 import WebKit
+import os
+
+/// Visible with: log stream --level debug --predicate 'subsystem == "dev.roosa.Singularity" AND category == "plugin-page"'
+let pluginPageLog = Logger(subsystem: "dev.roosa.Singularity", category: "plugin-page")
 
 /// Serves one plugin's own page (its `panel.page` and every file it loads) from the plugin's
 /// folder, at `singularity-plugin://<plugin id>/<path>`. `/` is the page itself.
@@ -17,6 +21,11 @@ import WebKit
 /// `.ts/.tsx/.jsx/.mts` are compiled on request, one file in, one module out, exactly as for
 /// artifacts (`compile`, normally `ArtifactScriptService`). A page written as a script gets the
 /// artifacts' small shell page, with the import map built from the plugin's declared packages.
+///
+/// Where the page may sit: a script page anywhere in the folder (the shell page loads it by its
+/// path); an HTML page only at the top of the folder. It is served at `/`, so in a subfolder its
+/// relative links ("style.css") would point to the top of the folder instead of beside it; such a
+/// page gets 404 and a line in the log.
 ///
 /// Every response carries `policy(nonce:)`: scripts, styles, images and fonts only from the
 /// plugin's own origin, no network (`connect-src 'none'`), no frames, no forms. Inline scripts
@@ -119,15 +128,22 @@ final class PluginPageServer: NSObject, WKURLSchemeHandler {
 
         // "/" is the page itself.
         if path.isEmpty || path == "/" {
+            // "./panel.tsx" means "panel.tsx" (the manifest allows it; `resolve` refuses "." parts).
+            let parts = entry.split(separator: "/").filter { $0 != "." }
+            let page = parts.joined(separator: "/")
             var allowed = CharacterSet.urlPathAllowed
             allowed.remove(charactersIn: "%")
-            guard let encoded = entry.addingPercentEncoding(withAllowedCharacters: allowed),
-                  !entry.isEmpty, let file = ArtifactFiles.resolve(requestPath: "/" + encoded, root: folder) else {
+            guard !page.isEmpty, let encoded = page.addingPercentEncoding(withAllowedCharacters: allowed),
+                  let file = ArtifactFiles.resolve(requestPath: "/" + encoded, root: folder) else {
                 return text(404, "Not Found")
             }
             if ArtifactScripts.isCompiled(file) {
-                let page = ArtifactScripts.shellPage(scriptName: entry, importMap: importMap(folder: folder), nonce: nonce)
-                return Reply(status: 200, contentType: "text/html; charset=utf-8", body: Data(page.utf8), nonce: nonce)
+                let shell = ArtifactScripts.shellPage(scriptName: page, importMap: importMap(folder: folder), nonce: nonce)
+                return Reply(status: 200, contentType: "text/html; charset=utf-8", body: Data(shell.utf8), nonce: nonce)
+            }
+            guard parts.count == 1 else {
+                pluginPageLog.error("\(pluginID, privacy: .public): the page \(entry, privacy: .public) is HTML in a subfolder; an HTML page must sit at the top of the plugin folder")
+                return text(404, "Not Found")
             }
             return serve(file, nonce: nonce) ?? text(404, "Not Found")
         }

@@ -86,6 +86,25 @@ extension AppTests {
         #expect(Self.nonce(in: second.headers["Content-Security-Policy"] ?? "") != nonce)
     }
 
+    @Test func anHTMLPageMustSitAtTheTopOfTheFolder() async throws {
+        let plugin = try FixturePlugin()
+        defer { plugin.remove() }
+        func page(_ entry: String) async -> Reply {
+            await fetch(PluginPageServer(pluginID: "demo", folder: plugin.folder, entry: entry,
+                                         compile: { _ in .success("") }), "")
+        }
+        let top = await page("index.html")
+        #expect(top.status == 200)
+        #expect(top.text.contains("top page"))
+        #expect(await page("./index.html").status == 200)
+        // In a subfolder its relative links would resolve from "/", so it isn't served.
+        #expect(await page("ui/index.html").status == 404)
+        // A script page in a subfolder is fine: the shell page loads it by its path.
+        let script = await page("ui/panel.tsx")
+        #expect(script.status == 200)
+        #expect(script.text.contains(#"src="./ui/panel.tsx""#))
+    }
+
     @Test func aCompileErrorComesBackAsTheModuleThatShowsIt() async throws {
         let plugin = try FixturePlugin()
         defer { plugin.remove() }
@@ -116,7 +135,7 @@ extension AppTests {
     }
 
     @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
-    func thePageCannotReachTheNetwork() async throws {
+    func thePageCannotLoadFromOrGoToAnotherSite() async throws {
         let site = try await CountingServer.start()
         defer { site.stop() }
         let plugin = try FixturePlugin()
@@ -139,6 +158,68 @@ extension AppTests {
         // The server does count: a request from outside the page is seen.
         _ = try? await URLSession.shared.data(from: site.url)
         #expect(site.connections == 1)
+    }
+
+    @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
+    func navigationStaysRefusedAfterTearDown() async throws {
+        let site = try await CountingServer.start()
+        defer { site.stop() }
+        let plugin = try FixturePlugin()
+        defer { plugin.remove() }
+        let (host, window) = makeHost(plugin)
+        defer { window.close() }
+        await wait("the page to render") { host.webView.title == "rendered:from-util" }
+
+        // A timer the page left running.
+        _ = try await host.webView.evaluateJavaScript(
+            "setTimeout(() => { window.fired = true; location.href = \(Self.literal(site.url.absoluteString + "timer")) }, 300); 1")
+        host.tearDown()
+        try await Task.sleep(for: .seconds(1))
+        // It fired (the same document is still there), and its navigation was refused.
+        #expect(try await host.webView.evaluateJavaScript("window.fired === true") as? Bool == true)
+        #expect(site.connections == 0)
+
+        // A navigation started after the teardown.
+        _ = try? await host.webView.evaluateJavaScript("location.href = \(Self.literal(site.url.absoluteString + "later")); 1")
+        try await Task.sleep(for: .seconds(1))
+        #expect(site.connections == 0)
+
+        // Not even the plugin's own page loads again: the document stays the same.
+        _ = try? await host.webView.evaluateJavaScript("location.href = 'singularity-plugin://demo/'; 1")
+        try await Task.sleep(for: .seconds(1))
+        #expect(try await host.webView.evaluateJavaScript("window.fired === true") as? Bool == true)
+        #expect(host.webView.url?.absoluteString == "singularity-plugin://demo/")
+
+        // The server does count: a request from outside the page is seen.
+        _ = try? await URLSession.shared.data(from: site.url)
+        #expect(site.connections == 1)
+    }
+
+    @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
+    func webRTCIsSwitchedOff() async throws {
+        let plugin = try FixturePlugin()
+        defer { plugin.remove() }
+        let (host, window) = makeHost(plugin)
+        defer { close(host, window) }
+        await wait("the page to render") { host.webView.title == "rendered:from-util" }
+        let result = try await host.webView.callAsyncJavaScript("""
+            const frame = document.createElement("iframe");
+            document.body.append(frame);
+            const inFrame = frame.contentWindow;
+            return [typeof RTCPeerConnection, typeof webkitRTCPeerConnection,
+                    typeof inFrame.RTCPeerConnection, typeof inFrame.webkitRTCPeerConnection].join()
+            """, arguments: [:], in: nil, contentWorld: .page) as? String
+        #expect(result == "undefined,undefined,undefined,undefined")
+    }
+
+    @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
+    func aScriptPageInASubfolderWorks() async throws {
+        let plugin = try FixturePlugin(page: "ui/panel.tsx")
+        defer { plugin.remove() }
+        let (host, window) = makeHost(plugin)
+        defer { close(host, window) }
+        await wait("the page to render") { host.webView.title == "rendered:ui:from-util" }
+        #expect(host.webView.title == "rendered:ui:from-util")
     }
 
     @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
@@ -204,9 +285,11 @@ extension AppTests {
         let got = try await host.webView.evaluateJavaScript("JSON.stringify(window.got)") as? String
         #expect(got == #"[{"n":1},{"n":2}]"#)
 
-        // After tearDown nothing is delivered (and nothing breaks).
+        // After tearDown nothing is delivered (the page itself is still there to ask).
         host.tearDown()
         host.post(.string("too late"))
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(try await host.webView.evaluateJavaScript("window.got.length") as? Int == 2)
     }
 
     @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
@@ -305,6 +388,7 @@ extension AppTests {
     private func fetch(_ server: PluginPageServer, url: String, method: String = "GET") async -> Reply {
         var request = URLRequest(url: URL(string: url)!)
         request.httpMethod = method
+        MainRunLoopGuard.start
         let task = FakeTask(request: request)
         await withCheckedContinuation { continuation in
             task.finished = continuation
@@ -332,7 +416,8 @@ private struct FixturePlugin {
     let folder: URL
     let manifest: PluginManifest
 
-    init() throws {
+    /// `page`: the manifest's `panel.page`.
+    init(page: String = "panel.tsx") throws {
         let fm = FileManager.default
         let base = fm.temporaryDirectory.appending(path: "sg-pp-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
         let folder = base.appending(path: "demo", directoryHint: .isDirectory)
@@ -344,7 +429,7 @@ private struct FixturePlugin {
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
         try write("plugin.json", """
             {"id": "demo", "name": "Demo", "version": "1.0.0", "description": "A test panel.", "author": "Tests",
-             "panel": {"page": "panel.tsx", "title": "Demo"}, "permissions": {}}
+             "panel": {"page": "\(page)", "title": "Demo"}, "permissions": {}}
             """)
         try write("package.json", #"{"dependencies": {"preact": "10.0.0"}}"#)
         // A well-formed lock entry for the declared version (the integrity is 64 zero bytes).
@@ -408,6 +493,14 @@ private struct FixturePlugin {
             (window as any).attack = attack;
             render(<b id="out">{marker}</b>, document.getElementById("root")!);
             """)
+        try write("ui/panel.tsx", """
+            /** @jsxImportSource preact */
+            import { render } from "preact";
+            import { marker } from "../util";
+            render(<b id="out">{"ui:" + marker}</b>, document.getElementById("root")!);
+            """)
+        try write("index.html", "<!doctype html><title>top page</title>")
+        try write("ui/index.html", "<!doctype html><title>ui page</title>")
         // Never served: hidden files, and a link that points out of the folder.
         try write(".secret", "hidden")
         try write(".git/config", "hidden")

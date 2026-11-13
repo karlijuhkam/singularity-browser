@@ -8,11 +8,18 @@ import WebKit
 /// The web view is locked down; the frame around it (panel or tab) belongs to someone else:
 /// - its own non-persistent data store: no cookies or storage shared with any Space, nothing kept;
 /// - its content comes only from `PluginPageServer` (`singularity-plugin://<id>/`), whose
-///   Content-Security-Policy allows no network at all;
+///   Content-Security-Policy allows no fetch, image, frame, form or other load from anywhere else;
+/// - WebRTC is switched off (`RTCPeerConnection` could otherwise send UDP and DNS traffic, which
+///   no CSP directive covers; see `switchOffPeerConnections`);
 /// - the main frame may only show the plugin's own origin: every other navigation, new windows,
-///   downloads, camera and microphone are refused, and JavaScript dialogs are not shown;
+///   downloads, camera and microphone are refused, and JavaScript dialogs are not shown. After
+///   `tearDown` every navigation is refused, for as long as the web view lives (the page's
+///   JavaScript can still be running then);
 /// - none of the scripts web tabs get (page agent, console/network capture, plugins' page
 ///   scripts), so no agent tool can read it.
+///
+/// The page (`panel.page`) is served at `/`. An HTML page must sit at the top of the plugin
+/// folder, or its relative links would point to the wrong place; a script page may be anywhere.
 ///
 /// The page API, defined at document start in the page's own world:
 ///
@@ -49,6 +56,11 @@ final class PluginPageHost: NSObject {
         // Right-click → Inspect Element, as web tabs have (a WebKit preference without a Swift
         // property, set by key; see WebViewRegistry.configuration).
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        if !Self.switchOffPeerConnections(configuration.preferences) {
+            // This WebKit has no such preference: take the constructors away in every frame.
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: Self.noPeerConnectionsSource, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        }
         configuration.userContentController.addUserScript(WKUserScript(
             source: Self.scriptSource(pluginID: pluginID), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: Self.handlerName)
@@ -60,6 +72,24 @@ final class PluginPageHost: NSObject {
         webView.uiDelegate = self
         webView.load(URLRequest(url: PluginPageServer.rootURL(pluginID: pluginID)))
     }
+
+    /// Switches WebRTC off with WebKit's "peerConnectionEnabled" preference, set by key like
+    /// `developerExtrasEnabled` (it has no Swift property). Setting a key WebKit doesn't know raises
+    /// an Objective-C exception, which Swift can't catch and which would end the app, so the setter
+    /// that key-value coding would call is looked for first. Returns false when it isn't there.
+    static func switchOffPeerConnections(_ preferences: WKPreferences) -> Bool {
+        guard preferences.responds(to: NSSelectorFromString("_setPeerConnectionEnabled:")) else { return false }
+        preferences.setValue(false, forKey: "peerConnectionEnabled")
+        return true
+    }
+
+    /// The fallback when the preference is missing: no WebRTC constructors in any frame.
+    static let noPeerConnectionsSource = """
+        for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel"]) {
+          try { delete window[name]; } catch (error) {}
+          try { Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false }); } catch (error) {}
+        }
+        """
 
     /// Compiles with the Bun and plugin host inside the app bundle (as `AppState` sets up the
     /// artifact servers' `ArtifactScriptService`).
@@ -91,6 +121,11 @@ final class PluginPageHost: NSObject {
     }
 
     /// Stops the page for good: no more messages either way. The web view can't be used again.
+    ///
+    /// The page's JavaScript may keep running until the web view is released (a timer, a promise),
+    /// and the policy doesn't cover leaving the page, so navigation stays refused: the delegates
+    /// become `ClosedPageGuard`, which refuses everything and, unlike this host, lives as long as
+    /// the app (WebKit holds delegates weakly).
     func tearDown() {
         tornDown = true
         loaded = false
@@ -98,8 +133,8 @@ final class PluginPageHost: NSObject {
         // The content controller holds its message handlers strongly; let the bridge go.
         webView.configuration.userContentController.removeAllScriptMessageHandlers()
         webView.configuration.userContentController.removeAllUserScripts()
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
+        webView.navigationDelegate = ClosedPageGuard.shared
+        webView.uiDelegate = ClosedPageGuard.shared
         webView.removeFromSuperview()
     }
 
@@ -145,8 +180,8 @@ final class PluginPageHost: NSObject {
 extension PluginPageHost: WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         // Frames are refused by the policy (frame-src 'none') and here too: only the main frame,
-        // only our origin, never a download.
-        guard !navigationAction.shouldPerformDownload, navigationAction.targetFrame?.isMainFrame == true,
+        // only our origin, never a download, and nothing at all once torn down.
+        guard !tornDown, !navigationAction.shouldPerformDownload, navigationAction.targetFrame?.isMainFrame == true,
               PluginPageServer.isOwn(navigationAction.request.url, pluginID: pluginID) else { return .cancel }
         return .allow
     }
@@ -186,6 +221,40 @@ extension PluginPageHost: WKUIDelegate {
     }
 
     // alert() / confirm() / prompt() are answered at once, as if cancelled, and never shown.
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo) async {}
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo) async -> Bool { false }
+
+    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
+                 initiatedByFrame frame: WKFrameInfo) async -> String? { nil }
+
+    func webView(_ webView: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
+                 initiatedBy frame: WKFrameInfo, type: WKMediaCaptureType) async -> WKPermissionDecision {
+        .deny
+    }
+}
+
+/// The delegates of a torn-down page: every navigation, window, download, dialog and camera or
+/// microphone request is refused. One for the app, so it outlives every host.
+@MainActor
+private final class ClosedPageGuard: NSObject, WKNavigationDelegate, WKUIDelegate {
+    static let shared = ClosedPageGuard()
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+        .cancel
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        .cancel
+    }
+
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        nil
+    }
+
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
                  initiatedByFrame frame: WKFrameInfo) async {}
 
