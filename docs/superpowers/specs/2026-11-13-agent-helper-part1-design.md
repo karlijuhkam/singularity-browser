@@ -1,4 +1,4 @@
-# Claude helper, part 1: a plugin's own panel and tab, a running program, a plain chat: design
+# Agent (the built-in helper), part 1: a plugin's own panel and tab, a running program, a plain chat: design
 
 Date: 2026-11-13. Status: written for the owner's approval; nothing is built yet.
 
@@ -29,11 +29,14 @@ order, each with its own design:
 3. **Part 3: on top of the work.** It sees the terminals of every Space the owner lets it see, and
    can type into one only after the owner approved the exact text, every time (owner decision).
 
+**Name (owner decision):** the plugin is called **Agent** ("Lets use Agent as name and maybe bring
+in other providers too later"). Its id and folder are `agent`. Part 1 has one provider, Claude.
+
 Everything below marked **(my call)** was decided by the writer, not said by the owner.
 
 ## What success looks like (part 1)
 
-1. A fresh copy of Singularity lists "Claude" among its bundled plugins. The owner adds it; the
+1. A fresh copy of Singularity lists "Agent" among its bundled plugins. The owner adds it; the
    approval sheet says in plain words that it shows its own panel and tab and that it keeps
    `/Users/…/claude` running, a program that uses the internet and acts as the user.
 2. The owner presses the panel's shortcut. A panel opens at the right of the window, beside the page.
@@ -51,7 +54,7 @@ Everything below marked **(my call)** was decided by the writer, not said by the
 ## Goals, non-goals, anti-goals
 
 **Goals:** the two new plugin abilities (own page in a panel or tab; one running program), built
-only as far as the Claude plugin needs them; the Claude plugin with a plain streaming chat.
+only as far as the Agent plugin needs them; the Agent plugin with a plain streaming chat.
 
 **Non-goals for part 1** (not built, not scaffolded):
 - Any tool for the helper: reading pages, acting, terminals (parts 2 and 3). It is started with no
@@ -61,6 +64,7 @@ only as far as the Claude plugin needs them; the Claude plugin with a plain stre
 - A list of past conversations, several conversations at once, attachments, voice.
 - The panel in little windows. A second plugin with a panel (the frame allows it, nothing is built
   for choosing between two beyond a plain menu).
+- A second provider (Codex or others); see section 4 for what part 1 does so that one fits later.
 - Browser abilities or network destinations for plugins in general (`permissions.network` stays
   empty). An API key field in Singularity.
 - Starting, watching or assigning terminal agents.
@@ -83,7 +87,12 @@ only as far as the Claude plugin needs them; the Claude plugin with a plain stre
   This moved three times in 2026 (ban in February, a separate-credit plan in May, its pause in
   June). If it moves again the chat must fail with a clear message, not silently bill something.
 - The SDK overview's branding rule: "Claude Code" may not appear in a product's name or interface.
-  The plugin is named "Claude" in this document; **the name is the owner's to settle.**
+  The plugin is named "Agent"; where the provider is named, it is "Claude". The pinned path on the
+  approval sheet is the one place the program's own name shows.
+- "Agent" is also the app's word for outside agents (Settings → Agents, the agent inbox, "Let
+  agents use this Space"). In the interface the plugin is always the proper name "Agent", with a
+  capital and no article; the builder checks each new string against the existing ones so the two
+  are not confused.
 - Plugins stay reviewable: plain source, pinned packages, an approval sheet in plain words.
 
 ## Approaches
@@ -128,7 +137,7 @@ frame** ("easier to support generative UI in chat this way"). Recorded here as t
 **Manifest.** A new top-level key **(my call on the shape)**:
 
 ```json
-"panel": { "page": "panel.tsx", "title": "Claude" }
+"panel": { "page": "panel.tsx", "title": "Agent" }
 ```
 
 `page` is a regular file in the folder, like `background`. No new permission key: having `panel` is
@@ -155,7 +164,7 @@ agent tool can list or read it.
 the background pushes with a new `singularity.panel.post(payload)`. Pushes are how text streams in;
 they are dropped when no page is open. Same size limit as today (256 KB a message).
 
-**UI library (my call).** The Claude plugin's page uses Preact, as a pinned plugin package: it loads
+**UI library (my call).** The Agent plugin's page uses Preact, as a pinned plugin package: it loads
 as plain ES module files with no bundling step, which React's packages do not. It is a plugin
 package, not an app dependency; the owner may prefer otherwise.
 
@@ -221,7 +230,7 @@ plugin's log.
 - **The app builds the environment, not the plugin:** the user's real `HOME`, `USER`, the login
   shell's `PATH`, `TMPDIR`, `LANG`, and `CLAUDE_AGENT_SDK_CLIENT_APP=singularity/<version>`. From
   what the plugin passes, only names listed in the manifest's `programEnv` are taken **(my call)**;
-  the Claude plugin lists `CLAUDE_CONFIG_DIR` and the SDK's own three (`CLAUDE_AGENT_SDK_VERSION`,
+  the Agent plugin lists `CLAUDE_CONFIG_DIR` and the SDK's own three (`CLAUDE_AGENT_SDK_VERSION`,
   `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SDK_READS_SESSION_STATE`). The approval sheet lists them.
   Nothing else from the app's own environment is inherited.
 - Arguments are free, as further arguments of `commands` are. See "Known weaknesses".
@@ -235,8 +244,15 @@ plugin's log.
 today. The install must leave out optional packages, or it pulls a 329 MB copy of Claude Code that
 is never used; the builder checks how `PluginPackages` does that with `--frozen-lockfile`.
 
-## 4. The Claude plugin (`Plugins/claude/`, shipped in the app)
+## 4. The Agent plugin (`Plugins/agent/`, shipped in the app)
 
+- **Other providers later (owner's wish; not built in part 1).** `background.ts` keeps everything
+  that knows about Claude in one file behind a small interface the rest of the plugin uses: start
+  or resume a conversation, send a message, stop, and a stream of events (text, done, error, how
+  it is signed in, models). A second provider (for example Codex through its own installed
+  program) is then one more such file plus one more name in `programs`, which asks for approval
+  again. Part 1 ships no provider picker, no second file and no placeholder for one. The page's
+  texts name the provider only where it matters (sign-in help, billing, model).
 - `plugin.json`: `panel`, `background`, `permissions.programs: ["claude"]`, the package list. No
   page script, no sites, no commands, no network.
 - `background.ts`: one SDK `query` in streaming-input mode, with `tools: []` (no shell, no file
@@ -260,7 +276,7 @@ is never used; the builder checks how `PluginPackages` does that with `--frozen-
 - **Which account (my call).** By default Claude Code's default config folder. The plugin's own
   page has a small settings view with one field, "Claude config folder", for people who keep
   several accounts apart with `CLAUDE_CONFIG_DIR`; empty means the default. The value is kept in
-  `singularity.storage` and passed through `programEnv`. Nothing Claude-specific is added to the
+  `singularity.storage` and passed through `programEnv`. Nothing provider-specific is added to the
   app's Settings window, and there is no general plugin-settings mechanism in part 1.
 - **Subscription or API key (my call).** The chat uses whatever the installed Claude Code is signed
   in with: a Claude plan, or a Console account billed by API. A user who wants API billing signs
@@ -301,7 +317,7 @@ is never used; the builder checks how `PluginPackages` does that with `--frozen-
 
 ## 6. Documents
 
-- `CLAUDE.md`: scope-change lines for the helper (parts 1 to 3, with the owner's decisions:
+- `CLAUDE.md`: scope-change lines for Agent (parts 1 to 3, with the owner's decisions:
   approach B, TSX in a native frame, type-into-terminals only with approval, lifting "no agent
   orchestration" for the helper only in part 3), `TabKind.plugin`, the new plugin abilities, the
   session-transcript exception.
