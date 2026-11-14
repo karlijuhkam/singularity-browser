@@ -16,13 +16,13 @@ public protocol AppKeyStore: Sendable {
 
 /// The store's key for one value. The app's path can contain "/", the name can't, and a Space id
 /// has neither, so the three parts can't be confused ("firma" never matches "firma2").
-enum AppKeyAddress {
-    static func account(space: UUID, app: String, name: String) -> String {
+public enum AppKeyAddress {
+    public static func account(space: UUID, app: String, name: String) -> String {
         prefix(space: space, app: app) + name
     }
 
     /// What every account of one app (or one Space) starts with.
-    static func prefix(space: UUID, app: String?) -> String {
+    public static func prefix(space: UUID, app: String?) -> String {
         guard let app else { return space.uuidString.lowercased() + "\n" }
         return space.uuidString.lowercased() + "\n" + app + "\n"
     }

@@ -61,6 +61,9 @@ final class AppState {
     let favicons: FaviconStore
     /// Approval policy checks for agent actions; the questions wait as inbox entries.
     let approvals = AgentApprovals()
+    /// Apps: artifact folders with a Worker (what the owner allowed each, their keys, their
+    /// Workers' outside requests). See `AppCenter`.
+    let apps: AppCenter
     /// Downloads of this run, for the sidebar's Downloads list.
     let downloads = DownloadCenter()
     /// The agent inbox: what agents in terminal tabs are waiting for.
@@ -131,8 +134,12 @@ final class AppState {
     /// (the Trash); tests remove it inside their temporary folder instead (`TestAppState`).
     /// `updateAvailability`: whether this copy updates itself; Sparkle starts only for `.available`.
     /// `pluginManager`: the app makes its own; tests pass one that runs the repository's Bun.
+    /// `appRuntime`: the Bun and host folder that run apps' Workers; the app uses its bundle's,
+    /// tests pass the repository's. `appKeyStore`: where apps' key values live; the app uses the
+    /// keychain (a file in a copy with its own data folder), tests pass one in memory.
     init(paths: Paths, discardFolder: @escaping SpaceStore.DiscardFolder = SpaceStore.moveToTrash,
-         updateAvailability: UpdateAvailability = AppUpdates.currentAvailability(), pluginManager: PluginManager? = nil) {
+         updateAvailability: UpdateAvailability = AppUpdates.currentAvailability(), pluginManager: PluginManager? = nil,
+         appRuntime: (runtime: URL, hostFolder: URL)? = nil, appKeyStore: AppKeyStore? = nil) {
         self.paths = paths
         self.store = SpaceStore(paths: paths, discardFolder: discardFolder)
         self.web = WebViewRegistry()
@@ -150,6 +157,17 @@ final class AppState {
         artifacts.scripts = ArtifactScriptService(
             runtime: bundle.appending(path: "Contents/Helpers/bun"),
             hostFolder: bundle.appending(path: "Contents/Resources/plugin-host", directoryHint: .isDirectory))
+
+        // Apps. Key values go to the keychain, except in a copy started with its own data folder
+        // (SINGULARITY_HOME: a test or development copy), which must never touch the keychain.
+        let ownDataFolder = ProcessInfo.processInfo.environment["SINGULARITY_HOME"] != nil
+        let keyStore: AppKeyStore = appKeyStore
+            ?? (ownDataFolder ? FileAppKeyStore(file: paths.root.appending(path: "app-keys.json")) : KeychainAppKeyStore())
+        self.apps = AppCenter(
+            keyStore: keyStore,
+            runtime: appRuntime?.runtime ?? bundle.appending(path: "Contents/Helpers/bun"),
+            hostFolder: appRuntime?.hostFolder ?? bundle.appending(path: "Contents/Resources/plugin-host", directoryHint: .isDirectory),
+            discardFolder: discardFolder)
 
         let loadedSettings = store.loadSettings()
         settings = loadedSettings
@@ -208,6 +226,8 @@ final class AppState {
         }
         terminals.state = self
         artifacts.state = self
+        apps.state = self
+        artifacts.appEnvironment = { [weak self] space in self?.apps.environment(for: space) }
         inbox.state = self
         inbox.trayIsOnScreen = { [weak self] in self?.sidebarIsOffScreen != true }
         inbox.pluginPageOnScreen = { [weak self] id in self?.pluginPageOnScreen(id) ?? false }
@@ -582,6 +602,7 @@ final class AppState {
         for tab in space.tabs { inbox.tabClosed(tab.id) }
         inbox.spaceDeleted(id) // approvals without a tab (artifact prompts) are denied too
         artifacts.stop(id)
+        apps.spaceWillBeDeleted(id) // its apps' keys leave the keychain
         plugins.spaceRemoved(id)
         knownArtifactPages[id] = nil
         activeTerminalBySpace[id] = nil
@@ -1553,6 +1574,11 @@ final class AppState {
         guard let tab = candidates.first(where: { terminals.existingSession($0.id) == nil }) else { return nil }
         activeTerminalBySpace[space.id] = tab.id
         return (tab, terminals.session(for: tab, in: space))
+    }
+
+    /// Changes what the owner allowed the Space's apps (`Space.apps`); only `AppCenter` calls it.
+    func changeApps(_ id: UUID, _ change: (inout Space) -> Void) {
+        mutateSpace(id, change)
     }
 
     private func mutateSpace(_ id: UUID, _ change: (inout Space) -> Void) {

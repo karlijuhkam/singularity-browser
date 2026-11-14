@@ -17,9 +17,19 @@ enum TestAppState {
 
     /// `plugins`: a manager of the test's own (with the repository's Bun), instead of the app
     /// bundle's, which a test run doesn't have.
-    static func make(root: URL, plugins: PluginManager? = nil) -> AppState {
-        AppState(paths: Paths(root: root), discardFolder: removeInside(root), pluginManager: plugins)
+    /// Apps' Workers run with the repository's Bun and host scripts (a test run has no app
+    /// bundle), and their keys live in `keys` (memory), never in the keychain.
+    static func make(root: URL, plugins: PluginManager? = nil, keys: AppKeyStore = MemoryAppKeyStore()) -> AppState {
+        AppState(paths: Paths(root: root), discardFolder: removeInside(root), pluginManager: plugins,
+                 appRuntime: (repositoryBun, repositoryHostFolder), appKeyStore: keys)
     }
+
+    /// The repository's root, found from this file's location.
+    nonisolated static let repositoryRoot = URL(filePath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    nonisolated static let repositoryBun = repositoryRoot.appending(path: "Vendor/bun/bun")
+    nonisolated static let repositoryHostFolder = repositoryRoot.appending(path: "Resources/plugin-host", directoryHint: .isDirectory)
+    nonisolated static var hasBun: Bool { FileManager.default.isExecutableFile(atPath: repositoryBun.path) }
 
     /// Stops what `AppState.init` started (agent socket, plugin watcher, artifact servers). Pending
     /// saves are written now and no server starts afterwards (`stopAll`), so nothing recreates the

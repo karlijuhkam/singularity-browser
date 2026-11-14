@@ -18,11 +18,15 @@ final class ArtifactHost {
     @ObservationIgnored private var watcher: ArtifactWatcher?
     @ObservationIgnored private let onChange: @MainActor ([ArtifactWatcher.Change]) -> Void
     @ObservationIgnored private let scripts: ArtifactScriptService?
+    /// The Workers of this Space's apps (see `AppWorkers`). Nil: the Space serves files only.
+    @ObservationIgnored let apps: AppWorkers?
 
-    init(spaceID: UUID, root: URL, scripts: ArtifactScriptService?, onChange: @escaping @MainActor ([ArtifactWatcher.Change]) -> Void) {
+    init(spaceID: UUID, root: URL, scripts: ArtifactScriptService?, apps: AppWorkers.Environment? = nil,
+         onChange: @escaping @MainActor ([ArtifactWatcher.Change]) -> Void) {
         self.spaceID = spaceID
         self.root = root
         self.scripts = scripts
+        self.apps = apps.map { AppWorkers(root: root, environment: $0) }
         self.onChange = onChange
     }
 
@@ -57,7 +61,7 @@ final class ArtifactHost {
     /// Creates the folder, starts the server and starts watching the folder.
     func start() async throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let server = try ArtifactServer(root: root, token: token, scripts: scripts)
+        let server = try ArtifactServer(root: root, token: token, scripts: scripts, apps: apps)
         let port = try await server.start()
         self.server = server
 
@@ -67,10 +71,17 @@ final class ArtifactHost {
         let watcher = ArtifactWatcher(root: root) { [weak self] changes in
             guard let self else { return }
             self.pages = ArtifactFiles.listPages(in: self.root)
+            // An app whose files changed runs old code: its Worker stops (see `filesChanged`).
+            if let apps = self.apps {
+                let paths = changes.map(\.relativePath)
+                Task { await apps.filesChanged(paths) }
+            }
             self.onChange(changes)
         }
         watcher.start()
         self.watcher = watcher
+        // Apps copied in while Singularity was not running get their database now.
+        if let apps { Task { await apps.prepareNewApps() } }
     }
 
     func stop() {
@@ -81,6 +92,9 @@ final class ArtifactHost {
         }
         server = nil
         port = nil
+        // Kill at once (no waiting for the actor: the app may be quitting).
+        apps?.terminateAllNow()
+        if let apps { Task { await apps.stopAll() } }
     }
 }
 
@@ -91,6 +105,8 @@ final class ArtifactHosts {
     @ObservationIgnored weak var state: AppState?
     /// Compiles TypeScript/TSX artifacts (set by AppState; shared by all Spaces).
     @ObservationIgnored var scripts: ArtifactScriptService?
+    /// What a Space's app Workers need (set by AppState). Nil: no apps, files only.
+    @ObservationIgnored var appEnvironment: (@MainActor (Space) -> AppWorkers.Environment?)?
     private var hosts: [UUID: ArtifactHost] = [:]
     @ObservationIgnored private var starting: [UUID: Task<ArtifactHost?, Never>] = [:]
     /// Set by `stopAll`: no server starts after that.
@@ -109,11 +125,12 @@ final class ArtifactHosts {
 
         let spaceID = space.id
         let scripts = scripts
+        let apps = appEnvironment?(space)
         let task = Task { [weak self] () -> ArtifactHost? in
             // `stop` cancels a start that is still pending (the Space was deleted, or its folder
             // renamed): don't create the old folder, and don't keep a server for it.
             guard !Task.isCancelled else { return nil }
-            let host = ArtifactHost(spaceID: spaceID, root: root, scripts: scripts) { [weak self] changes in
+            let host = ArtifactHost(spaceID: spaceID, root: root, scripts: scripts, apps: apps) { [weak self] changes in
                 self?.state?.artifactsDidChange(spaceID: spaceID, changes: changes)
             }
             do {
