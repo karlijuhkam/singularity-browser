@@ -11,6 +11,16 @@ public enum ArtifactApps {
     /// with `wrangler` as it is).
     public static let manifestNames = ["wrangler.jsonc", "wrangler.json"]
 
+    /// The guide for agents that write apps, shipped in the app bundle with a starter template
+    /// next to it (`Contents/Resources/app-guide/{AUTHORING.md, template/}`; the build scripts
+    /// copy them from `docs/apps/` and `Apps/template/`). Nil in a copy that has none (a bare
+    /// debug binary).
+    public static func guideFile(resources: URL?) -> URL? {
+        guard let file = resources?.appending(path: "app-guide/AUTHORING.md"),
+              FileManager.default.fileExists(atPath: file.path) else { return nil }
+        return file
+    }
+
     // MARK: - Which folder
 
     /// The app a request path belongs to, and the path as the Worker sees it:

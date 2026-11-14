@@ -238,6 +238,10 @@ final class AgentToolbox {
 
     // MARK: - Tools
 
+    /// The folder whose `app-guide/` holds the guide for apps: the app bundle's resources. A
+    /// variable so a test can point it at a folder of its own (a test run has no app bundle).
+    nonisolated(unsafe) static var appGuideResources: URL? = Bundle.main.resourceURL
+
     private func listSpaces(_ caller: AgentCaller, program: pid_t?) throws -> String {
         guard let state else { throw ToolError("Browser is shutting down.") }
         let spaces = spaces(for: caller, program: program).map { space -> [String: Any] in
@@ -248,14 +252,22 @@ final class AgentToolbox {
                 "example_tool": AgentToolName.make(slug: space.slug, tool: "list_tabs")]
             // Where an agent writes an artifact: a new HTML page here gets a tab by itself. Only for
             // outside agents: a plugin's connection has no file tools, and isn't told paths on this Mac.
-            if caller == .outside { entry["artifacts_folder"] = state.paths.artifactsDirectory(space.slug).path }
+            if caller == .outside {
+                entry["artifacts_folder"] = state.paths.artifactsDirectory(space.slug).path
+                // Where the Space's apps keep their data: <app>/<BINDING>.sqlite and worker.log.
+                entry["app_data_folder"] = state.paths.appDataDirectory(space.slug).path
+            }
             return entry
         }
         if spaces.isEmpty {
             if case .plugin(_, let title) = caller { return AgentCaller.noSpaces(title: title) }
             return "No Spaces are open to agents. The user can allow agents per Space in the Space's settings (right-click the Space → Edit Space…)."
         }
-        let note = "policy: readOnly = you may only look; ask = the user confirms each action (open, navigate, close, click, type) in a dialog; allowAll = no confirmation."
+        var note = "policy: readOnly = you may only look; ask = the user confirms each action (open, navigate, close, click, type) in a dialog; allowAll = no confirmation."
+        // Where an agent learns to build an app (an artifact with a Worker and a database).
+        if caller == .outside, let guide = ArtifactApps.guideFile(resources: Self.appGuideResources) {
+            note += "\napp_guide: \(guide.path) (read it before building an app; a starter is in the template folder next to it)"
+        }
         return try Self.json(spaces) + "\n" + note
     }
 

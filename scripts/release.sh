@@ -457,6 +457,11 @@ for plugin in "$ROOT"/Plugins/*/; do
 done
 cp "$ROOT/docs/plugins/AUTHORING.md" "$APP/Contents/Resources/plugin-guide/"
 rsync -a "${RSYNC_SKIP[@]}" "$ROOT/Plugins/template/" "$APP/Contents/Resources/plugin-guide/template/"
+# The guide for agents that write apps (artifact folders with a Worker) and its starter template;
+# list_spaces tells agents where it is.
+mkdir -p "$APP/Contents/Resources/app-guide"
+cp "$ROOT/docs/apps/AUTHORING.md" "$APP/Contents/Resources/app-guide/"
+rsync -a "${RSYNC_SKIP[@]}" "$ROOT/Apps/template/" "$APP/Contents/Resources/app-guide/template/"
 cp "$ROOT/Resources/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/"   # licences of bundled software
 for bundle in "$BIN_DIR"/*.bundle; do
   [[ -e "$bundle" ]] && cp -R "$bundle" "$APP/Contents/Resources/"

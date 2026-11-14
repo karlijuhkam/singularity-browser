@@ -251,6 +251,10 @@ final class MCPHub {
     list_spaces); it opens as a tab by itself and reloads when its files change. Such a page is served \
     from 127.0.0.1, may load images and call public APIs with fetch(), and gets window.singularity \
     (open(url): a new tab; prompt(text): types into the Space's terminal after the user agrees). \
+    An artifact folder with a wrangler.jsonc is an "app": requests it has no file for go to its \
+    Cloudflare-style Worker (worker.ts), which runs on this Mac with a D1-style SQLite database \
+    (env.DB) kept in the Space's app_data_folder. Before building one, read the guide list_spaces \
+    names as app_guide. \
     If you run inside a Singularity terminal tab, the environment variable SINGULARITY_SPACE \
     holds the slug of the Space that terminal belongs to.
     """
