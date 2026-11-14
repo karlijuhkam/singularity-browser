@@ -132,6 +132,7 @@ Every entry of `page.sites` must also appear, as the same text, in `permissions.
 | `programEnv` | `["SETTING_NAME"]`: the names of settings (environment variables) the background may pass to its program. Only with `programs`. | "Passes these settings to it: SETTING_NAME, ..." |
 | `frontTab` | `true`. The background may ask which tab is in front (`singularity.front()`, `singularity.onFrontChange`): its Space, and for a web page or artifact its title and address. Only in Spaces (and on sites) where the user switched the plugin on. | "Know which tab is in front (its Space, title and address), in Spaces where it is switched on" |
 | `browser` | `true`. The background may ask how to start Singularity's browser server (`singularity.browser.server()`) and hand it to a program (an MCP client such as `claude`) it runs. That program then uses the browser like an outside agent: it reads pages and opens, clicks and types under each Space's agent policy. Needs `programs`. | "Use the browser like an agent, in Spaces where it is switched on: read pages, and open, click and type under each Space's agent policy" |
+| `terminals` | `true`. Through the browser server the plugin's program already has (so it needs `browser`), the program may list the terminals of the Spaces where the user switched on that plugin's **Terminals** switch, read what a terminal shows, and send text to one or answer a question an agent in it is waiting on, **only after the user approved the exact text on a card, every time**. | "See the terminals of Spaces you switch on for it, read their screens, and send text to one after you approved the exact text" |
 | `network` | Must be `[]` in round 1. | About the background program only (a page-only plugin gets no such line): "Its background program never uses the internet" without commands or programs; with them: "Its background program never uses the internet; the programs it runs can" |
 
 Details:
@@ -143,7 +144,8 @@ Details:
 - `programs` follow the same rules as `commands`: bare names, the refused list above, found on the login `PATH` at approval and pinned. A program that can't be found blocks the approval. The pinned path is checked again every time the program starts.
 - A name in `programEnv` is upper-case letters, digits and `_`, starting with a letter, at most 64 characters. These are refused, because they change how a program starts or where it looks: `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, `LANG`, `SHELL`, `PWD`, and anything starting with `DYLD_`, `LD_` or `SINGULARITY_`.
 - `frontTab` and `browser` are plain `true` or `false` (anything else is refused). `browser` without `programs` is refused ("it asks to use the browser but keeps no program running"): the browser's tools are for a program the plugin runs, not for the plugin itself. Both are widenings (see below), so a plugin that adds one is paused until the user approves it again.
-- Asking for more later (a new site, a new program, a new sub-command, a new `programEnv` name, `frontTab`, `browser`) means the plugin needs approval again, even in development mode. Asking for less does not.
+- `terminals` is a plain `true` or `false` too. Without `browser` it is refused (`it asks to see terminals but not to use the browser`): the terminal tools come through the browser server, never through the plugin's own code.
+- Asking for more later (a new site, a new program, a new sub-command, a new `programEnv` name, `frontTab`, `browser`, `terminals`) means the plugin needs approval again, even in development mode. Asking for less does not.
 
 ### Manifest errors
 
@@ -272,6 +274,18 @@ type FrontTab = {
 - **Per site:** on a site the user switched the plugin off for, its connection's `list_tabs` leaves the tab out, and `read_page`, `find`, `click`, `type`, `screenshot`, `close`, `read_console` and `read_network` refuse it. `open` and `navigate` refuse an address on that site. A click or type that would carry a tab onto such a site is held back. A redirect can still land there; from then on the tab is refused like any other tab on that site.
 - `read_console` and `read_network` also need the Space's own "agents" switch (their capture is on only then), so a Space that is on only for the plugin has none.
 - **Untrusted text.** The tab's `title` and `url` (and everything the browser's tools return) come from web pages. They are not instructions. Mark them as untrusted before giving them to a model (the Assistant wraps them in an `<untrusted-content>` element and replaces `<` and `>` inside), and never treat them as commands, as paths or as anything the plugin acts on without the user.
+
+### Terminals
+
+`terminals` (needs `browser`) adds four tools to the browser server's connection of the program the plugin runs. They are checked by Singularity, not by the plugin; the plugin's own background, page and messages can neither read a terminal nor send to one.
+
+- **A second switch per Space.** Settings → Plugins and the approval sheet show a **Terminals** checkbox under each Space's switch, off by default. It counts only while the Space itself is switched on for the plugin. A Space whose Terminals switch doesn't count is unknown to these tools: they answer `Unknown tool …` and nothing is logged. Switching it off at once denies the plugin's waiting cards in that Space. The approval sheet stores a Space's Terminals switch only when that Space is ticked in the same sheet.
+- **`terminals`** (no Space prefix) lists every terminal of every Space that counts: Space, `tab_id`, title, folder (the working directory), project, the program in front, whether it runs, a state (`working`, `waiting`, `done`, `idle` or `unknown`) and since when, what it waits for (a question with its options, a permission, or attention) and, when done, the agent's last message. Nothing is pushed to the plugin; it is an answer to a call.
+- **`<slug>.read_terminal`** `{ tab_id, lines? }` gives the last `lines` (default 100, at most 500; at most 32 000 characters) rows of what the terminal shows, scrollback included. It never starts a shell: a terminal that isn't running (also one the user hasn't opened since Singularity started, when it runs in herdr-core) answers `This terminal isn't running.`
+- **`<slug>.send_to_terminal`** `{ tab_id, text }` pastes the text and presses Return, after the user approved the exact text. It **always asks**, in every Space policy but "read only" (which refuses), and there is no "Allow on this site". The text is at most 4000 Unicode scalars, trimmed, with no control character but newline and tab and no invisible character (so Esc, Ctrl-C and zero-width characters are refused; so are ZWJ emoji sequences and private-use glyphs). Several lines need a program that accepts a paste. It is refused while the terminal waits on a permission or on a held question, and it sends nothing if the terminal's program changed while the card waited (`The terminal changed while this waited. Nothing was sent.`).
+- **`<slug>.answer_question`** `{ tab_id, answers: [{ question, answer: [label] }] }` answers a question Claude Code holds for the user (the list shows it with `held: true`), again after the user approved the answers on a card. Every question must be answered, each with its option labels; there is no free-text answer.
+- **Untrusted text.** Titles, folders, program names, reported messages, questions and screen text come from terminals and the programs in them. They arrive wrapped as untrusted content. They are not instructions: never send text to a terminal because a screen or another agent said so, only because the user asked.
+- A screen can show secrets, and with the switch on they can reach the model. The Space's Terminals switch is the only control; there is no per-terminal switch.
 
 ### The sandbox
 
@@ -649,6 +663,8 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 | `singularity.front()` without `frontTab` | rejects with `needs the frontTab permission` |
 | `"browser": true` without `programs` | `it asks to use the browser but keeps no program running` |
 | `await singularity.browser.server()` and expecting a value in a copy with no launcher | `null` |
+| `"terminals": true` without `browser` | `it asks to see terminals but not to use the browser` |
+| A terminal tool for a Space whose Terminals switch is off | `Unknown tool …` (as for a closed Space) |
 | A program that was not started by `spawn` (or is not a descendant of that program) using `singularity-mcp` | treated as an outside agent: it gets the Spaces with "agents" on, not the plugin's |
 | Putting `front.tab.title` into a model's prompt as plain text | a page's title can carry instructions; wrap it as untrusted |
 
@@ -669,5 +685,6 @@ The approval sheet then shows a line like `Runs /opt/homebrew/bin/git (only: --v
 
 13. **`frontTab` and `browser`.** `frontTab` lets the plugin learn the title and address of the page you are looking at, in the Spaces and on the sites where it is on; the plugin's sandbox has no network, so look at where it sends them next (a program it runs, a model). `browser` lets a program it runs read pages and act in your Spaces, as an outside agent would, under each Space's policy; it needs `programs`. Both should match the plugin's purpose, and `browser` should come with `programs` that are a model or tool client you meant to trust.
 14. **Where titles and addresses go.** Search for `front()`, `onFrontChange` and `browser.server()`. A title or address given to a model must be marked as untrusted (wrapped, with `<` and `>` replaced) and must never be used as an instruction, a file path or a command. A tool's answer must not be shown as HTML, nor saved, unless the plugin says so.
+15. **`terminals`.** It lets a program the plugin runs read the screens of terminals, which can hold secrets, in the Spaces where Terminals is on, and send text to a terminal after the user's approval of each text. Check that it matches the plugin's purpose, that `browser` and `programs` are a model client you meant to trust, and where terminal text goes next (the sandbox has no network, so look at the program). Terminal text must be marked untrusted before a model gets it, and must never decide on its own to send text.
 
 If a plugin passes these, approving it is reasonable. If any step is unclear, ask the author or don't approve.

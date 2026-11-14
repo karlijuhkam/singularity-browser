@@ -243,3 +243,134 @@ the anti-goals is fixed.
 - A screen can hold secrets; with the switch on they can reach Claude on the owner's account. The
   switch is the control; there is no per-terminal switch.
 - The Assistant can read the same screen many times within one answer; each read is logged.
+
+## As built (2026-11-14)
+
+Built on the branch `assistant-3` in seven tasks (plan `docs/superpowers/plans/2026-11-14-assistant-part3.md`).
+Where this section and the design above disagree, this section is what the code does.
+
+### What was not tried
+
+Everything below was checked by unit tests and by app tests with fake terminals only. No test starts a
+shell, and nothing was tried by hand in the running app.
+
+- **The "to prove first" spikes were folded into tests, not run against real programs.** The screen
+  read is tested with a SwiftTerm view that is only fed text (`TerminalHandleTests`). The
+  same-program check is tested with fakes. No real Claude Code or Codex ever ran under it.
+- **The same-program check compares the terminal's foreground process group** (`tcgetpgrp`), not a
+  pid. The design allowed this fallback. It was never tried with a real agent. If an agent runs its
+  tools in a foreground group of their own, a send ends "The terminal changed while this waited.
+  Nothing was sent." (safe, but annoying); if an agent changes its group while a card waits, the
+  same happens. A terminal whose group can't be read counts as not running (at the ask) or as
+  changed (at Allow): nothing to compare, so nothing is sent.
+- **Reading an `hc attach` (herdr-core) view was never tried.** It is the same SwiftTerm view type, so
+  the same calls should work; nothing here ran herdr.
+- **A herdr-core terminal that has not been opened since launch is "not running".** No session is
+  attached for it, so it is listed with `running: false` and `note: "not opened since launch"`, and
+  `read_terminal` and `send_to_terminal` answer "This terminal isn't running." until the owner opens
+  its tab. This part attaches nothing by itself (as designed).
+- **The opt-in `RealAssistantTests` was not run** for 0.3.0, and the update from 0.2.0 was not tried.
+
+### The permission and the switch
+
+- `terminals` is a plugin permission and a widening (`Permissions.terminals`, in `permissionFlags`,
+  asked again like `frontTab`). A manifest with it and without `browser` is refused: "it asks to see
+  terminals but not to use the browser". The sheet's line is "See the terminals of Spaces you switch
+  on for it, read their screens, and send text to one after you approved the exact text".
+- `PluginApproval.terminalSpaces` is as designed (a file without the key reads as empty), and
+  `PluginReach.terminalsAreOpen` is the rule: the Space is on for the plugin **and** its Terminals
+  switch is on **and** the approval has `terminals`.
+- **The approval sheet stores a Space's Terminals switch only when that Space is ticked** (stricter
+  than "existing Spaces"): an approval records what the owner saw, and the sheet shows the box
+  disabled and unticked while its Space is unticked. So re-approving with a Space unticked forgets
+  that Space's Terminals value. `PluginManager.approve` clears `terminalSpaces` for a manifest
+  without `terminals` and does no Space intersection itself.
+- **Settings → Plugins** keeps the stored value across a Space off and on again, shows the checkbox
+  disabled and unticked while the Space is off (or while the approval does not have `terminals`
+  yet), and writes at once through `setTerminalsEnabled`.
+- A Terminals switch going off (`setTerminalsEnabled(false)`), or its Space going off while it was
+  on, calls `onTerminalsSwitchedOff`, which denies that plugin's waiting terminal cards in that Space
+  (`InboxCenter.denyTerminalApprovals`). The plugin's connection is told through
+  `toolsChanged(pluginsOnly: true)`. Switching it back on does not call `frontDidChange()`: what is
+  in front doesn't depend on it.
+
+### The tools
+
+- **Outside callers and closed Spaces.** An outside agent calling `terminals`, `read_terminal`,
+  `send_to_terminal` or `answer_question` gets the exact "Unknown tool …" text before anything else
+  (no log line, no slug leaked). So does a plugin's connection for a Space where `terminalsAreOpen`
+  is false, and for the `terminals` tool when the plugin isn't approved with `terminals`. A card
+  that was denied or timed out while its Space or Terminals switch went off meanwhile also ends
+  "Unknown tool" (logged `denied`), not "The user declined this action."
+- **`terminals`.** `folder` is the tab's working directory (the sidebar folder is not given).
+  `program` is listed only while the terminal runs. `since` is seconds since the state last changed.
+  `waiting_for` is an object with `reason` (`question`, `permission`, `attention`, `error` or `auth`)
+  and, by reason, the fields of the design; a held question or permission carries `held: true`, a
+  held permission its `tool` and `input` (cut at 1000). A tab whose inbox holds a question or
+  permission is reported `waiting` whatever the board says. When the state is `done`,
+  `last_message` is the board's message, else the done entry's. With no Space counting, the answer is
+  the design's sentence. It is logged once per listed Space as `terminals` with the count.
+- **`read_terminal`** takes screen rows: a soft-wrapped long line counts as several rows. Trailing
+  blank (or whitespace-only) rows are dropped before the last `lines` are taken, so a mostly empty
+  screen gives a short answer. On a full-screen program's alternate screen it is that screen (no
+  scrollback); on the normal screen it reaches into the scrollback. The switches are checked again
+  just before the text goes out. The log gets "N lines". `lines` that is not an integer answers
+  `Missing integer argument "lines".`
+- A tab id that is missing, in another Space or not a terminal answers "Tab <id> is not a terminal."
+- **`send_to_terminal`** refusals before the card, in this order: not running (or foreground group
+  unreadable), a held question ("Use answer_question"), a permission waiting, then
+  `TerminalSendRules`. After Allow, with no `await` between the last check and the paste, the call
+  checks again: switches, cancellation, the same session still running with the same foreground
+  group, no held question, no waiting permission, and the text still passing the rules (bracketed
+  paste may have been switched off meanwhile). Anything else ends "The terminal changed while this
+  waited. Nothing was sent." (log value `changed`). The success answer is `Sent.` The card's button
+  is Go to terminal.
+- **Text rules (`TerminalSendRules`).** The limit of 4000 counts Unicode scalars, not characters. The
+  text is trimmed first and the trimmed text is what the card shows and what is sent. Refused:
+  control characters except newline and tab, and every format, line or paragraph separator,
+  unassigned, private-use or surrogate scalar, plus U+034F, U+115F, U+1160, U+3164, U+FFA0 and U+2800
+  (they draw nothing). **Over-refusal to know about:** a ZWJ emoji sequence (U+200D is a format
+  character) and any private-use glyph (icon fonts) are refused; plain emoji, accented letters,
+  CJK, U+FE0F and an inner no-break space pass. U+2028, U+2029 and U+0085 at the edges are trimmed,
+  not refused. A newline in text needs bracketed paste ("This terminal takes one line at a time.").
+- **`answer_question`** answers the entry whose questions the card showed: its id is carried through,
+  so a tab holding several held questions (subagents) answers the oldest one that was checked, and
+  an answer given on the inbox's own card first ends this call "The question was already answered."
+  with nothing sent to the hook. The card has no button (no Go to terminal). **Options only:** an
+  answer is one of the question's option labels (several for multi-select), every question must be
+  answered, and a question with duplicate option labels, or a malformed `answers` argument, ends
+  "Pick from the options. …". Success answer: `Answered.` A held question takes **option labels
+  only**: there is no free-text reply.
+- **The card** (`InboxApproval.isTerminalRequest`, `tabButton`, `heldEntryID`): a terminal request
+  never shows "Allow on <site>" and a remembered site never applies to it (`.approvedSite` is
+  ignored). A request whose held entry has already left the inbox ends cancelled at once. The
+  answer buttons keep part 2's 0.5 s lock and re-check.
+- **Policy.** `AgentActionKind.terminalSend`: ask in `ask` and `allowAll`, refuse in read-only
+  with the usual reason, never remembered.
+
+### The terminal handle and the board
+
+- `TerminalHandle` (app) is what the tools need: `isRunning`, `foregroundProgram`,
+  `foregroundGroupID`, `bracketedPaste`, `lastRows(_:)`, `paste(_:)`. `TerminalSession` is the real
+  one (`paste` is also what an artifact's `prompt()` uses, same steps: bracketed paste, 150 ms,
+  Return). Tests set `AppState.terminalHandleOverride`; the plugin program's pid comes from
+  `PluginManager.programPIDOverride` in tests. The real `paste` begins by waiting for a shell that
+  has printed nothing yet; a terminal with a program in front has printed, so it pastes at once.
+  Once text is pasted, Return is pressed even if the call is cancelled during the 150 ms.
+- `TerminalBoard` (Core, in memory, never saved; `InboxCenter.board`, ignored by observation: status
+  records arrive often) is fed from the same signals as the inbox, before the looked-at rule. A tab
+  that has ever sent a status record has its bells and notifications ignored (the inbox's level 1
+  trust rule); that mark lasts until the tab is removed, even after the program exits.
+  `TerminalSignal`'s program-gone is `idle`.
+
+### The Assistant plugin (0.3.0)
+
+As designed: `terminals` in `plugin.json`, a system prompt that says what the four tools are for and
+that sending always asks, tool lines without any terminal title, nothing pushed to the plugin.
+The chat-only prompt (no `browser`) is unchanged. The plugin's README says what it can do now.
+
+### Known limits kept
+
+All the design's "Known limits" stand. Added by the build: a terminal title, folder or program name
+that is long is cut (200 to 1000 characters, per field); a screen can hold secrets, and the switch is
+the only control.

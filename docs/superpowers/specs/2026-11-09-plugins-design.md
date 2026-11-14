@@ -6,6 +6,13 @@ Note, 2026-11-13: two permissions were added after round 1, `frontTab` (know whi
 `browser` (a program the plugin runs may use the browser through the agent door). They are described in
 `2026-11-13-assistant-part2-design.md` (see its "As built" section) and in `docs/plugins/AUTHORING.md`.
 
+Note, 2026-11-14: a third, `terminals` (needs `browser`; a widening), was added with the Assistant's part 3
+(`2026-11-14-assistant-part3-design.md`, see its "As built" section). What it gives: through the browser
+server's connection, the plugin's program may list the terminals of the Spaces where a second per-Space
+switch (Terminals) is on, read their screens, and send text to one or answer a held question, only after the
+owner approved the exact text on a card, every time. Approval sheet line: "See the terminals of Spaces you
+switch on for it, read their screens, and send text to one after you approved the exact text".
+
 ## Intent: why plugins
 
 Singularity's core stays a calm browser with **no AI in it**. Everything beyond the core comes in as **plugins**: AI chat, password managers, and whatever else the owner wants. Two things make that different from other browsers:
@@ -108,6 +115,7 @@ A sketch of `plugin.json` for 1Password:
   - `pageAdditions` (sites): may add UI inside pages on these sites.
   - `fillForms` (sites): may fill form fields on these sites.
   - `commands` (name → allowed sub-commands): may run these programs on the Mac, through Singularity, and only with arguments starting with one of the listed sub-commands (see below).
+  - *Added later (see the notes at the top):* `programs`, `programEnv`, `frontTab`, `browser` and `terminals` (needs `browser`: terminals of Spaces switched on for the plugin, read, and send or answer after the owner approves each text).
   - `network` (destinations): in round 1 always empty; round 2 adds real destinations.
 - **The approval screen** lists each permission in plain words ("Adds buttons to pages on all sites", "Fills login forms", "Runs the 1Password command-line tool on your Mac", "Never uses the internet") and shows the plugin's name, author and README. You approve once. Switching a plugin on or off per Space, and reviewing its permissions, happens in **Settings → Plugins** (a new tab).
 
