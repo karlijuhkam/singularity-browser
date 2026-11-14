@@ -1,0 +1,7 @@
+{
+  // A fixture app: one D1 database and one plain variable.
+  "name": "basic",
+  "main": "worker.ts",
+  "d1_databases": [{ "binding": "DB", "database_name": "basic", "database_id": "local" }],
+  "vars": { "GREETING": "tere" },
+}

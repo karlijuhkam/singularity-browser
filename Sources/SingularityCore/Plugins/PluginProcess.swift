@@ -550,7 +550,7 @@ public final class PluginProcess: @unchecked Sendable {
 /// (a plugin that stops reading would otherwise freeze the app once the 64 KB pipe is full), and
 /// the bytes still waiting are counted so the queue can be capped.
 /// `@unchecked Sendable`: `handle` is only touched on `queue`, `pending` only while holding `lock`.
-private final class PluginInput: @unchecked Sendable {
+final class PluginInput: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.roosa.singularity.plugin-stdin")
     private let lock = NSLock()
     private var pending = 0
@@ -594,7 +594,7 @@ private final class PluginInput: @unchecked Sendable {
 
 /// A `LineSplitter` that may be fed from a background thread.
 /// `@unchecked Sendable`: the splitter is only touched while holding `lock`.
-private final class LockedSplitter: @unchecked Sendable {
+final class LockedSplitter: @unchecked Sendable {
     private let lock = NSLock()
     private var splitter: LineSplitter
     init(maxLength: Int) { splitter = LineSplitter(maxLength: maxLength) }
