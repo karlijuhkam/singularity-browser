@@ -216,7 +216,8 @@ actor AppWorkers {
         generation[app, default: 0] += 1
         failures[app] = nil
         guard let run = runs.removeValue(forKey: app) else { return }
-        // Requests still inside finish (the host waits for them); then it exits.
+        // The host finishes `ctx.waitUntil` work and exits. A request still inside it fails with
+        // `.exited` and is answered once more by the new process (see `handle`).
         run.process.stop()
         environment.event(app, .stopped(error: nil))
     }

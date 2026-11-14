@@ -1,8 +1,10 @@
 # Apps: artifacts with a local Worker and a database: design
 
-Status: **draft, waiting for the owner's approval.** Nothing is built. Brainstormed with the owner
-on 2026-11-13. What the owner decided is under "Decided by the owner"; everything under "Builder's
-calls" is mine and open to overruling.
+Status: **built on 2026-11-14** (plan `docs/superpowers/plans/2026-11-14-apps.md`). The owner
+approved this design and the keychain exception on 2026-11-14. Brainstormed with the owner on
+2026-11-13. What the owner decided is under "Decided by the owner"; everything under "Builder's
+calls" is mine and open to overruling. **"As built", at the end, says where the code differs and
+overrides the text above it.**
 
 ## Intent: why
 
@@ -290,3 +292,44 @@ macOS keychain are a fourth known exception to 'everything under `~/Singularity/
   (the D1 wrapper, migrations, the fetch bridge against a fake app side); app tests with a real
   server, a real sandboxed Worker from a fixture app in a temp root, outside requests against a
   fixture server on loopback, approvals as inbox entries, and a fake key store.
+
+## As built (2026-11-14)
+
+Built as designed, with these differences and additions. Each is the builder's call.
+
+- **A Worker also starts when the Space's server starts**, for an app that has no data folder
+  yet (copied in while Singularity was not running), not only when the watcher sees it appear.
+- **A page load of a missing `.html` inside an app shows "file is missing"** and does not go to
+  the Worker. Every other path with no file goes to the Worker, as designed.
+- **A request's 30 seconds do not run while the Worker's own outside request is out.** Otherwise a
+  request that waits for the owner's Allow in the inbox (120 s by default) would get the Worker
+  killed for hanging.
+- **A Worker that could not start is not started again until its files change.** The error is
+  answered from memory, so a page that polls doesn't start Bun and write the same log line once
+  per request.
+- **A file change stops the Worker at once**; requests still inside it are answered once more by
+  the new process instead of waiting for the old one to finish.
+- **Saving a key allows its host** for the app at the same time. A key for a host the app may
+  not reach would do nothing.
+- **A redirect never asks.** It is followed only to a host already allowed, at most 5 times, and
+  the request is built again from the Worker's original for each hop, so a key is put in only
+  when the hop's host is the key's.
+- **A host is a name without a port** (`api.example.com`, `localhost`): allowing it allows every
+  port of it.
+- **`list_spaces` gives `app_data_folder` per Space and names the guide once**, in the note under
+  the list (`app_guide: …`), only to outside agents and only when the bundle has the guide.
+- **Settings → Data & privacy** calls the two actions "Forget Hosts and Keys" and "Delete Data";
+  deleted data goes to the Trash.
+- **The answer is re-checked** for "the Space exists and the app's folder is still an app".
+- **Stopping** (`stop`) lets `ctx.waitUntil` work finish; it does not wait for requests.
+- **Limits chosen:** bodies 8 MB each way, a request 30 s, an outside request 30 s, start 20 s,
+  idle stop after 600 s, `worker.log` cut to its last 200 lines when it passes 256 KB.
+- **The D1 wrapper's differences from D1** are listed in the header of
+  `Resources/plugin-host/app-d1.ts` (meta values that can't be real, `exec` one statement per
+  line as the real binding, no `withSession` or `dump`, no D1 size limits).
+
+Where things are: `Sources/SingularityCore/Apps/` (every rule, and the Worker process),
+`Sources/Singularity/Apps/` (the Workers of a Space, `AppCenter`, outside requests, the keychain,
+the panel), `Resources/plugin-host/app-*.ts`, `Apps/template/`, `docs/apps/AUTHORING.md`. Tests:
+`AppRulesTests`, `AppHostKeyTests`, `AppWorkerProcessTests` (Core, the last with the real
+sandbox), `AppsTests` and `AppPanelTests` (app), `Tests/apps/` (Bun).
