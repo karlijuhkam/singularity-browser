@@ -353,6 +353,19 @@ Built as designed, with these differences and additions. Each is the builder's c
   `Resources/plugin-host/app-d1.ts` (meta values that can't be real, `exec` one statement per
   line as the real binding, no `withSession` or `dump`, no D1 size limits).
 
+Checked by hand on 2026-11-14 in a trial copy (a full bundle in `/private/tmp`, its own
+`SINGULARITY_HOME`, started in the background and driven only through its own `singularity-mcp`):
+`list_spaces` named the data folder and the guide; the shipped template copied into the Space's
+artifacts folder got its database before any request and its tab by itself; a row written with
+`sqlite3` showed in the page; Add and Delete in the page (real WebKit requests, with their
+`Origin`) reached the Worker and the database; quitting left no Bun running.
+
+**Left for the owner's hands** (nothing here was seen on screen, and no test may touch the real
+keychain): the panel's look and its buttons in the real window; a key saved into the keychain,
+read back after a restart, and removed with "Forget Hosts and Keys" and by deleting the Space;
+the approval card for a new host in the real inbox (Allow, Deny, the timeout); the apps list in
+Settings → Data & privacy; one app taken to Cloudflare by the guide's steps.
+
 Where things are: `Sources/SingularityCore/Apps/` (every rule, and the Worker process),
 `Sources/Singularity/Apps/` (the Workers of a Space, `AppCenter`, outside requests, the keychain,
 the panel), `Resources/plugin-host/app-*.ts`, `Apps/template/`, `docs/apps/AUTHORING.md`. Tests:
