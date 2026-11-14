@@ -15,6 +15,7 @@ import Foundation
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
 ///        ├─ artifacts/              HTML artifacts, served by the Space's local server
+///        ├─ app-data/<app>/         an app's database files and worker.log (see ArtifactApps.swift)
 ///        ├─ agent-log.jsonl         one line per agent action
 ///        └─ favicons/<host>.png
 ///
@@ -80,6 +81,17 @@ public struct Paths: Sendable {
 
     public func artifactsDirectory(_ slug: String) -> URL {
         spaceDirectory(slug).appending(path: "artifacts", directoryHint: .isDirectory)
+    }
+
+    /// The data of the Space's apps (see ArtifactApps.swift): one folder per app, named by the
+    /// app's path inside `artifacts/`. Outside `artifacts/`, so the server can never serve it.
+    public func appDataDirectory(_ slug: String) -> URL {
+        spaceDirectory(slug).appending(path: "app-data", directoryHint: .isDirectory)
+    }
+
+    /// One app's data folder: its SQLite files and `worker.log`.
+    public func appDataDirectory(_ slug: String, app: String) -> URL {
+        appDataDirectory(slug).appending(path: app, directoryHint: .isDirectory)
     }
 
     public func faviconsDirectory(_ slug: String) -> URL {

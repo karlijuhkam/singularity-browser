@@ -38,6 +38,10 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     /// One emoji shown in the Space's circle in the rail instead of the first letter of its name
     /// (Edit Space). Nil = the letter. Only for show: the slug and tool names don't depend on it.
     public var icon: String?
+    /// What the owner allowed each app of this Space (hosts it may reach, the names of its keys),
+    /// keyed by the app's path inside `artifacts/` ("firma"). Apps with nothing allowed are not
+    /// listed. See ArtifactApps.swift.
+    public var apps: [String: AppRecord] = [:]
 
     public init(
         id: UUID = UUID(),
@@ -96,6 +100,9 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
         lastProjectID = try container.decodeIfPresent(UUID.self, forKey: .lastProjectID)
         // Kept to one emoji whatever the file says; anything else reads as "no icon".
         icon = (try? container.decodeIfPresent(String.self, forKey: .icon)).flatMap { $0 }.flatMap(Emoji.single)
+        // An unreadable value reads as "nothing allowed": the safe side.
+        apps = ((try? container.decodeIfPresent([String: AppRecord].self, forKey: .apps)) ?? [:])
+            .filter { ArtifactApps.isValidAppPath($0.key) }
     }
 
     // MARK: - Reading
