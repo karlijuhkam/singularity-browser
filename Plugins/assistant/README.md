@@ -49,7 +49,7 @@ The Assistant can look at your browser, only where you allow it.
   tools work the same way: the Spaces you opened to it, the Space's agent policy (read-only, ask,
   allow all) and the approvals you already know from outside agents. It uses Singularity's own
   agent door (`singularity-mcp`), so there is no second way into the browser, and every call is in
-  the Space's agent log. It can't see or use terminals.
+  the Space's agent log. Terminals have a switch of their own (see Terminals below).
 - **Switching off works forward only.** What was already sent stays in Claude's session for this
   conversation; New Chat ends that.
 - **The per-site switch.** A site can be switched off for plugins in the site settings. A tab
@@ -57,17 +57,18 @@ The Assistant can look at your browser, only where you allow it.
   afterwards; the next call on it is then refused.
 - **Tool lines.** Each call shows as a small line in the chat ("Read Invoice 42", "Opened ...",
   "Clicked on ..."), in order with the answer. A line for an acting call (open, go to, close,
-  click, type) that runs longer than a moment adds "waiting for your OK"; a slow read does not.
+  click, type, send text to a terminal, answer a terminal's question) that runs longer than a
+  moment adds "waiting for your OK"; a slow read does not.
   Lines are made from the call itself (its address, its search text, the title of the tab that
   was in front). What a tool answered, such as page text, is never shown in a line or saved.
 - **If the browser's tools can't start**, the chat still works without them and a line above the
   message box says so, with Try Again.
-- Without the app's browser door (a bare debug build) the Assistant is the plain chat it was in
-  version 0.1: no browser tools, no note about the tab in front, and the chip shows nothing shared.
-
-- **Terminals (0.3.0).** With the terminals tool it sees the terminals of Spaces you opened to it
-  and what the agents in them report, and reads a terminal's screen when a question needs it.
+- **Terminals (0.3.0).** With the terminals tool it sees the terminals of Spaces where you switched
+  its Terminals on (under the Space's own switch) and what the agents in them report, and reads a terminal's screen when a question needs it.
   Sending text or answering a question always waits for your OK. Lines never show a terminal's title.
+- Without the app's browser door (a bare debug build) the Assistant is the plain chat it was in
+  version 0.1: no browser tools, no terminals, no note about the tab in front, and the chip shows
+  nothing shared.
 
 ## What it can't do
 
@@ -94,6 +95,9 @@ The Assistant can look at your browser, only where you allow it.
 - **Knows the tab in front**: its Space, title and address, in Spaces where you switched it on.
 - **Uses the browser's tools** (the ones outside agents have), in Spaces where you switched it on: read pages, and open,
   click and type under each Space's agent policy and approvals.
+- **Sees terminals**, in Spaces where you switched its Terminals on: lists them, reads their
+  screens, and sends text to one or answers its question only after you approved the exact text
+  on a card.
 - **Passes these settings to it**: `CLAUDE_CONFIG_DIR` (only when you set a folder) and three
   names the Claude Agent SDK sets for its program (`CLAUDE_AGENT_SDK_VERSION`,
   `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SDK_READS_SESSION_STATE`). Singularity builds the rest of

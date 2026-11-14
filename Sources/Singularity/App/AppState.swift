@@ -1523,7 +1523,7 @@ final class AppState {
             return .noTerminal
         }
         // Waits for a shell started just now, pastes, and presses Return (`TerminalHandle.paste`).
-        await session.paste(text)
+        _ = await session.paste(text, onlyIf: nil)
         log(true, "sent to \(tab.displayTitle)")
         return .sent
     }

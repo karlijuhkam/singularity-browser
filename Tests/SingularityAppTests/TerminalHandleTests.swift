@@ -45,6 +45,33 @@ extension AppTests {
         #expect(TerminalScreen.rows(of: view, last: 0).isEmpty)
     }
 
+    /// The order of a paste (`TerminalPaste.run`, what `TerminalSession.paste` runs): wait for the
+    /// shell, check, paste, pause, check, Return. Without a check (an artifact page's `prompt()`)
+    /// it always presses Return; a failed check before the paste pastes nothing, one before Return
+    /// presses no Return.
+    @Test func aPasteChecksBeforeThePasteAndBeforeReturn() async {
+        var steps: [String] = []
+        func run(_ stillSame: (@MainActor () -> Bool)?) async -> Bool {
+            await TerminalPaste.run("hi", onlyIf: stillSame,
+                                    ready: { steps.append("ready") }, paste: { steps.append("paste \($0)") },
+                                    pause: { steps.append("pause") }, pressReturn: { steps.append("return") })
+        }
+        #expect(await run(nil))
+        #expect(steps == ["ready", "paste hi", "pause", "return"])
+
+        steps = []
+        #expect(await run({ steps.append("check"); return true }))
+        #expect(steps == ["ready", "check", "paste hi", "pause", "check", "return"])
+
+        steps = []
+        #expect(await run({ steps.append("check"); return false }) == false)
+        #expect(steps == ["ready", "check"])
+
+        steps = []
+        #expect(await run({ steps.append("check"); return !steps.contains("pause") }) == false)
+        #expect(steps == ["ready", "check", "paste hi", "pause", "check"])
+    }
+
     @Test func bracketedPasteFollowsTheProgram() {
         let view = makeView()
         #expect(!TerminalScreen.bracketedPaste(of: view))

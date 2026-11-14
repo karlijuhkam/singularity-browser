@@ -220,7 +220,7 @@ final class InboxCenter {
             tabTitle: request.tabTitle, text: request.text,
             // Text for a terminal is never allowed per site (the rules give no site for it anyway).
             siteHost: request.isTerminalRequest ? nil : pending.siteOrigin.map { URL(string: $0)?.host() ?? $0 },
-            tabButton: request.tabButton)
+            tabButton: request.tabButton, note: request.note)
         let arrived = now()
         // Named before the entry exists, so a cancellation at any moment can withdraw it.
         let id = UUID()

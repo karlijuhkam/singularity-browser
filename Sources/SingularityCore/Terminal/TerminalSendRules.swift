@@ -10,8 +10,9 @@ public enum TerminalSendRules {
     /// Trims, then refuses: empty; > 4000 characters; any control character except "\n" and "\t"
     /// (this also catches ESC, so the paste-end sequence can't be smuggled in); anything
     /// `InboxText.cleanBlock(_, limit: .max)` would change (invisible and direction characters), so
-    /// the card shows exactly this; a newline when `bracketedPaste` is false (without bracketed
-    /// paste a newline would press Return in the middle of the text).
+    /// the card shows exactly this; a newline or a tab when `bracketedPaste` is false (without
+    /// bracketed paste a newline would press Return in the middle of the text, and a tab would make
+    /// a shell run its completion).
     public static func check(_ text: String, bracketedPaste: Bool) -> Result<String, Refusal> {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .failure(.empty) }
@@ -21,7 +22,9 @@ public enum TerminalSendRules {
             return .failure(.hiddenCharacters)
         }
         if InboxText.cleanBlock(trimmed, limit: .max) != trimmed { return .failure(.hiddenCharacters) }
-        if !bracketedPaste && trimmed.unicodeScalars.contains("\n") { return .failure(.needsOneLine) }
+        if !bracketedPaste && trimmed.unicodeScalars.contains(where: { $0 == "\n" || $0 == "\t" }) {
+            return .failure(.needsOneLine)
+        }
         return .success(trimmed)
     }
 
@@ -38,6 +41,29 @@ public enum TerminalSendRules {
         case 0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800: return true
         default: return false
         }
+    }
+
+    /// A terminal's title or program name as a card names it: the quote marks “ ” " become ', so
+    /// a title can't close the card's own quotes and go on in the card's voice; then cleaned
+    /// (`InboxText.clean`: one line, no invisible characters) and cut to `limit` characters with
+    /// "…". The title and program name are untrusted (the program in front sets the title).
+    public static func cardName(_ text: String, limit: Int) -> String {
+        var replaced = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            switch scalar {
+            case "\u{201C}", "\u{201D}", "\"": replaced.append("'")
+            default: replaced.append(scalar)
+            }
+        }
+        return InboxText.clean(String(replaced), limit: limit)
+    }
+
+    /// The send card's detail: the program first (cut to 40), then the terminal's title (cut to
+    /// 60), so a long or hostile title can't push the program out of sight or name another one.
+    public static func sendDetail(title: String, program: String?) -> String {
+        // nil: the shell sits at its prompt. A name that cleans to nothing still names something.
+        let program = program.map { cardName($0, limit: 40) }.map { $0.isEmpty ? "a program" : $0 } ?? "the shell"
+        return "Goes to \(program) in “\(cardName(title, limit: 60))”. It will be pasted and Return will be pressed."
     }
 
     public static func message(_ refusal: Refusal) -> String {

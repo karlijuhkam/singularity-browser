@@ -190,9 +190,12 @@ extension AgentToolbox {
         entry["state"] = stateName
 
         if stateName == TerminalBoard.State.done.rawValue {
-            // What the agent reported last: its status record, else the Stop hook's message.
+            // What the agent reported last: its status record, else (also when that is empty) the
+            // Stop hook's message.
             let doneEntry = inbox?.inbox.entries.first { $0.tabID == tab.id && $0.kind == .done }
-            if let message = row?.message ?? doneEntry?.message, !message.isEmpty { entry["last_message"] = cut(message) }
+            if let message = row?.message.flatMap({ $0.isEmpty ? nil : $0 }) ?? doneEntry?.message, !message.isEmpty {
+                entry["last_message"] = cut(message)
+            }
         }
         return entry
     }
@@ -245,8 +248,9 @@ extension AgentToolbox {
     }
 
     /// The order matters: every refusal that needs no owner comes before the card, and after the
-    /// owner's Allow everything is checked again with no suspension point (`await`) between the
-    /// last check and the paste, so nothing can change in between.
+    /// owner's Allow everything is checked again. The paste itself checks the terminal once more
+    /// right before the text goes in and right before Return (`TerminalHandle.paste(_:onlyIf:)`),
+    /// since it can wait for the shell and pauses before Return.
     private func sendToTerminal(_ space: Space, tab: BrowserTab, text: String, record: CallRecord) async throws -> String {
         guard let state else { throw ToolError("Browser is shutting down.") }
         let tabID = tab.id
@@ -265,12 +269,14 @@ extension AgentToolbox {
         }
         record.args["text"] = AgentLogStore.clip(checked)
 
+        // The title and program name are untrusted: `sendDetail` names the program first and cuts
+        // both, with their quote marks replaced, so a title can't name another program or push the
+        // real one off the card. The prompt warning is its own line (`note`), never cut.
         let title = InboxText.clean(tab.displayTitle, limit: 200)
-        let program = handle.foregroundProgram.map { InboxText.clean($0, limit: 100) } ?? "the shell"
-        var detail = "It will be pasted into “\(title)” (\(program)) and Return will be pressed."
-        if state.inbox.board.row(tabID)?.state == .waiting { detail += "\n" + Self.showingPrompt }
+        let detail = TerminalSendRules.sendDetail(title: tab.displayTitle, program: handle.foregroundProgram)
+        let note = state.inbox.board.row(tabID)?.state == .waiting ? Self.showingPrompt : nil
         let request = terminalRequest(record, space, tabID: tabID, title: title, action: "send text to a terminal",
-                                      detail: detail, text: checked, button: .goToTerminal, heldEntryID: nil)
+                                      detail: detail, note: note, text: checked, button: .goToTerminal, heldEntryID: nil)
         try await askForTerminal(space, record, request)
 
         // After the owner's answer: the switches, the call, and the terminal as they are now.
@@ -290,10 +296,19 @@ extension AgentToolbox {
             record.decision = "changed"
             throw ToolError(Self.terminalChanged)
         }
-        // No `await` between the checks above and this call. (The real `TerminalSession.paste`
-        // waits for a shell that hasn't printed anything yet; a terminal with a program in front
-        // has, so it pastes at once.)
-        await now.paste(checked)
+        // The real `TerminalSession.paste` waits for a shell that hasn't printed anything yet and
+        // pauses before Return, so the same terminal is checked again right before the paste and
+        // right before Return: the same session still registered and running, with the same
+        // foreground group (never nil).
+        let sameTerminal: @MainActor () -> Bool = { [weak state] in
+            guard let state, let current = state.terminalHandle(tabID), current === now, current.isRunning,
+                  let groupNow = current.foregroundGroupID else { return false }
+            return groupNow == group
+        }
+        guard await now.paste(checked, onlyIf: sameTerminal) else {
+            record.decision = "changed"
+            throw ToolError(Self.terminalChanged)
+        }
         return "Sent."
     }
 
@@ -310,7 +325,8 @@ extension AgentToolbox {
         }
         let title = InboxText.clean(tab.displayTitle, limit: 200)
         let request = terminalRequest(record, space, tabID: tabID, title: title, action: "answer a question in a terminal",
-                                      detail: "In “\(title)”.", text: QuestionAnswerRules.cardText(answers, questions: held.questions),
+                                      detail: "In “\(TerminalSendRules.cardName(tab.displayTitle, limit: 60))”.",
+                                      text: QuestionAnswerRules.cardText(answers, questions: held.questions),
                                       button: .none, heldEntryID: held.entryID)
         do {
             try await askForTerminal(space, record, request)
@@ -369,10 +385,11 @@ extension AgentToolbox {
     }
 
     private func terminalRequest(_ record: CallRecord, _ space: Space, tabID: UUID, title: String, action: String,
-                                 detail: String, text: String, button: ApprovalTabButton,
+                                 detail: String, note: String? = nil, text: String, button: ApprovalTabButton,
                                  heldEntryID: UUID?) -> AgentApprovals.Request {
         var request = AgentApprovals.Request(actor: record.client, action: action, detail: detail, url: nil,
                                              spaceName: space.name, tabTitle: title, text: text)
+        request.note = note
         request.pluginID = record.caller.pluginID
         // The entry carries the tab: closing it denies the request.
         request.tabID = tabID

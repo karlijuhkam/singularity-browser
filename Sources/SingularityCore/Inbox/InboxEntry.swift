@@ -37,10 +37,13 @@ public struct InboxApproval: Equatable, Sendable {
     public var siteHost: String?          // non-nil = offer "Allow on <siteHost>"
     /// The link the card shows when the entry has a tab.
     public var tabButton: ApprovalTabButton
+    /// A line the card shows on its own under the detail, never cut by the detail's line limit
+    /// ("This terminal is showing a prompt; the text goes into it."). Nil: none.
+    public var note: String?
 
     public init(actor: String, action: String, detail: String, url: String? = nil,
                 tabTitle: String? = nil, text: String? = nil, siteHost: String? = nil,
-                tabButton: ApprovalTabButton = .showTab) {
+                tabButton: ApprovalTabButton = .showTab, note: String? = nil) {
         self.actor = actor
         self.action = action
         self.detail = detail
@@ -49,6 +52,7 @@ public struct InboxApproval: Equatable, Sendable {
         self.text = text
         self.siteHost = siteHost
         self.tabButton = tabButton
+        self.note = note
     }
 }
 

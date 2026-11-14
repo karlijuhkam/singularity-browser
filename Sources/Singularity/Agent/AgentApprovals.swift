@@ -87,6 +87,8 @@ final class AgentApprovals {
         /// inbox in any way (answered on its own card, handed back to the terminal, …) the request
         /// ends `.cancelled`; asked when it is already gone, it ends `.cancelled` at once.
         var heldEntryID: UUID? = nil
+        /// A line the card shows on its own under the detail (`InboxApproval.note`).
+        var note: String? = nil
     }
 
     /// A question waiting for the owner, handed to `presenter` (the inbox).

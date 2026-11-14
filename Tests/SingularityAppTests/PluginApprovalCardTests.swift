@@ -392,7 +392,7 @@ extension AppTests {
     @Test func theCardsTabButtonFollowsTheRequest() {
         func entry(_ button: ApprovalTabButton, tab: UUID? = UUID()) -> InboxEntry {
             InboxEntry(kind: .approval(InboxApproval(actor: "Assistant", action: "send text to a terminal",
-                                                     detail: "It will be pasted into “zsh” (the shell) and Return will be pressed.",
+                                                     detail: "Goes to the shell in “zsh”. It will be pasted and Return will be pressed.",
                                                      text: "yes", tabButton: button)),
                        spaceID: UUID(), tabID: tab, agent: "Assistant", message: nil, arrived: Date())
         }
@@ -418,7 +418,7 @@ extension AppTests {
     private func terminalRequest(_ space: Space, pluginID: String, tabID: UUID? = nil,
                                  button: ApprovalTabButton = .goToTerminal) -> AgentApprovals.Request {
         var request = AgentApprovals.Request(actor: "Assistant", action: "send text to a terminal",
-                                             detail: "It will be pasted into “zsh” (the shell) and Return will be pressed.",
+                                             detail: "Goes to the shell in “zsh”. It will be pasted and Return will be pressed.",
                                              url: nil, spaceName: space.name, tabTitle: nil, text: "yes")
         request.pluginID = pluginID
         request.tabID = tabID
@@ -431,8 +431,9 @@ extension AppTests {
         let rig = Rig(active: false)
         defer { rig.tearDown() }
         let tabID = UUID()
-        let request = terminalRequest(Self.space, pluginID: Self.pluginID, tabID: tabID)
-        let answer = Task { @MainActor in
+        var request = terminalRequest(Self.space, pluginID: Self.pluginID, tabID: tabID)
+        request.note = "This terminal is showing a prompt; the text goes into it."
+        let answer = Task { @MainActor [request] in
             // A terminal send names no site, even if a page origin were passed along.
             await rig.approvals.check(AgentActionContext(kind: .terminalSend, pageOrigin: "https://example.com"),
                                       space: Self.space, request: request)
@@ -441,6 +442,9 @@ extension AppTests {
         guard case .approval(let approval) = entry.kind else { Issue.record("not an approval"); return }
         #expect(approval.tabButton == .goToTerminal)
         #expect(approval.siteHost == nil)
+        // The note reaches the entry, for the card (inbox panel and plugin page alike) to draw on its own line.
+        #expect(approval.note == "This terminal is showing a prompt; the text goes into it.")
+        #expect(InboxApprovalText(approval).note == approval.note)
         #expect(entry.tabID == tabID)
         #expect(!InboxApprovalButtons.choices(for: entry).answers.contains { $0.title.hasPrefix("Allow on") })
         rig.center.decideApproval(entry.id, .denied)

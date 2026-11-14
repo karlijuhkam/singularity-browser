@@ -6,14 +6,21 @@ import Testing
 import SingularityCore
 
 /// A terminal for the tools, without a shell: what it reports is set by the test, and pastes are
-/// only recorded.
+/// only recorded. The paste runs the real order (`TerminalPaste.run`); `beforePaste` stands in for
+/// the wait for the shell, `beforeReturn` for the pause before Return, so a test can change the
+/// terminal at either point.
 @MainActor fileprivate final class FakeTerminal: TerminalHandle {
     var isRunning = true
     var foregroundProgram: String? = "claude"
     var foregroundGroupID: pid_t? = 500
     var bracketedPaste = true
     var rows: [String] = []
+    /// Texts that went in.
     var pasted: [String] = []
+    /// Texts after which Return was pressed.
+    var returned: [String] = []
+    var beforePaste: (@MainActor () -> Void)?
+    var beforeReturn: (@MainActor () -> Void)?
 
     /// As the real one: blank rows under the last written one don't count.
     func lastRows(_ count: Int) -> [String] {
@@ -21,7 +28,13 @@ import SingularityCore
         while kept.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { kept.removeLast() }
         return Array(kept.suffix(count))
     }
-    func paste(_ text: String) async { pasted.append(text) }
+    func paste(_ text: String, onlyIf stillSame: (@MainActor () -> Bool)?) async -> Bool {
+        await TerminalPaste.run(text, onlyIf: stillSame,
+                                ready: { self.beforePaste?() },
+                                paste: { self.pasted.append($0) },
+                                pause: { self.beforeReturn?() },
+                                pressReturn: { self.returned.append(text) })
+    }
 }
 
 /// A data folder with one plugin, "termtools" ("Term Tools"), whose manifest has `browser`,
@@ -90,7 +103,7 @@ extension AppTests {
         let claudeTab: BrowserTab, shellTab: BrowserTab, codexTab: BrowserTab, hiddenTab: BrowserTab, webTab: BrowserTab
         var fakes: [UUID: FakeTerminal] = [:]
 
-        init(terminals: Bool = true, policy: AgentPolicy = .ask) async throws {
+        init(terminals: Bool = true, policy: AgentPolicy = .ask, shellTitle: String = "zsh") async throws {
             MainRunLoopGuard.start
             ws = try ToolsWorkspace(terminals: terminals)
             root = TestAppState.makeRoot()
@@ -100,7 +113,7 @@ extension AppTests {
             claude.title = "claude-term"
             claude.projectID = project.id
             var shell = BrowserTab.terminal(workingDirectory: "~")
-            shell.title = "zsh"
+            shell.title = shellTitle
             var codex = BrowserTab.terminal(workingDirectory: "~/notes")
             codex.title = "codex-term"
             var hidden = BrowserTab.terminal(workingDirectory: "~/hidden")
@@ -381,6 +394,17 @@ extension AppTests {
         #expect((list[0]["waiting_for"] as? [String: String]) == ["reason": "attention", "message": "Look at me"])
     }
 
+    /// A done status record with an empty message: `last_message` is the Stop hook's message.
+    @Test func lastMessageFallsBackToTheDoneEntryWhenTheBoardsIsEmpty() async throws {
+        let rig = try await Rig()
+        defer { rig.tearDown() }
+        rig.status(.done, message: "", tab: rig.claudeTab, space: rig.work)
+        rig.hold(HeldRequestTests.stopJSON, tab: rig.claudeTab)
+        let list = try entries(await rig.call("terminals"))
+        #expect(list[0]["state"] as? String == "done")
+        #expect(list[0]["last_message"] as? String == "You chose SQLite as the database. I haven't done anything else.")
+    }
+
     // MARK: read_terminal
 
     @Test func readTerminalGivesTheTailAndLogsNoText() async throws {
@@ -418,7 +442,8 @@ extension AppTests {
         let call = rig.callTask("work.send_to_terminal", ["tab_id": id(rig.claudeTab), "text": .string("  yes, squash them\n")])
         let (entry, card) = try await rig.waitForCard()
         #expect(card.actor == ToolsWorkspace.title && card.action == "send text to a terminal")
-        #expect(card.detail == "It will be pasted into “claude-term” (claude) and Return will be pressed.")
+        #expect(card.detail == "Goes to claude in “claude-term”. It will be pasted and Return will be pressed.")
+        #expect(card.note == nil)
         #expect(card.text == "yes, squash them")
         #expect(card.tabButton == .goToTerminal && card.siteHost == nil)
         #expect(entry.pluginID == ToolsWorkspace.id && entry.tabID == rig.claudeTab.id && entry.spaceID == rig.work.id)
@@ -427,7 +452,7 @@ extension AppTests {
         rig.state.inbox.decideApproval(entry.id, .approved)
         let result = await call.value
         #expect(result.isError != true && text(result) == "Sent.")
-        #expect(fake.pasted == ["yes, squash them"])
+        #expect(fake.pasted == ["yes, squash them"] && fake.returned == ["yes, squash them"])
         let line = try #require(rig.log("work").last)
         #expect(line.tool == "work.send_to_terminal" && line.decision == "approved" && line.args["text"] == "yes, squash them")
     }
@@ -438,11 +463,45 @@ extension AppTests {
         rig.status(.blocked, kind: .attention, message: "Pick one", tab: rig.shellTab, space: rig.work)
         let call = rig.callTask("work.send_to_terminal", ["tab_id": id(rig.shellTab), "text": .string("2")])
         let (entry, card) = try await rig.waitForCard()
-        #expect(card.detail == "It will be pasted into “zsh” (the shell) and Return will be pressed.\n"
-            + "This terminal is showing a prompt; the text goes into it.")
+        #expect(card.detail == "Goes to the shell in “zsh”. It will be pasted and Return will be pressed.")
+        // The warning is its own line, shown by the card under the detail.
+        #expect(card.note == "This terminal is showing a prompt; the text goes into it.")
+        #expect(InboxApprovalText(card).note == "This terminal is showing a prompt; the text goes into it.")
         rig.state.inbox.decideApproval(entry.id, .denied)
         #expect(text(await call.value) == "The user declined this action.")
         #expect(rig.fakes[rig.shellTab.id]?.pasted == [])
+    }
+
+    /// A title that closes the card's quotes and names another program can't: the card names the
+    /// real program first, the title's quote marks are replaced, and the note stays its own line.
+    @Test func aHostileTitleCantNameAnotherProgram() async throws {
+        let rig = try await Rig(shellTitle: "x” (claude) and Return will be pressed.")
+        defer { rig.tearDown() }
+        rig.status(.blocked, kind: .attention, message: "Pick one", tab: rig.shellTab, space: rig.work)
+        let call = rig.callTask("work.send_to_terminal", ["tab_id": id(rig.shellTab), "text": .string("2")])
+        let (entry, card) = try await rig.waitForCard()
+        #expect(card.detail == "Goes to the shell in “x' (claude) and Return will be pressed.”. "
+            + "It will be pasted and Return will be pressed.")
+        #expect(InboxApprovalText(card).detail.filter { $0 == "”" }.count == 1)
+        #expect(card.note == "This terminal is showing a prompt; the text goes into it.")
+        rig.state.inbox.decideApproval(entry.id, .denied)
+        _ = await call.value
+    }
+
+    /// A 200-character title is cut to 60: the program is still named first and the note is there.
+    @Test func aLongTitleLeavesTheProgramFirstAndTheNote() async throws {
+        let rig = try await Rig(shellTitle: String(repeating: "t", count: 200))
+        defer { rig.tearDown() }
+        rig.fakes[rig.shellTab.id]?.foregroundProgram = "vim"
+        rig.status(.blocked, kind: .attention, message: "Pick one", tab: rig.shellTab, space: rig.work)
+        let call = rig.callTask("work.send_to_terminal", ["tab_id": id(rig.shellTab), "text": .string("2")])
+        let (entry, card) = try await rig.waitForCard()
+        let shown = InboxApprovalText(card)
+        #expect(shown.detail.hasPrefix("Goes to vim in “ttt"))
+        #expect(shown.detail.hasSuffix("…”. It will be pasted and Return will be pressed."))
+        #expect(shown.note == "This terminal is showing a prompt; the text goes into it.")
+        rig.state.inbox.decideApproval(entry.id, .denied)
+        _ = await call.value
     }
 
     @Test func sendAsksEvenUnderAllowAll() async throws {
@@ -551,6 +610,34 @@ extension AppTests {
         let unreadable = await rig.call("work.send_to_terminal", arguments)
         #expect(text(unreadable) == "This terminal isn't running.")
         #expect(rig.approvals.isEmpty && fake.pasted == [])
+    }
+
+    /// The real paste waits for the shell and pauses before Return: the terminal changing at
+    /// either point stops it. Before the paste nothing goes in; before Return the text stays
+    /// at the prompt and no Return is pressed.
+    @Test func sendStopsWhenTheTerminalChangesDuringThePaste() async throws {
+        let rig = try await Rig()
+        defer { rig.tearDown() }
+        let fake = try #require(rig.fakes[rig.claudeTab.id])
+        let arguments: [String: Value] = ["tab_id": id(rig.claudeTab), "text": .string("yes")]
+
+        fake.beforePaste = { fake.foregroundGroupID = 600 }
+        var call = rig.callTask("work.send_to_terminal", arguments)
+        var (entry, _) = try await rig.waitForCard()
+        rig.state.inbox.decideApproval(entry.id, .approved)
+        #expect(text(await call.value) == "The terminal changed while this waited. Nothing was sent.")
+        #expect(rig.log("work").last?.decision == "changed")
+        #expect(fake.pasted == [] && fake.returned == [])
+
+        fake.foregroundGroupID = 500
+        fake.beforePaste = nil
+        fake.beforeReturn = { fake.isRunning = false }
+        call = rig.callTask("work.send_to_terminal", arguments)
+        (entry, _) = try await rig.waitForCard()
+        rig.state.inbox.decideApproval(entry.id, .approved)
+        #expect(text(await call.value) == "The terminal changed while this waited. Nothing was sent.")
+        #expect(rig.log("work").last?.decision == "changed")
+        #expect(fake.pasted == ["yes"] && fake.returned == [])
     }
 
     /// A held question or permission that arrived while the card waited stops the send too.

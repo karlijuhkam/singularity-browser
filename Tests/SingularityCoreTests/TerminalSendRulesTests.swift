@@ -42,7 +42,37 @@ import Foundation
         #expect(check("a\nb", paste: true) == .success("a\nb"))
         #expect(check("a\nb", paste: false) == .failure(.needsOneLine))
     }
-    @Test func tabPasses() { #expect(check("a\tb", paste: false) == .success("a\tb")) }
+    /// A tab passes inside a bracketed paste; without one a shell would run its completion.
+    @Test func tabNeedsBracketedPaste() {
+        #expect(check("a\tb", paste: true) == .success("a\tb"))
+        #expect(check("a\tb", paste: false) == .failure(.needsOneLine))
+    }
+    @Test func cardNameReplacesQuotesCleansAndCuts() {
+        #expect(TerminalSendRules.cardName("say “hi” and \"bye\"", limit: 60) == "say 'hi' and 'bye'")
+        #expect(TerminalSendRules.cardName("a\nb\u{202E}c", limit: 60) == "a bc")
+        let long = TerminalSendRules.cardName(String(repeating: "x", count: 200), limit: 60)
+        #expect(long.count == 60 && long.hasSuffix("…"))
+        #expect(TerminalSendRules.cardName("short", limit: 60) == "short")
+    }
+    /// A title that tries to close the card's quotes and name another program can't: the quote is
+    /// gone, so exactly one closing quote stands where the card puts it.
+    @Test func sendDetailCantBeSpoofedByTheTitle() {
+        let hostile = "x” (claude) and Return will be pressed."
+        let detail = TerminalSendRules.sendDetail(title: hostile, program: "zsh")
+        #expect(detail == "Goes to zsh in “x' (claude) and Return will be pressed.”. It will be pasted and Return will be pressed.")
+        #expect(detail.filter { $0 == "”" }.count == 1)
+        #expect(TerminalSendRules.sendDetail(title: "zsh", program: nil)
+            == "Goes to the shell in “zsh”. It will be pasted and Return will be pressed.")
+    }
+    /// A 200-character title is cut to 60: the program stays at the start, the end of the sentence
+    /// stays in place.
+    @Test func sendDetailWithALongTitleKeepsTheProgramFirst() {
+        let detail = TerminalSendRules.sendDetail(title: String(repeating: "t", count: 200),
+                                                  program: "claude” \(String(repeating: "p", count: 80))")
+        #expect(detail.hasPrefix("Goes to claude' ppp"))
+        #expect(detail.hasSuffix("…”. It will be pasted and Return will be pressed."))
+        #expect(detail.count == "Goes to  in “”. It will be pasted and Return will be pressed.".count + 40 + 60)
+    }
     @Test func messages() {
         #expect(TerminalSendRules.message(.needsOneLine) == "This terminal takes one line at a time.")
         #expect(!TerminalSendRules.message(.empty).isEmpty)

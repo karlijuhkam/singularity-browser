@@ -57,7 +57,10 @@ export function chipText(front: FrontTab | null): string {
   return front.tab.title || front.tab.url || "Untitled tab";
 }
 
-/** The door's tool names, longest first (a name ends with one of them). */
+/**
+ * The door's tool names (a name ends with one of them). Their order doesn't matter: no tool name
+ * ends with "_" and another tool name, so at most one of them matches.
+ */
 const TOOLS = [
   "send_to_terminal", "answer_question", "read_terminal", "read_console", "read_network", "list_spaces",
   "screenshot", "read_page", "list_tabs", "navigate", "terminals", "click", "close", "find", "open", "type",

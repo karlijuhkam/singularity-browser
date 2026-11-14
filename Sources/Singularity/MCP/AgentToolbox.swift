@@ -282,8 +282,8 @@ final class AgentToolbox {
             // On screen right now: the selected tab, or any pane of its split (in the Space being shown).
             if state?.selectedSpaceID == space.id, space.visibleTabIDs.contains(tab.id) { entry["visible"] = true }
             // A plugin's connection learns only that a terminal is there: its title, folder and
-            // project carry folders and commands (terminals are a later part's decision; `front`
-            // withholds them too).
+            // project carry folders and commands (a plugin with `terminals` gets them from the
+            // `terminals` tool, under its own switch; `front` withholds them too).
             if tab.isTerminal, record.caller.pluginID != nil {
                 return entry.filter { ["tab_id", "kind", "section", "selected", "visible"].contains($0.key) }
             }

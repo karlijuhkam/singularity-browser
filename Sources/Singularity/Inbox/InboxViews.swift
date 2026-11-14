@@ -478,6 +478,8 @@ struct InboxApprovalText {
     let detail: String
     let url: String        // empty when there is none
     let text: String       // keeps line breaks; empty when there is none
+    /// Its own line under the detail, never cut by the detail's line limit; empty when none.
+    let note: String
 
     init(_ approval: InboxApproval) {
         let actor = InboxText.clean(approval.actor, limit: 80)
@@ -486,6 +488,7 @@ struct InboxApprovalText {
         detail = InboxText.clean(approval.detail, limit: InboxText.messageLimit)
         url = InboxText.clean(approval.url ?? "", limit: InboxText.messageLimit)
         text = InboxText.cleanBlock(approval.text ?? "", limit: InboxText.inputLimit)
+        note = InboxText.clean(approval.note ?? "", limit: InboxText.messageLimit)
     }
 }
 
@@ -507,6 +510,12 @@ private struct InboxApprovalBody: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !shown.note.isEmpty {
+                Text(verbatim: shown.note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !url.isEmpty, url != detail {

@@ -264,7 +264,9 @@ shell, and nothing was tried by hand in the running app.
   same happens. A terminal whose group can't be read counts as not running (at the ask) or as
   changed (at Allow): nothing to compare, so nothing is sent.
 - **Reading an `hc attach` (herdr-core) view was never tried.** It is the same SwiftTerm view type, so
-  the same calls should work; nothing here ran herdr.
+  the same calls should work; nothing here ran herdr. Multi-line sends (and tabs) to such a terminal
+  depend on the outer `hc attach` view reflecting the inner program's bracketed-paste mode, which
+  is what the rules read; also untried.
 - **A herdr-core terminal that has not been opened since launch is "not running".** No session is
   attached for it, so it is listed with `running: false` and `note: "not opened since launch"`, and
   `read_terminal` and `send_to_terminal` answer "This terminal isn't running." until the owner opens
@@ -301,14 +303,14 @@ shell, and nothing was tried by hand in the running app.
   (no log line, no slug leaked). So does a plugin's connection for a Space where `terminalsAreOpen`
   is false, and for the `terminals` tool when the plugin isn't approved with `terminals`. A card
   that was denied or timed out while its Space or Terminals switch went off meanwhile also ends
-  "Unknown tool" (logged `denied`), not "The user declined this action."
+  "Unknown tool" (logged with the card's outcome), not "The user declined this action."
 - **`terminals`.** `folder` is the tab's working directory (the sidebar folder is not given).
   `program` is listed only while the terminal runs. `since` is seconds since the state last changed.
   `waiting_for` is an object with `reason` (`question`, `permission`, `attention`, `error` or `auth`)
   and, by reason, the fields of the design; a held question or permission carries `held: true`, a
   held permission its `tool` and `input` (cut at 1000). A tab whose inbox holds a question or
   permission is reported `waiting` whatever the board says. When the state is `done`,
-  `last_message` is the board's message, else the done entry's. With no Space counting, the answer is
+  `last_message` is the board's message, else (also when the board's is empty) the done entry's. With no Space counting, the answer is
   the design's sentence. It is logged once per listed Space as `terminals` with the count.
 - **`read_terminal`** takes screen rows: a soft-wrapped long line counts as several rows. Trailing
   blank (or whitespace-only) rows are dropped before the last `lines` are taken, so a mostly empty
@@ -319,12 +321,26 @@ shell, and nothing was tried by hand in the running app.
 - A tab id that is missing, in another Space or not a terminal answers "Tab <id> is not a terminal."
 - **`send_to_terminal`** refusals before the card, in this order: not running (or foreground group
   unreadable), a held question ("Use answer_question"), a permission waiting, then
-  `TerminalSendRules`. After Allow, with no `await` between the last check and the paste, the call
-  checks again: switches, cancellation, the same session still running with the same foreground
-  group, no held question, no waiting permission, and the text still passing the rules (bracketed
-  paste may have been switched off meanwhile). Anything else ends "The terminal changed while this
-  waited. Nothing was sent." (log value `changed`). The success answer is `Sent.` The card's button
-  is Go to terminal.
+  `TerminalSendRules`. After Allow the call checks again: switches, cancellation, the same session
+  still running with the same foreground group, no held question, no waiting permission, and the
+  text still passing the rules (bracketed paste may have been switched off meanwhile). The paste
+  itself (`TerminalHandle.paste(_:onlyIf:)`) checks the same session, running, with the same group
+  once more right before the text goes in (after waiting for a shell that has printed nothing yet)
+  and right before Return (after the 150 ms pause): a change before the paste pastes nothing; a
+  change before Return leaves the text at the prompt and presses no Return. Anything else ends "The
+  terminal changed while this waited. Nothing was sent." (log value `changed`). The success answer
+  is `Sent.` The card's button is Go to terminal.
+- **The send card's text (replaces the design's).** Detail: `Goes to <program> in “<title>”. It will
+  be pasted and Return will be pressed.` (`TerminalSendRules.sendDetail`). The program comes first
+  (`the shell` when none is in front) and is cut to 40 characters, the title to 60 (with "…"); in
+  both the quote marks “ ” " become ' and the text is cleaned (`TerminalSendRules.cardName`). A
+  title is set by the program in front, so without this a title such as
+  `x” (claude) and Return will be pressed.` could make the card name another program, and a long
+  one pushed the real program and the warning past the detail's four lines. The warning "This
+  terminal is showing a prompt; the text goes into it." is no longer part of the detail: it is the
+  card's `note` (`AgentApprovals.Request.note` → `InboxApproval.note`), drawn as its own line under
+  the detail and never cut, in the inbox panel and under the plugin's page alike. The answer card's
+  detail is `In “<title>”.` with the same `cardName` (60).
 - **Text rules (`TerminalSendRules`).** The limit of 4000 counts Unicode scalars, not characters. The
   text is trimmed first and the trimmed text is what the card shows and what is sent. Refused:
   control characters except newline and tab, and every format, line or paragraph separator,
@@ -332,7 +348,8 @@ shell, and nothing was tried by hand in the running app.
   (they draw nothing). **Over-refusal to know about:** a ZWJ emoji sequence (U+200D is a format
   character) and any private-use glyph (icon fonts) are refused; plain emoji, accented letters,
   CJK, U+FE0F and an inner no-break space pass. U+2028, U+2029 and U+0085 at the edges are trimmed,
-  not refused. A newline in text needs bracketed paste ("This terminal takes one line at a time.").
+  not refused. A newline or a tab in text needs bracketed paste ("This terminal takes one line at a
+  time."): to a shell a tab would run its completion.
 - **`answer_question`** answers the entry whose questions the card showed: its id is carried through,
   so a tab holding several held questions (subagents) answers the oldest one that was checked, and
   an answer given on the inbox's own card first ends this call "The question was already answered."
@@ -351,12 +368,14 @@ shell, and nothing was tried by hand in the running app.
 ### The terminal handle and the board
 
 - `TerminalHandle` (app) is what the tools need: `isRunning`, `foregroundProgram`,
-  `foregroundGroupID`, `bracketedPaste`, `lastRows(_:)`, `paste(_:)`. `TerminalSession` is the real
-  one (`paste` is also what an artifact's `prompt()` uses, same steps: bracketed paste, 150 ms,
-  Return). Tests set `AppState.terminalHandleOverride`; the plugin program's pid comes from
+  `foregroundGroupID`, `bracketedPaste`, `lastRows(_:)`, `paste(_:onlyIf:)` (returns whether Return
+  was pressed). `TerminalSession` is the real one (`paste` is also what an artifact's `prompt()`
+  uses, with no check, same steps: bracketed paste, 150 ms, Return). The order of a paste and its
+  two checks is `TerminalPaste.run`, which the tests' fake terminal runs too. Tests set `AppState.terminalHandleOverride`; the plugin program's pid comes from
   `PluginManager.programPIDOverride` in tests. The real `paste` begins by waiting for a shell that
   has printed nothing yet; a terminal with a program in front has printed, so it pastes at once.
-  Once text is pasted, Return is pressed even if the call is cancelled during the 150 ms.
+  Once text is pasted, Return is pressed even if the call is cancelled during the 150 ms, unless the
+  terminal changed (above).
 - `TerminalBoard` (Core, in memory, never saved; `InboxCenter.board`, ignored by observation: status
   records arrive often) is fed from the same signals as the inbox, before the looked-at rule. A tab
   that has ever sent a status record has its bells and notifications ignored (the inbox's level 1
@@ -372,5 +391,7 @@ The chat-only prompt (no `browser`) is unchanged. The plugin's README says what 
 ### Known limits kept
 
 All the design's "Known limits" stand. Added by the build: a terminal title, folder or program name
-that is long is cut (200 to 1000 characters, per field); a screen can hold secrets, and the switch is
-the only control.
+that is long is cut (200 to 1000 characters, per field; on the send card 60 and 40); a screen can
+hold secrets, and the switch is the only control. Text the owner already typed at the program's
+prompt is submitted together with the sent text: the paste lands after it, and Return sends both.
+Multi-line sends to a herdr-core terminal are untried (see "What was not tried").

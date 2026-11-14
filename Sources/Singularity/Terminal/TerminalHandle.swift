@@ -19,8 +19,10 @@ protocol TerminalHandle: AnyObject {
     /// the buffer in view (a full-screen program's own screen while it runs).
     func lastRows(_ count: Int) -> [String]
     /// Pastes `text` (as a bracketed paste when the program asked for it), waits a moment and
-    /// presses Return.
-    func paste(_ text: String) async
+    /// presses Return. `stillSame`, when given, is asked right before the paste and again right
+    /// before Return: false before the paste pastes nothing, false before Return leaves the text
+    /// pasted but presses no Return. Returns whether Return was pressed.
+    func paste(_ text: String, onlyIf stillSame: (@MainActor () -> Bool)?) async -> Bool
 }
 
 extension TerminalSession: TerminalHandle {
@@ -28,14 +30,36 @@ extension TerminalSession: TerminalHandle {
 
     func lastRows(_ count: Int) -> [String] { TerminalScreen.rows(of: view, last: count) }
 
-    func paste(_ text: String) async {
-        // A shell started just now may still be reading ~/.zshrc.
-        await waitUntilReady()
-        // Bracketed paste keeps multi-line text together as one message in programs such as
-        // Claude Code; the short pause lets the program finish handling the paste before Return.
-        view.pasteText(text)
-        try? await Task.sleep(for: .milliseconds(150))
-        view.send(txt: "\r")
+    func paste(_ text: String, onlyIf stillSame: (@MainActor () -> Bool)?) async -> Bool {
+        await TerminalPaste.run(
+            text, onlyIf: stillSame,
+            // A shell started just now may still be reading ~/.zshrc.
+            ready: { await self.waitUntilReady() },
+            // Bracketed paste keeps multi-line text together as one message in programs such as
+            // Claude Code.
+            paste: { self.view.pasteText($0) },
+            // The short pause lets the program finish handling the paste before Return.
+            pause: { try? await Task.sleep(for: .milliseconds(150)) },
+            pressReturn: { self.view.send(txt: "\r") })
+    }
+}
+
+/// The steps of a paste, in order, with the "still the same terminal?" check right before the
+/// paste and right before Return. Separate from `TerminalSession` so tests can run the real order
+/// with stand-ins, never a shell.
+enum TerminalPaste {
+    @MainActor static func run(_ text: String, onlyIf stillSame: (@MainActor () -> Bool)?,
+                               ready: @MainActor () async -> Void, paste: @MainActor (String) -> Void,
+                               pause: @MainActor () async -> Void, pressReturn: @MainActor () -> Void) async -> Bool {
+        await ready()
+        if let stillSame, !stillSame() { return false }
+        paste(text)
+        await pause()
+        // The program may have exited during the pause: Return would then run the text as a shell
+        // command. The text stays at the prompt instead.
+        if let stillSame, !stillSame() { return false }
+        pressReturn()
+        return true
     }
 }
 
