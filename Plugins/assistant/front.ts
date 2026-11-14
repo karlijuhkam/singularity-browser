@@ -59,8 +59,8 @@ export function chipText(front: FrontTab | null): string {
 
 /** The door's tool names, longest first (a name ends with one of them). */
 const TOOLS = [
-  "read_console", "read_network", "list_spaces", "screenshot", "read_page", "list_tabs", "navigate",
-  "click", "close", "find", "open", "type",
+  "send_to_terminal", "answer_question", "read_terminal", "read_console", "read_network", "list_spaces",
+  "screenshot", "read_page", "list_tabs", "navigate", "terminals", "click", "close", "find", "open", "type",
 ];
 const PREFIX = "mcp__singularity__";
 
@@ -114,6 +114,11 @@ export function toolLine(
     case "list_spaces": text = "Looked at your Spaces"; break;
     case "read_console": text = `Read the console of ${title}`; break;
     case "read_network": text = `Read the network log of ${title}`; break;
+    // Terminal lines never carry a terminal's title, even for the tab in front.
+    case "terminals": text = "Looked at the terminals"; break;
+    case "read_terminal": text = "Read a terminal's screen"; break;
+    case "send_to_terminal": text = "Sent text to a terminal"; break;
+    case "answer_question": text = "Answered a terminal's question"; break;
     default: text = `Used ${shown(tool)}`;
   }
   const space = slug !== undefined && slug !== frontAtSend?.space.slug ? slug : undefined;
@@ -125,9 +130,9 @@ export function toolLine(
 
 /**
  * Whether a line may be waiting for the user's OK when it runs long: only the acting tools ask
- * (open, navigate, close, click, type). A slow read is just slow. Judged by the line's own
+ * (open, navigate, close, click, type, send to a terminal, answer a question). A slow read is just slow. Judged by the line's own
  * text, which toolLine writes.
  */
 export function mayWaitForOK(lineText: string): boolean {
-  return /^(Opened |Went to |Closed |Clicked on |Typed on )/.test(lineText);
+  return /^(Opened |Went to |Closed |Clicked on |Typed on |Sent text to a terminal|Answered a terminal's question)/.test(lineText);
 }

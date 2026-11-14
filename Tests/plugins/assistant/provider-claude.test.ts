@@ -487,7 +487,13 @@ test("with a browser server: exactly one MCP server, its tools allowed, nothing 
     expect(options.strictMcpConfig).toBe(true);
     expect(options.skills).toEqual([]);
     expect(options.systemPrompt).toContain("list_spaces");
-    expect(options.systemPrompt).toContain("You cannot see or use terminals.");
+    expect(options.systemPrompt).not.toContain("You cannot see or use terminals.");
+    expect(options.systemPrompt).toContain(
+      "With the terminals tool you can see the terminals of Spaces the user opened to you, and what the agents in them report; "
+        + "read a terminal's screen only when the question needs it. Sending text to a terminal or answering its question always "
+        + "waits for the user's OK, and you do it only when the user asked. If you can't see a terminal the user means, "
+        + "its Space's Terminals switch may be off (Settings → Plugins).",
+    );
   }
   provider.stop();
   await waitFor(() => programs[0].ended, "the program to end");

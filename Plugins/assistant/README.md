@@ -65,9 +65,13 @@ The Assistant can look at your browser, only where you allow it.
 - Without the app's browser door (a bare debug build) the Assistant is the plain chat it was in
   version 0.1: no browser tools, no note about the tab in front, and the chip shows nothing shared.
 
+- **Terminals (0.3.0).** With the terminals tool it sees the terminals of Spaces you opened to it
+  and what the agents in them report, and reads a terminal's screen when a question needs it.
+  Sending text or answering a question always waits for your OK. Lines never show a terminal's title.
+
 ## What it can't do
 
-- It can't see or use terminals.
+- It can't type into a terminal or answer its question without your OK, every time.
 - `claude` is started with none of its built-in tools, with no MCP servers but Singularity's own
   (not even the ones in your own Claude config), without your Claude settings files (so none of
   your hooks, plugins or CLAUDE.md) and without skills (see `provider-claude.ts`). Two things stay

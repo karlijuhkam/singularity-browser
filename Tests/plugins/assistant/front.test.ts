@@ -57,6 +57,10 @@ test("door names: the last known tool, whatever the slug holds", () => {
   expect(doorName("mcp__singularity__list_spaces")).toBe("list_spaces");
   expect(doorName("mcp__singularity__work_list_tabs")).toBe("work.list_tabs");
   expect(doorName("mcp__singularity__work_screenshot")).toBe("work.screenshot");
+  expect(doorName("mcp__singularity__work_send_to_terminal")).toBe("work.send_to_terminal");
+  expect(doorName("mcp__singularity__my_work_read_terminal")).toBe("my_work.read_terminal");
+  expect(doorName("mcp__singularity__work_answer_question")).toBe("work.answer_question");
+  expect(doorName("mcp__singularity__terminals")).toBe("terminals");
   // Not ours, or not a tool we know: not guessed at.
   expect(doorName("Bash")).toBeNull();
   expect(doorName("mcp__other__work_read_page")).toBeNull();
@@ -113,12 +117,25 @@ test("whitespace in what a page or the user named collapses to single spaces", (
   expect(block.split("\n").length).toBe(8);
 });
 
+test("terminal tool lines never name a terminal, even the one in front", () => {
+  const t = (name: string, status = "done") => toolLine(name, { tab_id: "T1", text: "secret" }, status, front).text;
+  expect(t("terminals")).toBe("Looked at the terminals");
+  expect(t("home.read_terminal")).toBe("Read a terminal's screen in home");
+  expect(t("work.read_terminal")).toBe("Read a terminal's screen");
+  expect(t("work.send_to_terminal")).toBe("Sent text to a terminal");
+  expect(t("work.answer_question")).toBe("Answered a terminal's question");
+  expect(t("work.send_to_terminal", "waiting")).toBe("Sent text to a terminal — waiting for your OK");
+  expect(t("work.answer_question", "failed")).toBe("Answered a terminal's question — not done");
+  expect(t("work.send_to_terminal")).not.toContain("Invoice");
+});
+
 test("only acting lines may say they wait for an OK", () => {
   const f = (name: string) => toolLine(name, { tab_id: "T1", url: "https://a.test/" }, "running", front).text;
   for (const name of ["work.open", "work.navigate", "work.close", "work.click", "work.type"]) expect(mayWaitForOK(f(name))).toBe(true);
-  for (const name of ["work.read_page", "work.find", "work.screenshot", "work.list_tabs", "list_spaces", "work.read_console", "work.read_network"]) {
+  for (const name of ["work.read_page", "work.find", "work.screenshot", "work.list_tabs", "list_spaces", "work.read_console", "work.read_network", "terminals", "work.read_terminal"]) {
     expect(mayWaitForOK(f(name))).toBe(false);
   }
+  for (const name of ["work.send_to_terminal", "work.answer_question"]) expect(mayWaitForOK(f(name))).toBe(true);
 });
 
 test("control and format characters are removed, and title and address are cut", () => {

@@ -19,8 +19,8 @@ private let assistantFolder = URL(filePath: #filePath)
         #expect(manifest.permissions.programs == ["claude"])
         #expect(manifest.permissions.programEnv == ["CLAUDE_CONFIG_DIR", "CLAUDE_AGENT_SDK_VERSION",
                                                     "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SDK_READS_SESSION_STATE"])
-        #expect(manifest.version == "0.2.0")
-        #expect(manifest.permissions.frontTab && manifest.permissions.browser)
+        #expect(manifest.version == "0.3.0")
+        #expect(manifest.permissions.frontTab && manifest.permissions.browser && manifest.permissions.terminals)
         #expect(manifest.permissions.commands.isEmpty && manifest.permissions.network.isEmpty)
         #expect(manifest.permissions.pageAdditions.isEmpty && manifest.permissions.fillForms.isEmpty)
     }
@@ -49,6 +49,7 @@ private let assistantFolder = URL(filePath: #filePath)
             "Know which tab is in front (its Space, title and address), in Spaces where it is switched on",
             "Use the browser like an agent, in Spaces where it is switched on: read pages, "
                 + "and open, click and type under each Space's agent policy",
+            "See the terminals of Spaces you switch on for it, read their screens, and send text to one after you approved the exact text",
             "Installs 2 packages from the npm registry (105 with the packages they use)",
             "Its background program never uses the internet; the programs it runs can",
         ])
