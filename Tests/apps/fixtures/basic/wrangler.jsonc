@@ -1,0 +1,19 @@
+{
+  // The fixture app of Tests/apps/host.test.ts. Written the way an agent would write it:
+  // with comments, trailing commas and keys Singularity doesn't read.
+  "name": "basic",
+  "compatibility_date": "2026-01-01",
+  "main": "./worker.ts",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "basic", /* only used on Cloudflare */
+      "database_id": "00000000-0000-0000-0000-000000000000",
+    },
+  ],
+  "vars": {
+    "GREETING": "hello from vars",
+    "SHADOWED": "the var",
+    "LIMITS": { "max": 3 },
+  },
+}

@@ -1,0 +1,5 @@
+{
+  "name": "plain-json",
+  "main": "src/index.ts",
+  "vars": { "MODE": "plain" }
+}
