@@ -15,6 +15,17 @@ public struct InboxQuestion: Equatable, Sendable {
     }
 }
 
+/// The link at the right of an approval card, for a request about a tab. Both buttons do the same
+/// (show the tab, answer nothing, restart the clock); only the name differs.
+public enum ApprovalTabButton: Equatable, Sendable {
+    /// "Show Tab": a page an agent acts on.
+    case showTab
+    /// "Go to terminal": text the Assistant wants to send to a terminal.
+    case goToTerminal
+    /// No link: an answer to a held question, which going to the terminal would hand back there.
+    case none
+}
+
 /// A browser approval (an agent wants to act on a page, or a page-side prompt).
 public struct InboxApproval: Equatable, Sendable {
     public var actor: String
@@ -24,9 +35,12 @@ public struct InboxApproval: Equatable, Sendable {
     public var tabTitle: String?
     public var text: String?
     public var siteHost: String?          // non-nil = offer "Allow on <siteHost>"
+    /// The link the card shows when the entry has a tab.
+    public var tabButton: ApprovalTabButton
 
     public init(actor: String, action: String, detail: String, url: String? = nil,
-                tabTitle: String? = nil, text: String? = nil, siteHost: String? = nil) {
+                tabTitle: String? = nil, text: String? = nil, siteHost: String? = nil,
+                tabButton: ApprovalTabButton = .showTab) {
         self.actor = actor
         self.action = action
         self.detail = detail
@@ -34,6 +48,7 @@ public struct InboxApproval: Equatable, Sendable {
         self.tabTitle = tabTitle
         self.text = text
         self.siteHost = siteHost
+        self.tabButton = tabButton
     }
 }
 

@@ -385,6 +385,141 @@ extension AppTests {
         _ = await agentInWork.value
     }
 
+    // MARK: Terminal requests (the Assistant's terminal tools)
+
+    /// The link at the card's right follows the request: Show Tab, Go to terminal, or nothing.
+    /// "Go to terminal" runs the same action as Show Tab (answers nothing, restarts the clock).
+    @Test func theCardsTabButtonFollowsTheRequest() {
+        func entry(_ button: ApprovalTabButton, tab: UUID? = UUID()) -> InboxEntry {
+            InboxEntry(kind: .approval(InboxApproval(actor: "Assistant", action: "send text to a terminal",
+                                                     detail: "It will be pasted into “zsh” (the shell) and Return will be pressed.",
+                                                     text: "yes", tabButton: button)),
+                       spaceID: UUID(), tabID: tab, agent: "Assistant", message: nil, arrived: Date())
+        }
+        let terminal = entry(.goToTerminal)
+        let choices = InboxApprovalButtons.choices(for: terminal)
+        #expect(choices.answers.map(\.title) == ["Allow", "Deny"])
+        #expect(choices.showTab?.title == "Go to terminal")
+        if case .showApprovalTab(let id) = choices.showTab?.action {
+            #expect(id == terminal.id)
+        } else {
+            Issue.record("Go to terminal must run showApprovalTab")
+        }
+
+        let none = InboxApprovalButtons.choices(for: entry(.none))
+        #expect(none.answers.map(\.title) == ["Allow", "Deny"])
+        #expect(none.showTab == nil)
+
+        #expect(InboxApprovalButtons.choices(for: entry(.showTab)).showTab?.title == "Show Tab")
+        // No tab, no link, whatever the request says.
+        #expect(InboxApprovalButtons.choices(for: entry(.goToTerminal, tab: nil)).showTab == nil)
+    }
+
+    private func terminalRequest(_ space: Space, pluginID: String, tabID: UUID? = nil,
+                                 button: ApprovalTabButton = .goToTerminal) -> AgentApprovals.Request {
+        var request = AgentApprovals.Request(actor: "Assistant", action: "send text to a terminal",
+                                             detail: "It will be pasted into “zsh” (the shell) and Return will be pressed.",
+                                             url: nil, spaceName: space.name, tabTitle: nil, text: "yes")
+        request.pluginID = pluginID
+        request.tabID = tabID
+        request.tabButton = button
+        request.isTerminalRequest = true
+        return request
+    }
+
+    @Test func aTerminalRequestsEntryCarriesItsButtonAndNoSite() async throws {
+        let rig = Rig(active: false)
+        defer { rig.tearDown() }
+        let tabID = UUID()
+        let request = terminalRequest(Self.space, pluginID: Self.pluginID, tabID: tabID)
+        let answer = Task { @MainActor in
+            // A terminal send names no site, even if a page origin were passed along.
+            await rig.approvals.check(AgentActionContext(kind: .terminalSend, pageOrigin: "https://example.com"),
+                                      space: Self.space, request: request)
+        }
+        let entry = try await rig.waitForEntry()
+        guard case .approval(let approval) = entry.kind else { Issue.record("not an approval"); return }
+        #expect(approval.tabButton == .goToTerminal)
+        #expect(approval.siteHost == nil)
+        #expect(entry.tabID == tabID)
+        #expect(!InboxApprovalButtons.choices(for: entry).answers.contains { $0.title.hasPrefix("Allow on") })
+        rig.center.decideApproval(entry.id, .denied)
+        #expect(await answer.value.logValue == "denied")
+    }
+
+    @Test func denyingTerminalApprovalsLeavesTheBrowserOnesWaiting() async throws {
+        let rig = Rig(active: false)
+        defer { rig.tearDown() }
+        let terminalContext = AgentActionContext(kind: .terminalSend)
+        let send = Task { @MainActor [request = terminalRequest(Self.space, pluginID: Self.pluginID)] in
+            await rig.approvals.check(terminalContext, space: Self.space, request: request)
+        }
+        try await rig.waitForEntry(count: 1)
+        let click = rig.check(pluginID: Self.pluginID)
+        try await rig.waitForEntry(count: 2)
+        let otherPlugin = Task { @MainActor [request = terminalRequest(Self.space, pluginID: "other")] in
+            await rig.approvals.check(terminalContext, space: Self.space, request: request)
+        }
+        try await rig.waitForEntry(count: 3)
+        // Another Space: untouched.
+        var home = Space(name: "Home", slug: "home", colorHex: "#E0A030")
+        home.agentPolicy = .ask
+        let elsewhere = Task { @MainActor [request = terminalRequest(home, pluginID: Self.pluginID)] in
+            await rig.approvals.check(terminalContext, space: home, request: request)
+        }
+        try await rig.waitForEntry(count: 4)
+
+        rig.center.denyTerminalApprovals(ofPlugin: Self.pluginID, inSpace: Self.space.id)
+        #expect(await send.value.logValue == "denied")
+        #expect(rig.waiting.count == 3)
+        rig.center.denyAllApprovals()
+        _ = await click.value
+        _ = await otherPlugin.value
+        _ = await elsewhere.value
+    }
+
+    /// `AppState` wires the plugin's Terminals switch going off to `denyTerminalApprovals`.
+    @Test func switchingTerminalsOffDeniesThatPluginsTerminalApprovalsThere() async throws {
+        MainRunLoopGuard.start
+        let root = TestAppState.makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = Paths(root: root)
+        let store = SpaceStore(paths: paths)
+        var work = Space(name: "Work", slug: "work", colorHex: "#5E81F4")
+        work.agentPolicy = .ask
+        try store.save(work)
+        try store.save(AppStateFile(spaceOrder: [work.id], selectedSpaceID: work.id))
+        let approval = PluginApproval(fingerprint: "x", permissions: .init(browser: true, terminals: true), commandPaths: [:],
+                                      enabledSpaces: [work.id], terminalSpaces: [work.id], developmentMode: false,
+                                      approvedAt: Date(), fileHashes: [:])
+        try PluginStateStore(file: paths.pluginStateFile).save([Self.pluginID: approval])
+        let state = TestAppState.make(root: root)
+        defer { TestAppState.shutDown(state) }
+        state.inbox.appIsActive = { false }
+        state.inbox.pluginPageOnScreen = { _ in false }
+        state.inbox.onArrival = { _ in }
+        state.inbox.requestAttention = {}
+
+        let send = Task { @MainActor [request = terminalRequest(work, pluginID: Self.pluginID)] in
+            await state.approvals.check(AgentActionContext(kind: .terminalSend), space: work, request: request)
+        }
+        try await waitUntil("1") { state.inbox.inbox.count == 1 }
+        var clickRequest = AgentApprovals.Request(actor: "Assistant", action: "click", detail: "x", url: nil,
+                                                  spaceName: work.name, tabTitle: nil, text: nil)
+        clickRequest.pluginID = Self.pluginID
+        let click = Task { @MainActor [clickRequest] in
+            await state.approvals.check(AgentActionContext(kind: .click, pageOrigin: "https://example.com"),
+                                        space: work, request: clickRequest)
+        }
+        try await waitUntil("2") { state.inbox.inbox.count == 2 }
+
+        state.plugins.setTerminalsEnabled(Self.pluginID, space: work.id, false)
+        #expect(await send.value.logValue == "denied")
+        #expect(state.inbox.inbox.count == 1)
+        state.inbox.denyAllApprovals()
+        _ = await click.value
+    }
+
     // MARK: Where the page counts as shown
 
     /// The panel showing the plugin (when drawn), or a tab of it among the visible tabs; never

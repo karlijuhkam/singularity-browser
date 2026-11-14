@@ -711,6 +711,91 @@ extension AppTests {
         #expect(Self.answers(in: try #require(connection.replies.first)) == [Self.question: "Postgres"])
     }
 
+    // MARK: Lookups for the Assistant's terminal tools
+
+    @Test func aHeldQuestionCanBeFoundAndAnsweredOnce() throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        #expect(f.center.heldQuestion(forTab: f.tab.id) == nil)
+        let connection = f.arrive(Self.questionJSON)
+        let entry = try #require(f.held.first)
+        let found = try #require(f.center.heldQuestion(forTab: f.tab.id))
+        #expect(found.entryID == entry.id)
+        #expect(found.questions == [InboxQuestion(question: Self.question, header: "Database", options: ["SQLite", "Postgres"])])
+        #expect(f.center.heldQuestion(forTab: UUID()) == nil)
+        #expect(!f.center.waitsOnPermission(tabID: f.tab.id))
+
+        #expect(f.center.answerQuestion(entry.id, answers: [Self.question: ["SQLite"]]))
+        // Already answered: false, and no second reply to the hook.
+        #expect(!f.center.answerQuestion(entry.id, answers: [Self.question: ["Postgres"]]))
+        #expect(connection.replies.count == 1)
+        #expect(f.center.heldQuestion(forTab: f.tab.id) == nil)
+    }
+
+    @Test func aHeldPermissionIsWaitingOnPermission() throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        f.arrive(Self.permissionJSON())
+        let entry = try #require(f.held.first)
+        #expect(f.center.waitsOnPermission(tabID: f.tab.id))
+        #expect(f.center.heldQuestion(forTab: f.tab.id) == nil)
+        f.center.decidePermission(entry.id, allow: false)
+        #expect(!f.center.waitsOnPermission(tabID: f.tab.id))
+    }
+
+    /// An approval asked about a held question (`heldEntryID`) ends `cancelled` when that question
+    /// leaves the inbox for any reason: answered on its own card first, or handed back to the
+    /// terminal. One asked for a question that is no longer held ends at once.
+    @Test func anApprovalAboutAHeldQuestionEndsWhenTheQuestionLeaves() async throws {
+        let f = try makeFixture()
+        defer { tearDown(f) }
+        // No panel opening by itself in this test, and no plugin page on screen (asking AppKit
+        // would need `NSApp`, which a test run on its own has not made).
+        f.center.appIsActive = { false }
+        f.center.pluginPageOnScreen = { _ in false }
+        let space = try #require(f.state.space(f.two.id))
+
+        func ask(about heldID: UUID) -> Task<AgentApprovals.Outcome, Never> {
+            var request = AgentApprovals.Request(actor: "Assistant", action: "answer a question in a terminal",
+                                                 detail: "In “claude”.", url: nil, spaceName: space.name,
+                                                 tabTitle: nil, text: "\(Self.question) → SQLite")
+            request.pluginID = "assistant"
+            request.tabID = f.tab.id
+            request.tabButton = .none
+            request.isTerminalRequest = true
+            request.heldEntryID = heldID
+            return Task { @MainActor in
+                await f.state.approvals.check(AgentActionContext(kind: .terminalSend), space: space, request: request)
+            }
+        }
+        func approvalCount() -> Int {
+            f.center.inbox.visible.filter { if case .approval = $0.kind { true } else { false } }.count
+        }
+
+        // Answered on the inbox's own card first.
+        let first = f.arrive(Self.questionJSON)
+        let question = try #require(f.held.first)
+        let answeredFirst = ask(about: question.id)
+        try await waitUntil("the approval") { approvalCount() == 1 }
+        #expect(f.center.answerQuestion(question.id, answers: [Self.question: ["Postgres"]]))
+        #expect(await answeredFirst.value.logValue == "cancelled")
+        #expect(approvalCount() == 0)
+        #expect(first.replies.count == 1)
+
+        // Handed back to the terminal (the owner went there).
+        let second = f.arrive(Self.questionJSON)
+        let again = try #require(f.held.first)
+        let handedBack = ask(about: again.id)
+        try await waitUntil("the approval") { approvalCount() == 1 }
+        f.center.wentToTerminal(f.tab.id)
+        #expect(await handedBack.value.logValue == "cancelled")
+        #expect(second.replies == [ClaudeHook.noDecision])
+
+        // Asked about a question that is gone already: no entry, cancelled at once.
+        #expect(await ask(about: again.id).value.logValue == "cancelled")
+        #expect(approvalCount() == 0)
+    }
+
     // MARK: The real socket and the real helper
 
     /// The built `singularity-hook`, next to this test bundle (`swift build` puts every product of

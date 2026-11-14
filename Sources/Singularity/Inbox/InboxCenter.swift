@@ -16,6 +16,10 @@ import SingularityCore
 @Observable
 final class InboxCenter {
     private(set) var inbox = Inbox()
+    /// Every terminal tab's latest reported state (working, waiting, done, …), for the Assistant's
+    /// `terminals` tool. Fed by every signal, whether or not the owner looks at the tab. Not
+    /// observed: no view draws it, and status records arrive often.
+    @ObservationIgnored private(set) var board = TerminalBoard()
     /// Whether the inbox panel is on screen. Change it through `showPanel` / `closePanel`.
     var isPanelShown = false
 
@@ -113,6 +117,8 @@ final class InboxCenter {
     /// A terminal tab reported something: a status record, a notification, a bell, or that its
     /// program went away.
     func terminalSignal(_ signal: TerminalSignal, tabID: UUID, spaceID: UUID, foregroundProgram: String?) {
+        // The board first: it keeps the state whatever the looked-at rules below decide.
+        board.apply(signal, tabID: tabID, foregroundProgram: foregroundProgram, now: now())
         let tab = facts(tabID: tabID, spaceID: spaceID, foregroundProgram: foregroundProgram)
         var statusApp: String?
         if case .status(let records) = signal { statusApp = InboxRules.summarise(records)?.app }
@@ -151,6 +157,7 @@ final class InboxCenter {
 
     /// The tab is gone: everything for it goes, approvals too.
     func tabClosed(_ tabID: UUID) {
+        board.remove(tabID)
         var updated = inbox
         let gone = updated.tabClosed(tabID)
         if store(updated) {
@@ -193,6 +200,9 @@ final class InboxCenter {
     func requestApproval(_ pending: AgentApprovals.PendingApproval) async -> AgentApprovals.Outcome {
         // A call that was already stopped asks nothing.
         if Task.isCancelled || pending.request.cancellation?.isCancelled == true { return .cancelled }
+        // An answer to a held question that has already left the inbox (answered on its own card,
+        // handed back to the terminal): nothing left to ask about.
+        if let heldID = pending.request.heldEntryID, heldRequests[heldID] == nil { return .cancelled }
         // A request for a Space or tab that is already gone: no entry, "no".
         if let state {
             guard let space = state.space(pending.spaceID) else { return .denied }
@@ -208,7 +218,9 @@ final class InboxCenter {
         let approval = InboxApproval(
             actor: request.actor, action: request.action, detail: request.detail, url: request.url,
             tabTitle: request.tabTitle, text: request.text,
-            siteHost: pending.siteOrigin.map { URL(string: $0)?.host() ?? $0 })
+            // Text for a terminal is never allowed per site (the rules give no site for it anyway).
+            siteHost: request.isTerminalRequest ? nil : pending.siteOrigin.map { URL(string: $0)?.host() ?? $0 },
+            tabButton: request.tabButton)
         let arrived = now()
         // Named before the entry exists, so a cancellation at any moment can withdraw it.
         let id = UUID()
@@ -261,6 +273,17 @@ final class InboxCenter {
     func denyApprovals(ofPlugin pluginID: String, inSpace spaceID: UUID) {
         for (id, waiting) in waitingApprovals
         where waiting.pending.spaceID == spaceID && waiting.pending.request.pluginID == pluginID {
+            finishApproval(id, .denied)
+        }
+    }
+
+    /// The owner switched the Terminals switch of Space `spaceID` off for plugin `pluginID` (or the
+    /// Space itself, which takes the Terminals switch with it): its waiting terminal requests
+    /// there are denied. Its browser approvals wait on (the Space switch decides those).
+    func denyTerminalApprovals(ofPlugin pluginID: String, inSpace spaceID: UUID) {
+        for (id, waiting) in waitingApprovals
+        where waiting.pending.spaceID == spaceID && waiting.pending.request.pluginID == pluginID
+            && waiting.pending.request.isTerminalRequest {
             finishApproval(id, .denied)
         }
     }
@@ -486,9 +509,36 @@ final class InboxCenter {
     /// The owner's answer to a held question: cleaned question text → cleaned labels, as the card
     /// shows them. `ClaudeHook.answerReply` maps them back to Claude Code's original strings; when
     /// nothing matches it gives "no decision", and the question goes back to the terminal.
-    func answerQuestion(_ id: UUID, answers: [String: [String]]) {
-        guard let toolInput = heldRequests[id]?.toolInput else { return }
+    /// Returns false when the question is no longer held (already answered, handed back): nothing
+    /// is sent then. Whichever answers first (the inbox card or the Assistant's approved answer) wins.
+    @discardableResult
+    func answerQuestion(_ id: UUID, answers: [String: [String]]) -> Bool {
+        guard let toolInput = heldRequests[id]?.toolInput else { return false }
         finishHeld(id, reply: ClaudeHook.answerReply(toolInput: toolInput, answers: answers), why: "question answered")
+        return true
+    }
+
+    /// The question Claude Code holds for this tab's terminal (the oldest, when there are several),
+    /// as its card shows it: the entry's id (for `answerQuestion`) and the cleaned questions. Nil
+    /// when none is held.
+    func heldQuestion(forTab tabID: UUID) -> (entryID: UUID, questions: [InboxQuestion])? {
+        let held = inbox.entries
+            .filter { $0.tabID == tabID && heldRequests[$0.id]?.toolInput != nil }
+            .min { $0.arrived < $1.arrived }
+        guard let held, case .question(let questions) = held.kind else { return nil }
+        return (held.id, questions)
+    }
+
+    /// Whether this tab's terminal waits for the owner's answer to a permission request: one held
+    /// here, or the board saying so (the agent's status record, also without the inbox hook).
+    func waitsOnPermission(tabID: UUID) -> Bool {
+        let held = inbox.entries.contains { entry in
+            guard entry.tabID == tabID, heldRequests[entry.id] != nil, case .permission = entry.kind else { return false }
+            return true
+        }
+        if held { return true }
+        guard let row = board.row(tabID) else { return false }
+        return row.state == .waiting && row.reason == .permission
     }
 
     /// Allow (this once) or Deny for a held permission request. Allow is refused (nothing
@@ -604,6 +654,11 @@ final class InboxCenter {
         if removed != nil { listDidChange() }
         logChange(why, tabID: held.tabID)
         if let reply { held.connection.reply(reply) }
+        // An approval asked about this held request (the Assistant answering the question) can no
+        // longer succeed: it ends `.cancelled`, and its caller says the question was answered.
+        for (approvalID, waiting) in waitingApprovals where waiting.pending.request.heldEntryID == id {
+            finishApproval(approvalID, .cancelled)
+        }
     }
 
     /// Tests only: replaces the whole list (built with Core's `Inbox` methods) without announcing

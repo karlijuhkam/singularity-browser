@@ -192,6 +192,10 @@ final class AppState {
         plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged(pluginsOnly: true) }
         plugins.onProgramEnded = { [weak self] id in self?.mcp?.closeStaleConnections(ofPlugin: id) }
         plugins.onSpaceSwitchedOff = { [weak self] id, space in self?.inbox.denyApprovals(ofPlugin: id, inSpace: space) }
+        // A Space's Terminals switch going off denies that plugin's waiting terminal requests there.
+        plugins.onTerminalsSwitchedOff = { [weak self] id, space in
+            self?.inbox.denyTerminalApprovals(ofPlugin: id, inSpace: space)
+        }
         // Site settings: the console/network collector for switched-on sites, and plugins switched off per site.
         let captureBridge = CaptureBridge(state: self)
         pluginScripts.onAttach = { controller in captureBridge.install(in: controller) }
@@ -1518,17 +1522,21 @@ final class AppState {
             log(false, "no running terminal")
             return .noTerminal
         }
-        // A shell started just now for this prompt may still be reading ~/.zshrc.
-        await session.waitUntilReady()
-
-        // Bracketed paste keeps multi-line text together as one message in programs such as
-        // Claude Code; the short pause lets the program finish handling the paste before Return.
-        session.view.pasteText(text)
-        try? await Task.sleep(for: .milliseconds(150))
-        session.view.send(txt: "\r")
+        // Waits for a shell started just now, pastes, and presses Return (`TerminalHandle.paste`).
+        await session.paste(text)
         log(true, "sent to \(tab.displayTitle)")
         return .sent
     }
+
+    /// The terminal of tab `tabID` for the Assistant's terminal tools: only a session that already
+    /// exists (the tab was opened since launch). Never starts a shell; nil for anything else.
+    func terminalHandle(_ tabID: UUID) -> (any TerminalHandle)? {
+        if let terminalHandleOverride { return terminalHandleOverride(tabID) }
+        return terminals.existingSession(tabID)
+    }
+
+    /// Tests only: replaces `terminalHandle` with fakes, so no test starts a shell.
+    @ObservationIgnored var terminalHandleOverride: ((UUID) -> (any TerminalHandle)?)?
 
     /// The terminal that `singularity.prompt` types into: the most recently selected terminal tab
     /// with a running shell, else any terminal tab with a running shell. If the Space's terminal

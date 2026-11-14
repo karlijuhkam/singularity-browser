@@ -406,6 +406,14 @@ final class TerminalSession {
         )
     }
 
+    /// The terminal's foreground process group, read now (not the 1 s poll's value): the shell's
+    /// own group at its prompt, or the program it runs. Nil when the shell isn't running. Two reads
+    /// that differ mean another program has the keyboard (`TerminalHandle`).
+    var foregroundGroupID: pid_t? {
+        guard isRunning else { return nil }
+        return foregroundGroup()
+    }
+
     /// The process group that has the keyboard: the shell at its prompt, or the program it runs.
     private func foregroundGroup() -> pid_t? {
         if let herdrShellPID { return ProcessInspector.foregroundProcessGroup(ofTerminalOf: herdrShellPID) }

@@ -76,6 +76,17 @@ final class AgentApprovals {
         /// asks from WebKit's policy callback): cancelling the call cancels this, which withdraws
         /// the request and makes it ask nothing more. Nil: the asking task's own cancellation counts.
         var cancellation: ApprovalCancellation? = nil
+        /// The link the card shows for `tabID`: "Show Tab" (pages), "Go to terminal" (text for a
+        /// terminal) or none (an answer to a held question).
+        var tabButton: ApprovalTabButton = .showTab
+        /// Text for a terminal or an answer to a held question (the Assistant's terminal tools):
+        /// never offers "Allow on <site>", and is denied when the plugin's Terminals switch goes
+        /// off for the Space (`InboxCenter.denyTerminalApprovals`).
+        var isTerminalRequest: Bool = false
+        /// The held question (its inbox entry) this request answers. When that entry leaves the
+        /// inbox in any way (answered on its own card, handed back to the terminal, …) the request
+        /// ends `.cancelled`; asked when it is already gone, it ends `.cancelled` at once.
+        var heldEntryID: UUID? = nil
     }
 
     /// A question waiting for the owner, handed to `presenter` (the inbox).

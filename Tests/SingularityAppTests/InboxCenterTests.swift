@@ -102,6 +102,34 @@ extension AppTests {
         #expect(f.recorder.changes == 0)
     }
 
+    /// The terminal board (what the Assistant's `terminals` tool reads) is fed by every signal,
+    /// also while the owner looks at the tab and no entry is made.
+    @Test func theBoardFollowsTheTabEvenWhileItIsLookedAt() throws {
+        let f = try makeFixture(selecting: "two")
+        defer { tearDown(f) }
+        #expect(f.state.isTabOnScreen(f.tab.id))
+        #expect(f.center.board.row(f.tab.id) == nil)
+
+        f.center.terminalSignal(.status([StatusRecord(id: "", state: .working, kind: nil, app: "claude-code", message: "")]),
+                                tabID: f.tab.id, spaceID: f.two.id, foregroundProgram: "claude")
+        #expect(f.center.board.row(f.tab.id)?.state == .working)
+
+        sendBlocked(f)
+        let row = try #require(f.center.board.row(f.tab.id))
+        #expect(row.state == .waiting && row.reason == .question && row.message == "Which database?")
+        #expect(f.center.inbox.visible.isEmpty)
+        #expect(!f.center.waitsOnPermission(tabID: f.tab.id))
+
+        f.center.terminalSignal(.status([StatusRecord(id: "", state: .blocked, kind: .permission, app: "claude-code", message: "")]),
+                                tabID: f.tab.id, spaceID: f.two.id, foregroundProgram: "claude")
+        #expect(f.center.board.row(f.tab.id)?.reason == .permission)
+        #expect(f.center.waitsOnPermission(tabID: f.tab.id))
+
+        f.center.tabClosed(f.tab.id)
+        #expect(f.center.board.row(f.tab.id) == nil)
+        #expect(!f.center.waitsOnPermission(tabID: f.tab.id))
+    }
+
     @Test func inactiveAppStillCreatesAnEntryForTheTabOnScreen() throws {
         let f = try makeFixture(selecting: "two")
         defer { tearDown(f) }

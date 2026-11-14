@@ -631,8 +631,9 @@ private struct InboxCardButtons: View {
     }
 }
 
-/// Allow, Allow on <site> (only when the rules offer it), Deny, and Show Tab (only when the
-/// request is about a tab). Plain small buttons, none of them the default.
+/// Allow, Allow on <site> (only when the rules offer it), Deny, and Show Tab or Go to terminal
+/// (only when the request is about a tab, as `InboxApproval.tabButton` says). Plain small buttons,
+/// none of them the default.
 struct InboxApprovalButtons: View {
     let entry: InboxEntry
     let onAction: (InboxCardAction) -> Void
@@ -654,7 +655,14 @@ struct InboxApprovalButtons: View {
                                   action: .decideApproval(entry.id, .approvedSite)))
         }
         answers.append(Choice(title: "Deny", action: .decideApproval(entry.id, .denied)))
-        let showTab = entry.tabID == nil ? nil : Choice(title: "Show Tab", action: .showApprovalTab(entry.id))
+        // "Show Tab" and "Go to terminal" do the same (show the tab, answer nothing, restart the
+        // clock); an answer to a held question has neither (going there hands the question back).
+        guard entry.tabID != nil else { return (answers, nil) }
+        let showTab: Choice? = switch approval.tabButton {
+        case .showTab: Choice(title: "Show Tab", action: .showApprovalTab(entry.id))
+        case .goToTerminal: Choice(title: "Go to terminal", action: .showApprovalTab(entry.id))
+        case .none: nil
+        }
         return (answers, showTab)
     }
 
