@@ -335,6 +335,28 @@ private struct DataSettings: View {
     @State private var pending: PendingClear?
     @State private var done: String?
 
+    /// What can be removed of an app (an artifact folder with a Worker, see `AppCenter`).
+    private enum AppClearKind: String {
+        case forget = "Forget Hosts and Keys"
+        case data = "Delete Data"
+
+        func explanation(_ app: String) -> String {
+            switch self {
+            case .forget: return "Forgets the hosts “\(app)” may connect to and deletes its keys from your keychain."
+            case .data: return "Moves the database and log of “\(app)” to the Trash."
+            }
+        }
+    }
+
+    private struct PendingAppClear: Identifiable {
+        let id = UUID()
+        let space: Space
+        let app: String
+        let kind: AppClearKind
+    }
+
+    @State private var pendingApp: PendingAppClear?
+
     var body: some View {
         Form {
             Section("Where your data lives") {
@@ -366,9 +388,26 @@ private struct DataSettings: View {
                         .foregroundStyle(.green)
                 }
             }
+
+            appsSection
         }
         .formStyle(.grouped)
         .padding()
+        .confirmationDialog(
+            pendingApp.map { "\($0.kind.rawValue) of “\($0.app)”?" } ?? "",
+            isPresented: Binding(get: { pendingApp != nil }, set: { if !$0 { pendingApp = nil } }),
+            presenting: pendingApp
+        ) { request in
+            Button(request.kind.rawValue, role: .destructive) {
+                switch request.kind {
+                case .forget: state.apps.forget(space: request.space.id, app: request.app)
+                case .data: state.apps.deleteData(space: request.space.id, app: request.app)
+                }
+                done = "\(request.kind.rawValue): done for “\(request.app)”."
+            }
+        } message: { request in
+            Text(request.kind.explanation(request.app))
+        }
         .confirmationDialog(
             pending.map { "\($0.kind.rawValue) in “\($0.space.name)”?" } ?? "",
             isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
@@ -378,6 +417,66 @@ private struct DataSettings: View {
         } message: { request in
             Text(request.kind.explanation(request.space.name) + " This can't be undone.")
         }
+    }
+
+    /// Every app that has allowed hosts, keys or data, per Space: also one whose folder is gone,
+    /// since nothing of an app is removed by itself when its folder disappears.
+    @ViewBuilder
+    private var appsSection: some View {
+        let rows = DataSettings.appRows(state)
+        if !rows.isEmpty {
+            Section("Apps") {
+                ForEach(rows, id: \.id) { row in
+                    HStack {
+                        Circle().fill(Color(hex: row.space.colorHex)).frame(width: 10, height: 10)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: "\(row.space.name) / \(row.app.path)")
+                            Text(DataSettings.appSummary(row.app))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Menu("Remove…") {
+                            Button(AppClearKind.forget.rawValue) {
+                                pendingApp = PendingAppClear(space: row.space, app: row.app.path, kind: .forget)
+                            }
+                            .disabled(!row.app.hasRecord)
+                            Button(AppClearKind.data.rawValue) {
+                                pendingApp = PendingAppClear(space: row.space, app: row.app.path, kind: .data)
+                            }
+                            .disabled(!row.app.hasData)
+                        }
+                        .fixedSize()
+                    }
+                }
+                Text("An app is a folder in a Space's artifacts with a Worker. Its keys are in your keychain; its database is in the Space's app-data folder.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    struct AppRow {
+        let space: Space
+        let app: KnownApp
+        var id: String { space.id.uuidString + "/" + app.path }
+    }
+
+    /// The apps worth listing: those with something to remove.
+    static func appRows(_ state: AppState) -> [AppRow] {
+        state.spaces.flatMap { space in
+            state.apps.knownApps(space: space.id)
+                .filter { $0.hasRecord || $0.hasData }
+                .map { AppRow(space: space, app: $0) }
+        }
+    }
+
+    static func appSummary(_ app: KnownApp) -> String {
+        var parts: [String] = []
+        if app.hasRecord { parts.append("hosts or keys") }
+        if app.hasData { parts.append("data") }
+        let has = parts.joined(separator: " and ")
+        return app.folderExists ? "Has \(has)." : "Its folder is gone. Still has \(has)."
     }
 
     private func perform(_ request: PendingClear) {

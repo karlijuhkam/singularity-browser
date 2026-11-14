@@ -22,6 +22,9 @@ struct SidebarView: View {
                     HStack(spacing: 2) {
                         AddressRow()
                         SiteSettingsButton()
+                        // For a tab that shows an app (an artifact folder with a Worker); the two
+                        // buttons are never there together: one is for web pages, one for artifacts.
+                        AppPanelButton()
                     }
                     if let space = state.selectedSpace {
                         TabList(space: space)
