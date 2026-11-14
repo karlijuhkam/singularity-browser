@@ -21,6 +21,23 @@ import Foundation
         #expect(check("a\u{200B}b") == .failure(.hiddenCharacters))
         #expect(check("a\rb") == .failure(.hiddenCharacters))
     }
+    @Test func moreHiddenCharactersRefused() {
+        for v in [0x2028, 0x2029, 0xE0041, 0x206A, 0x00AD, 0x0085, 0x7F, 0x3164, 0x061C, 0x034F, 0x2800, 0xFFA0, 0xE000] {
+            let s = "a" + String(Unicode.Scalar(v)!) + "b"
+            #expect(check(s) == .failure(.hiddenCharacters), "U+\(String(v, radix: 16))")
+        }
+    }
+    @Test func ordinaryTextPasses() {
+        #expect(check("héllo wörld") == .success("héllo wörld"))
+        #expect(check("日本語のテキスト") == .success("日本語のテキスト"))
+        #expect(check("ok 👍 done") == .success("ok 👍 done"))
+        #expect(check("a\u{A0}b") == .success("a\u{A0}b"))        // inner non-breaking space passes
+        #expect(check("👨\u{200D}👩") == .failure(.hiddenCharacters))   // ZWJ sequences are refused
+        #expect(check("❤\u{FE0F}") == .success("❤\u{FE0F}"))       // variation selector passes
+    }
+    @Test func manyCombiningMarksCountAsScalars() {
+        #expect(check("e" + String(repeating: "\u{301}", count: 4000)) == .failure(.tooLong))
+    }
     @Test func newlines() {
         #expect(check("a\nb", paste: true) == .success("a\nb"))
         #expect(check("a\nb", paste: false) == .failure(.needsOneLine))
@@ -80,6 +97,12 @@ import Foundation
         #expect(QuestionAnswerRules.check([A(question: "Which many?", answer: ["A", "C"])], questions: [multi]) == ["Which many?": ["A", "C"]])
         #expect(QuestionAnswerRules.check([A(question: "Which many?", answer: [])], questions: [multi]) == nil)
         #expect(QuestionAnswerRules.check([A(question: "Which many?", answer: ["A", "A"])], questions: [multi]) == nil)
+    }
+    @Test func emptyAnswerOnSingleRefused() {
+        #expect(QuestionAnswerRules.check([A(question: "Which one?", answer: [])], questions: [single]) == nil)
+    }
+    @Test func cardTextSkipsMissing() {
+        #expect(QuestionAnswerRules.cardText(["Which one?": ["Yes"]], questions: [single, multi]) == "Which one? → Yes")
     }
     @Test func duplicateAnswerRefused() {
         let a = A(question: "Which one?", answer: ["Yes"])

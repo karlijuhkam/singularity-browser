@@ -15,14 +15,29 @@ public enum TerminalSendRules {
     public static func check(_ text: String, bracketedPaste: Bool) -> Result<String, Refusal> {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .failure(.empty) }
-        if trimmed.count > maxLength { return .failure(.tooLong) }
-        for scalar in trimmed.unicodeScalars
-        where scalar.properties.generalCategory == .control && scalar != "\n" && scalar != "\t" {
+        // Scalars, not Characters: one grapheme can carry any number of combining marks.
+        if trimmed.unicodeScalars.count > maxLength { return .failure(.tooLong) }
+        for scalar in trimmed.unicodeScalars where scalar != "\n" && scalar != "\t" && isHidden(scalar) {
             return .failure(.hiddenCharacters)
         }
         if InboxText.cleanBlock(trimmed, limit: .max) != trimmed { return .failure(.hiddenCharacters) }
         if !bracketedPaste && trimmed.unicodeScalars.contains("\n") { return .failure(.needsOneLine) }
         return .success(trimmed)
+    }
+
+    /// Characters that are invisible or that a card would draw differently from what is sent:
+    /// controls, format characters (zero-width, direction, tags, soft hyphen), line and paragraph
+    /// separators, unassigned/private-use/surrogate code points, and the blank "filler" letters.
+    private static func isHidden(_ s: Unicode.Scalar) -> Bool {
+        switch s.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator, .unassigned, .privateUse, .surrogate:
+            return true
+        default: break
+        }
+        switch s.value {
+        case 0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800: return true
+        default: return false
+        }
     }
 
     public static func message(_ refusal: Refusal) -> String {
@@ -91,9 +106,10 @@ public enum QuestionAnswerRules {
 
     /// One line per question for the card: "<question> → <label>, <label>".
     public static func cardText(_ answers: [String: [String]], questions: [InboxQuestion]) -> String {
-        questions.map { q in
+        questions.compactMap { q in
             let k = key(q.question)
-            return "\(k) → \((answers[k] ?? []).joined(separator: ", "))"
+            guard let labels = answers[k] else { return nil }
+            return "\(k) → \(labels.joined(separator: ", "))"
         }.joined(separator: "\n")
     }
 }
