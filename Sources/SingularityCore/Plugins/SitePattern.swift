@@ -16,6 +16,8 @@ public enum PluginError: Error, Equatable, Sendable {
     case programsNeedBackground
     /// `browser` without a program: the browser tools are for a program the plugin keeps running.
     case browserNeedsProgram
+    /// `terminals` without `browser`: terminals are reached through the browser's door.
+    case terminalsNeedBrowser
     /// A name in `programEnv` that plugins may not set (or one with no program to receive it).
     case invalidProgramEnv(String)
     case invalidPanelTitle

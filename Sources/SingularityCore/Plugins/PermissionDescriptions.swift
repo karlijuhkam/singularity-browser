@@ -43,6 +43,9 @@ public enum PermissionDescriptions {
             out.append("Use the browser like an agent, in Spaces where it is switched on: read pages, "
                        + "and open, click and type under each Space's agent policy")
         }
+        if permissions.terminals {
+            out.append("See the terminals of Spaces you switch on for it, read their screens, and send text to one after you approved the exact text")
+        }
         if let packages, !packages.packages.isEmpty {
             let n = packages.packages.count
             var line = "Installs \(n) \(n == 1 ? "package" : "packages") from the npm registry"

@@ -104,6 +104,8 @@ public struct PluginApproval: Codable, Equatable, Sendable {
     /// Program name -> absolute path the user approved (e.g. "op" -> "/opt/homebrew/bin/op").
     public var commandPaths: [String: String]
     public var enabledSpaces: Set<UUID>
+    /// Spaces whose terminals the plugin may see; counts only while the Space is in `enabledSpaces` too.
+    public var terminalSpaces: Set<UUID>
     /// While on, edited files do not pause the plugin (permission widening still does).
     public var developmentMode: Bool
     public var approvedAt: Date
@@ -112,19 +114,20 @@ public struct PluginApproval: Codable, Equatable, Sendable {
     public var fileHashes: [String: String]
 
     public init(fingerprint: String, permissions: PluginManifest.Permissions, commandPaths: [String: String],
-                enabledSpaces: Set<UUID>, developmentMode: Bool, approvedAt: Date, fileHashes: [String: String] = [:]) {
+                enabledSpaces: Set<UUID>, terminalSpaces: Set<UUID> = [], developmentMode: Bool, approvedAt: Date, fileHashes: [String: String] = [:]) {
         self.fingerprint = fingerprint
         self.fileHashes = fileHashes
         self.permissions = permissions
         self.commandPaths = commandPaths
         self.enabledSpaces = enabledSpaces
+        self.terminalSpaces = terminalSpaces
         self.developmentMode = developmentMode
         // Stored with millisecond precision, so round here to make a saved value read back equal.
         self.approvedAt = Date(timeIntervalSince1970: (approvedAt.timeIntervalSince1970 * 1000).rounded() / 1000)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case fingerprint, permissions, commandPaths, enabledSpaces, developmentMode, approvedAt, fileHashes
+        case fingerprint, permissions, commandPaths, enabledSpaces, terminalSpaces, developmentMode, approvedAt, fileHashes
     }
 
     public init(from decoder: Decoder) throws {
@@ -133,6 +136,7 @@ public struct PluginApproval: Codable, Equatable, Sendable {
         permissions = try c.decode(PluginManifest.Permissions.self, forKey: .permissions)
         commandPaths = try c.decode([String: String].self, forKey: .commandPaths)
         enabledSpaces = Set(try c.decode([UUID].self, forKey: .enabledSpaces))
+        terminalSpaces = Set(try c.decodeIfPresent([UUID].self, forKey: .terminalSpaces) ?? [])
         developmentMode = try c.decode(Bool.self, forKey: .developmentMode)
         approvedAt = try c.decode(Date.self, forKey: .approvedAt)
         fileHashes = try c.decodeIfPresent([String: String].self, forKey: .fileHashes) ?? [:]
@@ -145,6 +149,7 @@ public struct PluginApproval: Codable, Equatable, Sendable {
         try c.encode(permissions, forKey: .permissions)
         try c.encode(commandPaths, forKey: .commandPaths)
         try c.encode(enabledSpaces.sorted { $0.uuidString < $1.uuidString }, forKey: .enabledSpaces)
+        try c.encode(terminalSpaces.sorted { $0.uuidString < $1.uuidString }, forKey: .terminalSpaces)
         try c.encode(developmentMode, forKey: .developmentMode)
         try c.encode(approvedAt, forKey: .approvedAt)
         try c.encode(fileHashes, forKey: .fileHashes)
@@ -279,6 +284,7 @@ extension PluginManifest.Permissions {
         if programEnv.contains(where: { !approved.programEnv.contains($0) }) { return true }
         if frontTab && !approved.frontTab { return true }
         if browser && !approved.browser { return true }
+        if terminals && !approved.terminals { return true }
         return false
     }
 }

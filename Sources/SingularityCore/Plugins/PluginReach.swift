@@ -36,6 +36,14 @@ public enum PluginReach {
         status == .approved && approval?.enabledSpaces.contains(space.id) == true
     }
 
+    /// The Space's terminals are open to the plugin: the Space is open, the plugin has `terminals`
+    /// approved, and the Space's Terminals switch is on.
+    public static func terminalsAreOpen(_ space: Space, approval: PluginApproval?, status: PluginStatus) -> Bool {
+        spaceIsOpen(space, approval: approval, status: status)
+            && approval?.permissions.terminals == true
+            && approval?.terminalSpaces.contains(space.id) == true
+    }
+
     /// The owner switched this plugin off for the site of `url` in this Space. A `blob:` address
     /// counts as the site that made it (`blob:https://bank.example/…` is on bank.example): its page
     /// shows that site's content. (`SiteInfo.site` itself keeps saying "no site" for it.)

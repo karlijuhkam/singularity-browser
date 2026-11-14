@@ -57,6 +57,11 @@ public enum AgentCaller: Equatable, Sendable {
         "\(title) is switched off for this site."
     }
 
+    /// The `terminals` tool when no Space lets the plugin see its terminals.
+    public static func noTerminalSpaces(title: String) -> String {
+        "No Space lets \(title) see its terminals. The owner can switch that on in Settings → Plugins."
+    }
+
     /// `list_spaces` when no Space is switched on for the plugin.
     public static func noSpaces(title: String) -> String {
         "No Spaces are open to \(title). The user can switch it on for a Space with the button under the chat, or in Settings → Plugins."

@@ -11,6 +11,11 @@ public enum AgentToolName {
     public static let spaceTools = [
         "list_tabs", "open", "navigate", "close", "read_page", "find", "click", "type", "screenshot", "read_console", "read_network"]
 
+    /// The one tool name a plugin's connection is told about next to `list_spaces` etc.: it lists terminals.
+    public static let terminals = "terminals"
+    /// Per-Space terminal tools, only on a plugin connection whose plugin has `terminals`.
+    public static let terminalTools = ["read_terminal", "send_to_terminal", "answer_question"]
+
     public static func make(slug: String, tool: String) -> String {
         slug + separator + tool
     }
@@ -20,7 +25,7 @@ public enum AgentToolName {
         guard let range = name.range(of: separator, options: .backwards) else { return nil }
         let slug = String(name[..<range.lowerBound])
         let tool = String(name[range.upperBound...])
-        guard !slug.isEmpty, spaceTools.contains(tool) else { return nil }
+        guard !slug.isEmpty, (spaceTools + terminalTools).contains(tool) else { return nil }
         return (slug, tool)
     }
 }

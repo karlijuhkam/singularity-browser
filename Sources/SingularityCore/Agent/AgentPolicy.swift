@@ -25,6 +25,8 @@ public enum AgentActionKind: String, Sendable {
     case open, navigate, close, click, type
     /// `window.singularity.prompt(text)` from an artifact page: typing into a terminal.
     case artifactPrompt
+    /// Text pasted into a terminal, or an answer to a held question (the Assistant's terminal tools).
+    case terminalSend
 
     public var isRead: Bool {
         switch self {
@@ -75,6 +77,10 @@ public enum AgentApprovalRules {
     /// "Allow on this site" for, in this Space, since the app started.
     public static func decide(_ context: AgentActionContext, policy: AgentPolicy, allowedOrigins: Set<String>) -> AgentDecision {
         if context.kind.isRead { return .allow }
+        // Typing into a terminal always asks the owner (never remembered per site), unless read-only.
+        if context.kind == .terminalSend {
+            return policy == .readOnly ? .deny(readOnlyReason) : .ask(siteOrigin: nil)
+        }
         switch policy {
         case .allowAll:
             return .allow

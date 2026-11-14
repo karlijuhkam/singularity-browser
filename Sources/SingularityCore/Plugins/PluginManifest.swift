@@ -34,11 +34,14 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         /// The plugin may use the browser like an agent, in Spaces where it is switched on, under
         /// each Space's agent policy. Needs a program (the Assistant's `claude`).
         public var browser: Bool
+        /// The plugin may see the terminals of Spaces switched on for it (`terminalSpaces`), read their
+        /// screens, and send text after the owner approved it. Needs `browser` (it goes through the door).
+        public var terminals: Bool
 
         public init(pageAdditions: [String] = [], fillForms: [String] = [],
                     commands: [String: [String]] = [:], network: [String] = [],
                     programs: [String] = [], programEnv: [String] = [],
-                    frontTab: Bool = false, browser: Bool = false) {
+                    frontTab: Bool = false, browser: Bool = false, terminals: Bool = false) {
             self.pageAdditions = pageAdditions
             self.fillForms = fillForms
             self.commands = commands
@@ -47,6 +50,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             self.programEnv = programEnv
             self.frontTab = frontTab
             self.browser = browser
+            self.terminals = terminals
         }
 
         private struct Key: CodingKey {
@@ -59,7 +63,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         /// Decodes by hand so an unknown key (e.g. "cookies") is an error, not silently ignored.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Key.self)
-            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv", "frontTab", "browser"]
+            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv", "frontTab", "browser", "terminals"]
             for key in c.allKeys where !known.contains(key.stringValue) {
                 throw PluginError.unknownPermission(key.stringValue)
             }
@@ -74,6 +78,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             programEnv = try field("programEnv", [String]())
             frontTab = try field("frontTab", false)
             browser = try field("browser", false)
+            terminals = try field("terminals", false)
         }
     }
 
@@ -174,6 +179,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         }
         if !programs.isEmpty, background == nil { throw .programsNeedBackground }
         if permissions.browser, programs.isEmpty { throw .browserNeedsProgram }
+        if permissions.terminals, !permissions.browser { throw .terminalsNeedBrowser }
         for name in permissions.programEnv where !Self.isAllowedProgramEnv(name) { throw .invalidProgramEnv(name) }
         // Settings with no program to receive them make no sense.
         if !permissions.programEnv.isEmpty, programs.isEmpty { throw .invalidProgramEnv(permissions.programEnv[0]) }

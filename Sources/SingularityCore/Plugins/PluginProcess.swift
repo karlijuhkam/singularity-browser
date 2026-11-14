@@ -520,7 +520,7 @@ public final class PluginProcess: @unchecked Sendable {
     /// The manifest's two reach permissions as JSON, passed to host.ts as its third argument so the
     /// API can refuse `front()` locally (the app refuses again; this only gives a clear error).
     static func permissionFlags(_ permissions: PluginManifest.Permissions) -> String {
-        #"{"frontTab":\#(permissions.frontTab),"browser":\#(permissions.browser)}"#
+        #"{"frontTab":\#(permissions.frontTab),"browser":\#(permissions.browser),"terminals":\#(permissions.terminals)}"#
     }
 
     /// Exactly what Bun gets; nothing is inherited from the app (whose environment may hold tokens,
