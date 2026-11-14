@@ -581,8 +581,13 @@ final class PluginManager {
 
     /// The pid of the plugin's running program (`singularity.spawn`); nil when none runs.
     func programPID(of id: String) -> pid_t? {
-        supervisors[id]?.programPID
+        if let programPIDOverride { return programPIDOverride(id) }
+        return supervisors[id]?.programPID
     }
+
+    /// Tests only (nil otherwise): stands in for the running program's pid, so a test can call the
+    /// agent door's tools as a plugin's connection without Bun or a real program.
+    @ObservationIgnored var programPIDOverride: ((String) -> pid_t?)?
 
     /// The plugin whose own connection this is: `pid` (the agent socket's peer) is the running
     /// program of an approved plugin with the `browser` permission, or descends from it. Nil for
@@ -618,6 +623,13 @@ final class PluginManager {
     func terminalsAreOpen(_ id: String, space: Space) -> Bool {
         guard let plugin = plugin(id), let manifest = browserManifest(id), manifest.permissions.terminals else { return false }
         return PluginReach.terminalsAreOpen(space, approval: plugin.approval, status: plugin.status)
+    }
+
+    /// Whether a plugin's connection gets the terminal tools at all: approved with `browser` and
+    /// `terminals`, in its manifest and its approval. Which Spaces: `terminalsAreOpen`.
+    func terminalsApproved(_ id: String) -> Bool {
+        guard let manifest = browserManifest(id), manifest.permissions.terminals else { return false }
+        return plugin(id)?.approval?.permissions.terminals == true
     }
 
     /// The titles of the plugins that may use `space` through the door (Settings → Agents).

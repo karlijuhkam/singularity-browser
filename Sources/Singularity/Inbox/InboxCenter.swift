@@ -296,8 +296,9 @@ final class InboxCenter {
         case .approved, .denied:
             finishApproval(id, outcome)
         case .approvedSite:
-            // Only offered when the rules name a site to allow.
-            guard waiting.pending.siteOrigin != nil else { return }
+            // Only offered when the rules name a site to allow, and never for text to a terminal
+            // or an answer to its question (also when asked for in code, not from a card).
+            guard waiting.pending.siteOrigin != nil, !waiting.pending.request.isTerminalRequest else { return }
             finishApproval(id, .approvedSite)
             // `AgentApprovals.check` records the site when its task runs on, which the line
             // above queued on the main actor; look at the other requests after that.

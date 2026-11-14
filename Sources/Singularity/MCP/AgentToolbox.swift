@@ -14,7 +14,8 @@ import WebKit
 /// (checked against where the tab is at the time of the call).
 @MainActor
 final class AgentToolbox {
-    private weak var state: AppState?
+    // Internal (not private) for the terminal tools in AgentToolbox+Terminals.swift.
+    weak var state: AppState?
 
     init(state: AppState) {
         self.state = state
@@ -41,8 +42,12 @@ final class AgentToolbox {
                 annotations: .init(readOnlyHint: true)
             ),
         ]
+        // A plugin with `terminals`: the overview, and the per-Space terminal tools of each Space
+        // whose Terminals switch counts. Outside agents never get these.
+        if terminalsPermitted(caller, program: program) { tools.append(terminalsTool()) }
         for space in spaces(for: caller, program: program) {
             tools += spaceTools(space)
+            if terminalsOpen(space, for: caller, program: program) { tools += terminalTools(space) }
         }
         return tools
     }
@@ -119,7 +124,7 @@ final class AgentToolbox {
         ]
     }
 
-    private static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
+    static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
         .object([
             "type": "object",
             "properties": .object(properties),
@@ -131,7 +136,7 @@ final class AgentToolbox {
     // MARK: - Calling tools
 
     /// Book-keeping for one call: who, what, which tab, and the approval decision (for the log).
-    private final class CallRecord {
+    final class CallRecord {
         let started = Date()
         let caller: AgentCaller
         /// The tool's full name as called (`work.read_page`), for the refusal of a Space closed mid-call.
@@ -177,9 +182,21 @@ final class AgentToolbox {
         if name == AgentToolName.listSpaces {
             return .init(content: [.plain(try listSpaces(record.caller, program: record.program))])
         }
+        if name == AgentToolName.terminals {
+            return .init(content: [.plain(try listTerminals(record))])
+        }
         guard let state, let (slug, tool) = AgentToolName.parse(name),
               let space = state.spaces.first(where: { $0.slug == slug }) else {
-            throw ToolError("Unknown tool \(name). Call list_spaces to see what is available.")
+            throw Self.unknownTool(name)
+        }
+        // The terminal tools: only on a plugin's connection, in a Space whose Terminals switch
+        // counts now. Anything else (an outside agent, a Space off for terminals) gets exactly the
+        // answer for a tool that doesn't exist, before the Space's own checks and before anything
+        // is logged, so neither a Space's name nor its agents switch is given away.
+        if AgentToolName.terminalTools.contains(tool) {
+            guard terminalsOpen(space, for: record.caller, program: record.program) else { throw Self.unknownTool(name) }
+            record.spaceID = space.id
+            return .init(content: [.plain(try await performTerminalTool(tool, space: space, arguments: arguments, record: record))])
         }
         switch record.caller {
         case .outside:
@@ -190,7 +207,7 @@ final class AgentToolbox {
             // The switch as it is now: a tool name remembered from before is refused once it is off.
             // Exactly as for a Space that doesn't exist, so a guessed slug tells it nothing.
             guard isOpen(space, for: record.caller, program: record.program) else {
-                throw ToolError("Unknown tool \(name). Call list_spaces to see what is available.")
+                throw Self.unknownTool(name)
             }
         }
         record.spaceID = space.id
@@ -530,7 +547,7 @@ final class AgentToolbox {
         }
     }
 
-    private func log(_ tool: String, record: CallRecord, result: CallTool.Result, spaceID: UUID) {
+    func log(_ tool: String, record: CallRecord, result: CallTool.Result, spaceID: UUID) {
         var parts: [String] = []
         for content in result.content {
             switch content {
@@ -592,7 +609,7 @@ final class AgentToolbox {
     /// also once the plugin runs a new one), and the Space is switched on for that plugin now
     /// (approved with `browser`, Space in its switches). Outside agents: always true (their gate is
     /// `agentsEnabled`).
-    private func isOpen(_ space: Space, for caller: AgentCaller, program: pid_t?) -> Bool {
+    func isOpen(_ space: Space, for caller: AgentCaller, program: pid_t?) -> Bool {
         guard case .plugin(let id, _) = caller else { return true }
         guard let plugins = state?.plugins, let program, plugins.programPID(of: id) == program else { return false }
         return plugins.browserSpaceIsOpen(id, space: space)
@@ -644,7 +661,7 @@ final class AgentToolbox {
     private func refuseIfSpaceClosed(_ space: Space, _ record: CallRecord) throws {
         guard case .plugin = record.caller else { return }
         guard let now = state?.space(space.id), isOpen(now, for: record.caller, program: record.program) else {
-            throw ToolError("Unknown tool \(record.tool). Call list_spaces to see what is available.")
+            throw Self.unknownTool(record.tool)
         }
     }
 
@@ -668,6 +685,11 @@ final class AgentToolbox {
         siteIsOff(controller.webView.url, space, record.caller) ? "" : controller.webView.url?.absoluteString ?? ""
     }
 
+    /// The answer for a tool that doesn't exist, also given for one that isn't open to the caller.
+    static func unknownTool(_ name: String) -> ToolError {
+        ToolError("Unknown tool \(name). Call list_spaces to see what is available.")
+    }
+
     /// A plugin's tab: agents can neither read nor act on a plugin's own page.
     private static func notAWebPage(_ tabID: UUID) -> ToolError {
         ToolError("Tab \(tabID.uuidString.lowercased()) is not a web page.")
@@ -684,7 +706,7 @@ final class AgentToolbox {
         return "Now at: \(url)\n" + UntrustedContent.wrap("Page title: \(title)", source: url)
     }
 
-    private static func json(_ value: Any) throws -> String {
+    static func json(_ value: Any) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         return String(decoding: data, as: UTF8.self)
     }
@@ -719,7 +741,7 @@ final class AgentToolbox {
 }
 
 /// Typed access to tool arguments, with readable errors for the agent.
-private struct Arguments {
+struct Arguments {
     let values: [String: Value]
     init(_ values: [String: Value]) { self.values = values }
 
@@ -768,7 +790,7 @@ private struct Arguments {
     }
 }
 
-private extension Tool.Content {
+extension Tool.Content {
     /// Plain text content without annotations.
     static func plain(_ text: String) -> Tool.Content {
         .text(text: text, annotations: nil, _meta: nil)
