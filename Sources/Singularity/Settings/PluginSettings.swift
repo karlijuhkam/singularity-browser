@@ -264,12 +264,18 @@ private struct PluginRow: View {
         }
     }
 
-    /// One checkbox per Space; ticking writes the approval at once (no new review).
+    /// One checkbox per Space; ticking writes the approval at once (no new review). For a plugin
+    /// with `terminals`, an indented "Terminals" checkbox under each Space: it counts only while
+    /// the Space is on, so it is shown unticked and disabled while the Space is off (the stored
+    /// value is kept and shows again when the Space is switched back on).
     private func spaces(_ approval: PluginApproval) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let showsTerminals = plugin.validManifest?.permissions.terminals == true
+        return VStack(alignment: .leading, spacing: 4) {
             Text("On in these Spaces")
                 .font(.subheadline)
             ForEach(state.spaces) { space in
+                let current = state.plugins.plugin(plugin.id)?.approval
+                let spaceOn = current?.enabledSpaces.contains(space.id) ?? false
                 Toggle(isOn: Binding(
                     get: { state.plugins.plugin(plugin.id)?.approval?.enabledSpaces.contains(space.id) ?? false },
                     set: { state.plugins.setEnabled(plugin.id, space: space.id, $0) }
@@ -280,6 +286,20 @@ private struct PluginRow: View {
                     }
                 }
                 .toggleStyle(.checkbox)
+                if showsTerminals {
+                    Toggle("Terminals", isOn: Binding(
+                        get: {
+                            let now = state.plugins.plugin(plugin.id)?.approval
+                            return now?.enabledSpaces.contains(space.id) == true && now?.terminalSpaces.contains(space.id) == true
+                        },
+                        set: { state.plugins.setTerminalsEnabled(plugin.id, space: space.id, $0) }
+                    ))
+                    .toggleStyle(.checkbox)
+                    // Also off while the approval doesn't have `terminals` yet (it asks for more:
+                    // the switch would do nothing until it is reviewed).
+                    .disabled(!spaceOn || current?.permissions.terminals != true)
+                    .padding(.leading, 20)
+                }
             }
         }
     }

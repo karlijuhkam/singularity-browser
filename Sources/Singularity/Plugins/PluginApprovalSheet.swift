@@ -25,6 +25,8 @@ struct PluginApprovalSheet: View {
 
     @State private var phase: Phase = .loading
     @State private var enabledSpaces: Set<UUID> = []
+    /// The Terminals switches (`PluginApproval.terminalSpaces`), for a plugin with `terminals`.
+    @State private var terminalSpaces: Set<UUID> = []
     @State private var developmentMode = false
     /// The Space and development-mode choices are set once, from the existing approval.
     @State private var choicesSet = false
@@ -164,6 +166,17 @@ struct PluginApprovalSheet: View {
                             }
                         }
                         .toggleStyle(.checkbox)
+                        if manifest.permissions.terminals {
+                            // Counts only while the Space is ticked: shown unticked and disabled otherwise.
+                            let spaceOn = enabledSpaces.contains(space.id)
+                            Toggle("Terminals", isOn: Binding(
+                                get: { spaceOn && terminalSpaces.contains(space.id) },
+                                set: { on in if on { terminalSpaces.insert(space.id) } else { terminalSpaces.remove(space.id) } }
+                            ))
+                            .toggleStyle(.checkbox)
+                            .disabled(!spaceOn)
+                            .padding(.leading, 20)
+                        }
                     }
                 }
             } else {
@@ -189,6 +202,16 @@ struct PluginApprovalSheet: View {
     /// it on or off. Settings → Plugins uses the same rule.
     static func showsSpaceSwitches(_ manifest: PluginManifest) -> Bool {
         manifest.showsSpaceSwitches || manifest.panel == nil
+    }
+
+    /// What Approve records: exactly what the sheet shows. Only Spaces that exist; hidden switches
+    /// record no Space, rather than the one ticked by default; a Terminals switch only for a plugin
+    /// with `terminals` and only where its Space is ticked (elsewhere it is shown unticked).
+    static func chosenSpaces(enabled: Set<UUID>, terminals: Set<UUID>, showsSpaceSwitches: Bool,
+                             hasTerminals: Bool, existing: [UUID]) -> (enabled: Set<UUID>, terminals: Set<UUID>) {
+        guard showsSpaceSwitches else { return ([], []) }
+        let spaces = enabled.intersection(existing)
+        return (spaces, hasTerminals ? terminals.intersection(spaces) : [])
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
@@ -233,6 +256,8 @@ struct PluginApprovalSheet: View {
             enabledSpaces = PluginReach.initialSpaceSwitches(approval: approval,
                                                              reachesSpaces: review.manifest.reachesSpaces,
                                                              currentSpaceID: currentSpaceID)
+            // Off on a first approval; on a re-approval, what was stored.
+            terminalSpaces = approval?.terminalSpaces ?? []
             developmentMode = approval?.developmentMode ?? false
             choicesSet = true
         }
@@ -245,13 +270,16 @@ struct PluginApprovalSheet: View {
     private func approve() {
         guard case .ready(let review) = phase else { return }
         approving = true
-        // Hidden switches record no Space, rather than the one ticked by default.
-        let spaces = Self.showsSpaceSwitches(review.manifest) ? enabledSpaces.intersection(state.spaces.map(\.id)) : []
+        let chosen = Self.chosenSpaces(enabled: enabledSpaces, terminals: terminalSpaces,
+                                       showsSpaceSwitches: Self.showsSpaceSwitches(review.manifest),
+                                       hasTerminals: review.manifest.permissions.terminals,
+                                       existing: state.spaces.map(\.id))
         Task {
             defer { approving = false }
             do {
                 try await state.plugins.approve(pluginID, expectedFingerprint: review.fingerprint,
-                                                enabledSpaces: spaces, developmentMode: developmentMode)
+                                                enabledSpaces: chosen.enabled, terminalSpaces: chosen.terminals,
+                                                developmentMode: developmentMode)
                 dismiss()
             } catch PluginManagerError.changedWhileReviewing {
                 notice = PluginManagerError.changedWhileReviewing.errorDescription

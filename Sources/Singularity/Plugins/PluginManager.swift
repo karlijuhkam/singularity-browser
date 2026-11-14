@@ -141,6 +141,10 @@ final class PluginManager {
     /// The owner switched a Space off for a plugin (`setEnabled`): what the plugin's connection is
     /// waiting for there is denied (the inbox).
     @ObservationIgnored var onSpaceSwitchedOff: ((_ pluginID: String, _ space: UUID) -> Void)?
+    /// A Space's terminals stopped being open to a plugin: its Terminals switch went off
+    /// (`setTerminalsEnabled`), or the Space itself was switched off while that switch was on
+    /// (`setEnabled`). What the plugin's connection is waiting for there in terminals is denied.
+    @ObservationIgnored var onTerminalsSwitchedOff: ((_ pluginID: String, _ space: UUID) -> Void)?
     /// A plugin's program ended or its background stopped: the agent door closes the connections
     /// that came from a program that isn't the plugin's running one any more.
     @ObservationIgnored var onProgramEnded: ((String) -> Void)?
@@ -607,6 +611,15 @@ final class PluginManager {
         return PluginReach.spaceIsOpen(space, approval: plugin.approval, status: plugin.status)
     }
 
+    /// Whether a plugin's connection may see the terminals of `space` now: everything
+    /// `browserSpaceIsOpen` asks, plus `terminals` in the manifest and the approval and the
+    /// Space's Terminals switch on (`PluginReach.terminalsAreOpen`). Checked when its tools are
+    /// listed and again at every call.
+    func terminalsAreOpen(_ id: String, space: Space) -> Bool {
+        guard let plugin = plugin(id), let manifest = browserManifest(id), manifest.permissions.terminals else { return false }
+        return PluginReach.terminalsAreOpen(space, approval: plugin.approval, status: plugin.status)
+    }
+
     /// The titles of the plugins that may use `space` through the door (Settings → Agents).
     func browserPluginTitles(openFor space: Space) -> [String] {
         plugins.filter { browserSpaceIsOpen($0.id, space: space) }
@@ -663,12 +676,16 @@ final class PluginManager {
 
     /// Scans the plugin and finds its programs' paths (off the main thread) and remembers the
     /// result as what the approval sheet shows. `approve` only accepts exactly this.
-    func prepareReview(_ id: String) async -> Result<PluginReview, PluginError> {
+    /// `resolve` finds a program's path; nil (the app) asks the login shell. Tests pass their own,
+    /// so no login shell is ever started in a test.
+    func prepareReview(_ id: String, resolve: (@Sendable (String) -> String?)? = nil) async -> Result<PluginReview, PluginError> {
         let folder = paths.pluginsDirectory.appending(path: id, directoryHint: .isDirectory)
         let result = await Task.detached {
+            let scan = PluginScan.scan(folder: folder)
+            if let resolve { return PluginReview.prepare(scan: scan) { resolve($0) } }
             let shell = LoginShell.path()
             // resolve() asks the login shell; it can take a few seconds per program.
-            return PluginReview.prepare(scan: PluginScan.scan(folder: folder)) { CommandBroker.resolve($0, loginShell: shell) }
+            return PluginReview.prepare(scan: scan) { CommandBroker.resolve($0, loginShell: shell) }
         }.value
         switch result {
         case .success(let review): reviews[id] = review
@@ -689,15 +706,20 @@ final class PluginManager {
     /// after this approval has finished; by then the recorded fingerprint is the post-install one,
     /// the refresh's fresh scan matches it (status `.approved`), and as `scans[id]` already holds
     /// that same fingerprint it doesn't restart the plugin either.
-    func approve(_ id: String, expectedFingerprint: String, enabledSpaces: Set<UUID>, developmentMode: Bool) async throws {
+    ///
+    /// `enabledSpaces` and `terminalSpaces` replace what was stored: a re-approval keeps nothing
+    /// by itself (the sheet passes both, starting from the stored ones). `terminalSpaces` is
+    /// stored only for a plugin whose manifest has `terminals`.
+    func approve(_ id: String, expectedFingerprint: String, enabledSpaces: Set<UUID>,
+                 terminalSpaces: Set<UUID> = [], developmentMode: Bool) async throws {
         try await enqueue(id) { [weak self] in
-            try await self?.performApprove(id, expectedFingerprint: expectedFingerprint,
-                                           enabledSpaces: enabledSpaces, developmentMode: developmentMode)
+            try await self?.performApprove(id, expectedFingerprint: expectedFingerprint, enabledSpaces: enabledSpaces,
+                                           terminalSpaces: terminalSpaces, developmentMode: developmentMode)
         }.value
     }
 
     private func performApprove(_ id: String, expectedFingerprint: String, enabledSpaces: Set<UUID>,
-                                developmentMode: Bool) async throws {
+                                terminalSpaces: Set<UUID>, developmentMode: Bool) async throws {
         guard let review = reviews[id], review.fingerprint == expectedFingerprint else {
             throw PluginManagerError.changedWhileReviewing
         }
@@ -725,7 +747,8 @@ final class PluginManager {
 
         let approval = PluginApproval(
             fingerprint: installedSnapshot.fingerprint, permissions: manifest.permissions,
-            commandPaths: review.commandPaths, enabledSpaces: enabledSpaces, developmentMode: developmentMode,
+            commandPaths: review.commandPaths, enabledSpaces: enabledSpaces,
+            terminalSpaces: manifest.permissions.terminals ? terminalSpaces : [], developmentMode: developmentMode,
             approvedAt: Date(), fileHashes: installedSnapshot.fileHashes)
         try setApproval(id, approval)
         reviews[id] = nil
@@ -816,6 +839,23 @@ final class PluginManager {
         frontDidChange()
         onSpacesChanged?()
         if !on { onSpaceSwitchedOff?(id, space) }
+        // Its Terminals switch stops counting with it, but is kept: it counts again when the
+        // Space is switched back on.
+        if !on, approval.permissions.terminals, approval.terminalSpaces.contains(space) {
+            onTerminalsSwitchedOff?(id, space)
+        }
+    }
+
+    /// Switches a plugin's Terminals switch on or off in one Space (`PluginApproval.terminalSpaces`).
+    /// Only for a plugin whose approval has `terminals`; anything else is ignored. It counts only
+    /// while the Space itself is switched on (`terminalsAreOpen`); the stored value stays either way.
+    func setTerminalsEnabled(_ id: String, space: UUID, _ on: Bool) {
+        guard var approval = approvals[id], approval.permissions.terminals else { return }
+        if on { approval.terminalSpaces.insert(space) } else { approval.terminalSpaces.remove(space) }
+        saveQuietly(id, approval)
+        reapply(id)
+        onSpacesChanged?()
+        if !on { onTerminalsSwitchedOff?(id, space) }
     }
 
     /// Development mode: while on, edited files restart the plugin instead of pausing it.
@@ -845,10 +885,12 @@ final class PluginManager {
         if let scan = scans[id] { await apply(scan, to: id, restart: false) }
     }
 
-    /// A Space was deleted: it can't be in any plugin's list any more.
+    /// A Space was deleted: it can't be in any plugin's lists (Spaces, Terminals) any more.
     func spaceRemoved(_ space: UUID) {
-        for (id, var approval) in approvals where approval.enabledSpaces.contains(space) {
+        for (id, var approval) in approvals
+        where approval.enabledSpaces.contains(space) || approval.terminalSpaces.contains(space) {
             approval.enabledSpaces.remove(space)
+            approval.terminalSpaces.remove(space)
             saveQuietly(id, approval)
             reapply(id)
         }
