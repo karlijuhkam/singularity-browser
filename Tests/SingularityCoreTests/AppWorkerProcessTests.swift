@@ -356,6 +356,36 @@ struct AppWorkerProcessTests {
         #expect(!process.isRunning)
     }
 
+    /// Worker code can write to its process's output directly, past the host script: a forged
+    /// answer must not get a header of its choosing (a line break in a value) or a status that
+    /// is not one through to the page.
+    @Test func aForgedAnswerCannotInjectHeaders() async throws {
+        let ws = try makeWorkspace("forged")
+        defer { ws.remove() }
+        let process = makeProcess(ws)
+        defer { process.terminateNow() }
+        try await process.start()
+        let forged = try await process.handle(get("/headers"))
+        #expect(forged.status == 200)
+        #expect(forged.headers.map(\.0) == ["X-Ok"])
+        let badStatus = try await process.handle(get("/status"))
+        #expect(badStatus.status == 502)
+    }
+
+    /// The data folder's real path is what the sandbox lets the Worker write: a link there
+    /// (to the home folder, say) must not be followed.
+    @Test func aDataFolderThatIsALinkIsRefused() async throws {
+        let ws = try makeWorkspace()
+        defer { ws.remove() }
+        let elsewhere = ws.root.appending(path: "elsewhere", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: ws.data, withDestinationURL: elsewhere)
+        let process = makeProcess(ws)
+        defer { process.terminateNow() }
+        await #expect(throws: AppWorkerError.self) { try await process.start() }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: elsewhere.path).isEmpty)
+    }
+
     @Test func theWorkerCannotWriteItsOwnFolder() async throws {
         let ws = try makeWorkspace()
         defer { ws.remove() }

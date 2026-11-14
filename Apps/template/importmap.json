@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "preact": "https://esm.sh/preact@11.2.0",
+    "preact/hooks": "https://esm.sh/preact@11.2.0/hooks",
+    "preact/jsx-runtime": "https://esm.sh/preact@11.2.0/jsx-runtime"
+  }
+}

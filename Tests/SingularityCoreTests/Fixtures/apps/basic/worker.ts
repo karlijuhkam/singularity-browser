@@ -79,6 +79,11 @@ export default {
         return new Response("cookies", { headers });
       }
 
+      // Answers after a while (a request that is still inside when the Worker is restarted).
+      case "/api/slow":
+        await new Promise((resolve) => setTimeout(resolve, Number(url.searchParams.get("ms") ?? "500")));
+        return new Response("slow answer");
+
       // Never answers: the request must time out and the process be killed.
       case "/api/loop":
         for (;;) {}

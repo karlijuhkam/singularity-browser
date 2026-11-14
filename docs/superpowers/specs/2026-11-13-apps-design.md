@@ -314,6 +314,31 @@ Built as designed, with these differences and additions. Each is the builder's c
 - **A redirect never asks.** It is followed only to a host already allowed, at most 5 times, and
   the request is built again from the Worker's original for each hop, so a key is put in only
   when the hop's host is the key's.
+- **A redirect to another host leaves `Authorization`, `Proxy-Authorization` and `Cookie`
+  behind**, as a browser does. This is what protects a key the code may read. A Worker's
+  `redirect: "manual"` has no effect: redirects are always followed here.
+- **A key matches its host exactly**; a subdomain is another host.
+- **The approval reads** "The app “firma” wants to connect to api.example.com" (the Space is
+  shown by the inbox entry itself), and the panel's section is called "Data".
+- **A request waits at most 600 s in all**, however long outside requests keep its clock paused.
+- **`OPTIONS` is answered by the server** (no CORS headers), never by the Worker, and a path with
+  a component that starts with a dot (`/.well-known/…`) is in no app.
+- **A data folder is always directly in `app-data/`**: an app in a subfolder (`tools/firma`) gets
+  `tools%2Ffirma`. Found in review: nested data folders would let the outer app's Worker read the
+  inner app's database, or replace it with a link to anywhere before the inner Worker starts. A
+  data folder that is a link is refused at start.
+- **Keys are substituted in any body, as bytes**, not only in a text body, and escaped for JSON
+  and form bodies by `Content-Type`. An echoed value is also hidden in a body that is not UTF-8
+  and in a redirect's address (which would otherwise reach the Worker as `response.url`).
+- **A key's value has at least 8 characters.**
+- **What a Worker's process writes as an answer is checked**: headers that are not well-formed
+  are dropped (a line break in a value would be a header of the Worker's choosing, our cookie
+  among them), and a status outside 200…599 becomes 502.
+- **A host that could not be asked about** (five approvals already wait in the Space) fails that
+  once and is asked about again later; it is not denied for the run.
+- **An Allow that comes after the asking Worker was stopped** allows the host but sends nothing.
+- **Hosts with an underscore are taken; IPv6 literals other than `::1` are refused** without asking.
+- **Delete Data kills the Worker and waits for it** before the folder goes.
 - **A host is a name without a port** (`api.example.com`, `localhost`): allowing it allows every
   port of it.
 - **`list_spaces` gives `app_data_folder` per Space and names the guide once**, in the note under

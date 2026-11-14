@@ -26,6 +26,11 @@ public enum AppHostRules {
         guard components.user == nil, components.password == nil else {
             return .failure(AppFetchRefusal("An address with a user name or password in it is not fetched (\(host))."))
         }
+        // The same rule as for a host the owner types: what can't be listed can't be allowed,
+        // so asking about it would only ever end in "not allowed".
+        guard isValidHost(host) else {
+            return .failure(AppFetchRefusal("Not a host an app can fetch: \(host.prefix(100))"))
+        }
         switch scheme {
         case "https":
             return .success(host)
@@ -43,7 +48,7 @@ public enum AppHostRules {
     public static func isValidHost(_ text: String) -> Bool {
         guard !text.isEmpty, text.count <= 253, text == text.lowercased() else { return false }
         // A host only: no scheme, path, port, spaces or wildcards.
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.-:")
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789.-_:")
         guard text.unicodeScalars.allSatisfy(allowed.contains) else { return false }
         if text.contains(":") { return text == "::1" }   // the only IPv6 host we take by hand
         return !text.hasPrefix(".") && !text.hasSuffix(".") && !text.hasPrefix("-") && !text.contains("..")
@@ -103,6 +108,12 @@ public struct AppHostGate: Sendable {
     }
 
     /// The owner changed the list in the app's panel. A host added there is no longer denied.
+    /// The question for `host` could not be asked at all (too many already wait in the inbox):
+    /// the host is neither allowed nor denied, and the next request asks again.
+    public mutating func notAsked(_ host: String) {
+        waiting.remove(host)
+    }
+
     public mutating func setAllowed(_ hosts: Set<String>) {
         allowed = hosts
         denied.subtract(hosts)

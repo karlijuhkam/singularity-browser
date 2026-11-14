@@ -28,7 +28,9 @@ actor AppWorkers {
         /// The app's keys, with fresh placeholders, for one run.
         var keys: @Sendable (_ app: String) async -> [AppKeyMaterial]
         /// Makes an outside request for a Worker (host check, the owner's approval, keys).
-        var fetch: @Sendable (_ app: String, AppHTTPRequest, [AppKeyMaterial]) async -> Result<AppHTTPResponse, AppFetchRefusal>
+        /// `isLive`: whether the Worker that asked is still the app's running one, checked again
+        /// after the owner answered a question (the answer may come long after the Worker went).
+        var fetch: @Sendable (_ app: String, AppHTTPRequest, [AppKeyMaterial], _ isLive: @escaping @Sendable () -> Bool) async -> Result<AppHTTPResponse, AppFetchRefusal>
         var event: @Sendable (_ app: String, AppWorkerEvent) -> Void
         /// A Worker with no request for this long is stopped (it starts again when needed).
         var idleSeconds: TimeInterval = 600
@@ -53,6 +55,9 @@ actor AppWorkers {
     private var failures: [String: String] = [:]
     /// Counts an app's stops, so a start that was overtaken by a file change is not kept.
     private var generation: [String: Int] = [:]
+    /// Processes this actor told to stop (a file changed, a restart), as opposed to ones that
+    /// died by themselves. See the retry in `handle`.
+    private var stoppedByUs: Set<ObjectIdentifier> = []
     private var idleTask: Task<Void, Never>?
     private var closed = false
     /// Every live process, reachable without waiting for the actor (app termination).
@@ -74,7 +79,8 @@ actor AppWorkers {
         case .success(let running): process = running
         case .failure(let error): return Self.response(for: error, app: app)
         }
-        runs[app]?.inFlight += 1
+        // Counted only on the run we were given (another may have taken its place already).
+        if runs[app]?.process === process { runs[app]?.inFlight += 1 }
         defer {
             // The run may have been replaced meanwhile (a file changed): only count on our own.
             if runs[app]?.process === process {
@@ -86,8 +92,9 @@ actor AppWorkers {
             return try await process.handle(request)
         } catch let error as AppWorkerError {
             // The Worker was stopped under this request because its files changed: the new code
-            // answers it. Once only; a Worker that dies by itself is an error.
-            if error == .exited, runs[app]?.process !== process, !closed {
+            // answers it. Once only, and only for a Worker *we* stopped: one that died by itself
+            // is an error (asking again could repeat a POST that crashed it).
+            if error == .exited, stoppedByUs.contains(ObjectIdentifier(process)), !closed {
                 if case .success(let fresh) = await running(app), let answer = try? await fresh.handle(request) {
                     return answer
                 }
@@ -129,7 +136,9 @@ actor AppWorkers {
                                        dataFolder: dataFolder, runtime: runtime, hostFolder: hostFolder,
                                        keys: AppKeySubstitution.environment(materials), limits: environment.limits)
         process.onLog = { level, text in log.append(level: level, text: text) }
-        process.onFetch = { request in await environment.fetch(app, request, materials) }
+        process.onFetch = { [weak process] request in
+            await environment.fetch(app, request, materials) { [weak process] in process?.isLive ?? false }
+        }
         process.onEnvRead = { name in environment.event(app, .unsetKey(name)) }
         process.onExit = { [weak self, weak process] in
             guard let self, let process else { return }
@@ -150,6 +159,7 @@ actor AppWorkers {
             log.append(level: "error", text: "The Worker could not start: \(message)")
             environment.event(app, .stopped(error: message))
             process.terminateNow()
+            live.remove(process)   // it may never have launched, so no exit will report it
             // Files changed while it was starting: the failure may be about the old ones.
             if generation[app, default: 0] == startedAt { failures[app] = message }
             return .failure(.failedToStart(message))
@@ -171,6 +181,11 @@ actor AppWorkers {
     /// A process is gone (stopped by us, killed for hanging, or crashed).
     private func ended(_ app: String, _ process: AppWorkerProcess) {
         live.remove(process)
+        // Kept until here so every request that was inside it can see "we stopped it".
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            await self?.forgetStopped(ObjectIdentifier(process))
+        }
         guard runs[app]?.process === process else { return }   // already replaced or removed
         runs[app] = nil
         environment.event(app, .stopped(error: nil))
@@ -207,17 +222,34 @@ actor AppWorkers {
         }
     }
 
+    private func forgetStopped(_ id: ObjectIdentifier) {
+        stoppedByUs.remove(id)
+    }
+
     /// Ends the app's Worker; the next request starts a new one (with the keys as they are then).
     func restart(app: String) {
         stop(app)
+    }
+
+    /// Kills the app's Worker and returns when it is gone: before its data folder is removed.
+    func kill(app: String) async {
+        generation[app, default: 0] += 1
+        failures[app] = nil
+        guard let run = runs.removeValue(forKey: app) else { return }
+        stoppedByUs.insert(ObjectIdentifier(run.process))
+        run.process.terminateNow()
+        environment.event(app, .stopped(error: nil))
+        for _ in 0..<100 where run.process.isRunning { try? await Task.sleep(for: .milliseconds(20)) }
     }
 
     private func stop(_ app: String) {
         generation[app, default: 0] += 1
         failures[app] = nil
         guard let run = runs.removeValue(forKey: app) else { return }
-        // The host finishes `ctx.waitUntil` work and exits. A request still inside it fails with
-        // `.exited` and is answered once more by the new process (see `handle`).
+        // The host finishes what it is doing (`ctx.waitUntil` work, requests it is already
+        // answering) and exits. A request that fails with `.exited` because of this is answered
+        // once more by the new process (see `handle`).
+        stoppedByUs.insert(ObjectIdentifier(run.process))
         run.process.stop()
         environment.event(app, .stopped(error: nil))
     }

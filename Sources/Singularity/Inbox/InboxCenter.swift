@@ -252,6 +252,11 @@ final class InboxCenter {
         }
     }
 
+    /// How many approvals wait in a Space right now (the limit is `maxWaitingApprovalsPerSpace`).
+    func waitingApprovalCount(inSpace spaceID: UUID) -> Int {
+        waitingApprovals.values.filter { $0.pending.spaceID == spaceID }.count
+    }
+
     /// The call waiting for this approval was cancelled: the entry goes and the call gets
     /// `.cancelled` (logged as such). An approval that is no longer waiting: nothing.
     func withdrawApproval(_ id: UUID) {

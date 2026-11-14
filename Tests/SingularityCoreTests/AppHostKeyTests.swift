@@ -29,8 +29,18 @@ import Testing
         #expect(message("https://user:hunter2@example.com/")?.contains("hunter2") == false)
     }
 
+    /// A host that could not be listed (and so never allowed) is refused before anyone is asked.
+    @Test func hostsThatCannotBeListedAreRefused() {
+        if case .success = AppHostRules.target(of: "https://[2001:db8::1]/x") { Issue.record("an IPv6 literal was taken") }
+        #expect(AppHostRules.target(of: "https://my_api.example.com/") == .success("my_api.example.com"))
+        // Whatever `target` returns can be listed.
+        for url in ["https://api.example.com/", "http://localhost:1/", "http://[::1]:2/", "https://EXAMPLE.com./"] {
+            if case .success(let host) = AppHostRules.target(of: url) { #expect(AppHostRules.isValidHost(host), "\(host)") }
+        }
+    }
+
     @Test func aHostTypedByHandIsAHostOnly() {
-        for good in ["api.example.com", "localhost", "127.0.0.1", "::1", "a-b.example"] {
+        for good in ["api.example.com", "localhost", "127.0.0.1", "::1", "a-b.example", "my_api.example.com"] {
             #expect(AppHostRules.isValidHost(good), "\(good)")
         }
         for bad in ["", "https://example.com", "example.com/x", "example.com:443", "Example.com", "*.example.com",
@@ -74,6 +84,14 @@ import Testing
         // And take a host away again.
         gate.setAllowed([])
         #expect(gate.decide("no.example") == .ask)
+    }
+
+    @Test func aQuestionThatCouldNotBeAskedIsAskedAgain() {
+        var gate = AppHostGate(allowed: [])
+        #expect(gate.decide("x.example") == .ask)
+        gate.notAsked("x.example")
+        #expect(gate.deniedThisRun.isEmpty)
+        #expect(gate.decide("x.example") == .ask)
     }
 
     @Test func aLateNoDoesNotUndoAnAllowFromThePanel() {
@@ -142,16 +160,79 @@ import Testing
         #expect(String(decoding: back.body!, as: UTF8.self) == "k=\(odd.placeholder)&again=\(odd.placeholder)")
     }
 
-    @Test func bodiesThatAreNotTextGoThroughUntouched() {
-        var bytes = Data([0xFF, 0xFE, 0x00, 0x80])
-        bytes.append(Data(key.placeholder.utf8))
-        let sent = AppKeySubstitution.outgoing(url: "https://api.example.com/", headers: [], body: bytes,
+    /// A body is changed as bytes: whatever is around the key stays exactly as it was, also
+    /// when the body is not text.
+    @Test func bodiesAreChangedAsBytes() {
+        let odd = Data([0xFF, 0xFE, 0x00, 0x80])
+        let sent = AppKeySubstitution.outgoing(url: "https://api.example.com/", headers: [],
+                                               body: odd + Data(key.placeholder.utf8) + odd,
                                                host: "api.example.com", keys: [key])
-        #expect(sent.body == bytes)
-        // Text without anything to replace is the same bytes, too.
+        #expect(sent.body == odd + Data("s3cr3t-value".utf8) + odd)
+        // Nothing to replace: the same bytes.
         let plain = Data("hello".utf8)
         #expect(AppKeySubstitution.incoming(headers: [], body: plain, keys: [key]).body == plain)
         #expect(AppKeySubstitution.incoming(headers: [], body: nil, keys: [key]).body == nil)
+    }
+
+    /// An answer that is not valid UTF-8 (a Latin-1 page, one bad byte) still loses the key.
+    @Test func anEchoInABodyThatIsNotUTF8IsStillHidden() {
+        let latin1 = Data([0x6B, 0x65, 0x79, 0x3A, 0x20, 0xE4, 0x20]) + Data("s3cr3t-value".utf8) + Data([0xFC])
+        let back = AppKeySubstitution.incoming(headers: [], body: latin1, keys: [key])
+        #expect(back.body?.range(of: Data("s3cr3t-value".utf8)) == nil)
+        #expect(back.body?.range(of: Data(key.placeholder.utf8)) != nil)
+        #expect(back.body?.prefix(7) == latin1.prefix(7))
+        #expect(back.body?.last == 0xFC)
+    }
+
+    /// The value is written the way its place needs it, so the request stays well-formed.
+    @Test func theValueIsEscapedForJSONAndFormBodies() throws {
+        var odd = key
+        odd.value = #"a"b\c&d=e+f %/ü"#
+        let json = AppKeySubstitution.outgoing(
+            url: "https://api.example.com/", headers: [("Content-Type", "application/json; charset=utf-8")],
+            body: Data(#"{"token":"\#(odd.placeholder)","n":1}"#.utf8), host: "api.example.com", keys: [odd])
+        let parsed = try #require(try JSONSerialization.jsonObject(with: json.body!) as? [String: Any])
+        #expect(parsed["token"] as? String == odd.value)
+        #expect(parsed["n"] as? Int == 1)
+
+        let form = AppKeySubstitution.outgoing(
+            url: "https://api.example.com/", headers: [("content-type", "application/x-www-form-urlencoded")],
+            body: Data("key=\(odd.placeholder)&other=1".utf8), host: "api.example.com", keys: [odd])
+        var components = URLComponents()
+        components.percentEncodedQuery = String(decoding: form.body!, as: UTF8.self)
+        #expect(components.queryItems?.first { $0.name == "key" }?.value == odd.value)
+        #expect(components.queryItems?.first { $0.name == "other" }?.value == "1")
+
+        // And an answer that echoes it in either form comes back with the placeholder.
+        for echoed in [json.body!, form.body!] {
+            let back = AppKeySubstitution.incoming(headers: [], body: echoed, keys: [odd])
+            #expect(String(decoding: back.body!, as: UTF8.self).contains(odd.placeholder))
+            #expect(!String(decoding: back.body!, as: UTF8.self).contains("a\\\"b"))
+        }
+    }
+
+    /// An address the outside wrote (a redirect) may repeat the key: it is hidden before the
+    /// Worker can read it as `response.url`.
+    @Test func aValueInAnAddressFromOutsideIsHidden() {
+        var odd = key
+        odd.value = "s3cr3t value&more"
+        let raw = AppKeySubstitution.scrubURL("https://api.example.com/v1/?key=s3cr3t-value&x=1", keys: [key])
+        #expect(raw == "https://api.example.com/v1/?key=\(key.placeholder)&x=1")
+        let encoded = AppKeySubstitution.scrubURL("https://api.example.com/?key=s3cr3t%20value%26more", keys: [odd])
+        #expect(encoded == "https://api.example.com/?key=\(odd.placeholder)")
+        var readable = key
+        readable.readable = true
+        #expect(AppKeySubstitution.scrubURL("https://x/?k=s3cr3t-value", keys: [readable]) == "https://x/?k=s3cr3t-value")
+    }
+
+    /// A key of several lines (a PEM file) is printed line by line: each line is hidden.
+    @Test func eachLineOfALongValueIsHiddenInTheLog() {
+        var pem = key
+        pem.name = "PEM"
+        pem.value = "-----BEGIN KEY-----\nMIIBVgIBADANBgkqhkiG\n9w0BAQEFAASCAUAwggE8\n-----END KEY-----"
+        #expect(AppKeySubstitution.scrubLog("line: MIIBVgIBADANBgkqhkiG", keys: [pem]) == "line: [key PEM]")
+        #expect(AppKeySubstitution.scrubLog("9w0BAQEFAASCAUAwggE8 end", keys: [pem]) == "[key PEM] end")
+        #expect(AppKeySubstitution.scrubLog(#"json "s3cr3t-value" and %"#, keys: [key]) == #"json "[key API_KEY]" and %"#)
     }
 
     @Test func anEchoedValueComesBackAsThePlaceholderUnlessReadable() {

@@ -136,6 +136,22 @@ import Testing
         #expect(ArtifactApps.headersForWorker([("cookie", "singularity_token=secret")]).isEmpty)
     }
 
+    /// What a Worker's process writes as headers and status is not trusted to be well-formed.
+    @Test func malformedHeadersAndStatusesFromAWorkerAreDropped() {
+        let headers = ArtifactApps.headersFromWorker([
+            ("X-Ok", "fine"),
+            ("X-Split", "a\r\nSet-Cookie: singularity_token=bad"),
+            ("X-Newline", "a\nb"),
+            ("X-Nul", "a\0b"),
+            ("Bad Name", "x"),
+            ("", "x"),
+            ("X-Tab", "a\tb"),
+        ])
+        #expect(headers.map(\.0) == ["X-Ok", "X-Tab"])
+        #expect(ArtifactApps.isResponseStatus(200) && ArtifactApps.isResponseStatus(404) && ArtifactApps.isResponseStatus(599))
+        for bad in [0, 99, 100, 101, 199, 600, -1] { #expect(!ArtifactApps.isResponseStatus(bad), "\(bad)") }
+    }
+
     @Test func theWorkerCannotReplaceTheAuthCookie() {
         let headers = ArtifactApps.headersFromWorker([
             ("Set-Cookie", "singularity_token=x; Path=/"),
@@ -169,6 +185,23 @@ import Testing
         #expect(decoded.apps["firma"]?.keys.first?.readable == false)
         #expect(decoded.apps["firma"]?.isEmpty == false)
         #expect(AppRecord().isEmpty)
+    }
+
+    /// Data folders are never inside one another: an app in a subfolder gets one folder name.
+    @Test func dataFoldersAreFlat() {
+        let paths = Paths(root: URL(filePath: "/tmp/sg"))
+        #expect(paths.appDataDirectory("work", app: "firma/sub").path == "/tmp/sg/spaces/work/app-data/firma%2Fsub")
+        #expect(paths.appDataDirectory("work", app: "50%").lastPathComponent == "50%25")
+        for app in ["firma", "firma/sub", "a/b/c", "50%", "a%2Fb", "tmp"] {
+            let name = ArtifactApps.dataFolderName(for: app)
+            #expect(!name.contains("/"))
+            #expect(ArtifactApps.app(fromDataFolderName: name) == app, "\(app)")
+        }
+        // "a%2Fb" (a folder really named so) and "a/b" are different apps with different folders.
+        #expect(ArtifactApps.dataFolderName(for: "a%2Fb") != ArtifactApps.dataFolderName(for: "a/b"))
+        for stray in ["Library", ".hidden", "a%2", "%2Fx", "x%2F"] {
+            #expect(ArtifactApps.app(fromDataFolderName: stray) == (stray == "Library" ? "Library" : nil), "\(stray)")
+        }
     }
 
     @Test func appDataIsOutsideTheArtifactsFolder() {

@@ -34,6 +34,9 @@ public final class AppWorkerProcess: @unchecked Sendable {
         public var start: TimeInterval = 20
         /// One request, from sending it to its response.
         public var request: TimeInterval = 30
+        /// The longest a request may wait in all, however long the Worker's outside requests
+        /// (and the owner's answers in the inbox) keep its clock paused.
+        public var requestTotal: TimeInterval = 600
         /// A request or response body.
         public var bodyBytes = 8 << 20
         /// After `stop()`, how long the Worker may finish `ctx.waitUntil` work before SIGKILL.
@@ -57,6 +60,7 @@ public final class AppWorkerProcess: @unchecked Sendable {
     private let input = PluginInput()
     private var process: Process?
     private var started = false
+    private var stopRequested = false
     private var ready = false
     private var ended = false
     private var startWaiter: CheckedContinuation<Void, Error>?
@@ -120,6 +124,12 @@ public final class AppWorkerProcess: @unchecked Sendable {
         lock.withLock { process?.isRunning == true && !ended }
     }
 
+    /// Running and not told to stop. An outside request the owner allows only now must not be
+    /// sent for a Worker that was stopped while the question waited (its code may be old).
+    public var isLive: Bool {
+        lock.withLock { process?.isRunning == true && !ended && !stopRequested }
+    }
+
     // MARK: - Start
 
     /// Launches Bun and waits until the Worker says it is ready (config read, migrations applied,
@@ -162,6 +172,14 @@ public final class AppWorkerProcess: @unchecked Sendable {
     }
 
     private func launch() throws -> Process {
+        // The data folder must be a real folder. The profile below lets the Worker write whatever
+        // the folder's real path is, so a link there (to the home folder, say) would hand it that.
+        if let type = try? FileManager.default.attributesOfItem(atPath: dataFolder.path)[.type] as? FileAttributeType,
+           type != .typeDirectory {
+            throw CocoaError(.fileWriteInvalidFileName, userInfo: [
+                NSLocalizedDescriptionKey: "the app's data folder is not a folder (\(dataFolder.path))",
+            ])
+        }
         try FileManager.default.createDirectory(at: dataFolder.appending(path: "tmp"), withIntermediateDirectories: true)
         // The sandbox compares real paths (/var is really /private/var), so every path we hand
         // to the profile or to Bun is resolved with realpath(3) first (as PluginProcess does).
@@ -242,28 +260,32 @@ public final class AppWorkerProcess: @unchecked Sendable {
                 return
             }
             send(.request(id: id, request))
-            armTimeout(for: id, after: limits.request)
+            armTimeout(for: id, after: limits.request, started: Date())
         }
     }
 
     /// Fails request `id` when its time is up, and kills the process. Time spent on the Worker's
     /// own outside requests doesn't count (see `pendingFetches`): then the check comes back later.
-    private func armTimeout(for id: Int, after delay: TimeInterval) {
+    private func armTimeout(for id: Int, after delay: TimeInterval, started: Date) {
         DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             enum Verdict { case answered, wait(TimeInterval), late(CheckedContinuation<AppHTTPResponse, Error>) }
             let verdict: Verdict = self.lock.withLock {
                 guard self.waiting[id] != nil else { return .answered }
-                if self.pendingFetches > 0 { return .wait(1) }
-                let quietFor = Date().timeIntervalSince(self.lastFetchActivity)
-                if quietFor < self.limits.request { return .wait(self.limits.request - quietFor) }
+                // The pause is the whole Worker's, not this request's (the wire doesn't say which
+                // request a fetch belongs to), so it has an end: `requestTotal`.
+                if Date().timeIntervalSince(started) < self.limits.requestTotal {
+                    if self.pendingFetches > 0 { return .wait(1) }
+                    let quietFor = Date().timeIntervalSince(self.lastFetchActivity)
+                    if quietFor < self.limits.request { return .wait(self.limits.request - quietFor) }
+                }
                 return .late(self.waiting.removeValue(forKey: id)!)
             }
             switch verdict {
             case .answered:
                 return
             case .wait(let more):
-                self.armTimeout(for: id, after: max(0.05, more))
+                self.armTimeout(for: id, after: max(0.05, more), started: started)
             case .late(let waiter):
                 waiter.resume(throwing: AppWorkerError.timedOut)
                 self.log("error", "A request got no answer in \(Int(self.limits.request)) seconds; the Worker was stopped.")
@@ -277,6 +299,7 @@ public final class AppWorkerProcess: @unchecked Sendable {
     /// Asks the Worker to finish (`ctx.waitUntil` work may complete) and exit; SIGKILL after the
     /// grace time. Requests still waiting fail with `.exited` when it goes.
     public func stop() {
+        lock.withLock { stopRequested = true }
         guard let process = lock.withLock({ self.process }), process.isRunning else { return }
         send(.stop)
         let pid = process.processIdentifier
@@ -290,7 +313,10 @@ public final class AppWorkerProcess: @unchecked Sendable {
     /// Kills the process at once (SIGKILL). For app termination, a hung Worker, or a restart
     /// that must not wait. Safe to call any time, more than once.
     public func terminateNow() {
-        let process: Process? = lock.withLock { self.process }
+        let process: Process? = lock.withLock {
+            stopRequested = true
+            return self.process
+        }
         input.close()
         if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
     }
@@ -346,6 +372,13 @@ public final class AppWorkerProcess: @unchecked Sendable {
             if response.body.count > limits.bodyBytes {
                 waiter.resume(throwing: AppWorkerError.tooLarge)
             } else {
+                // The line came from the Worker's process, whose code can write anything to its
+                // output: only well-formed headers and a real status go on to the page.
+                var response = response
+                response.headers = ArtifactApps.headersFromWorker(response.headers)
+                if !ArtifactApps.isResponseStatus(response.status) {
+                    response = .text(502, "The Worker answered with a status that is not one (\(response.status)).")
+                }
                 waiter.resume(returning: response)
             }
         case let .fetch(id, request):

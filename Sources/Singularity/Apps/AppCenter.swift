@@ -106,23 +106,17 @@ final class AppCenter {
         }
     }
 
-    /// The app paths that have a data folder: every folder under `app-data/` that directly
-    /// holds a file (a database, the log). App paths can be nested ("tools/firma").
+    /// The app paths that have a data folder: every folder directly in `app-data/` that is
+    /// named after an app (`ArtifactApps.dataFolderName`) and holds a database or the log.
     private static func dataFolders(in root: URL) -> [String] {
-        let rootPath = root.standardizedFileURL.path
-        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey],
-                                                          options: [.skipsHiddenFiles]) else { return [] }
-        var found = Set<String>()
-        for case let file as URL in walker {
-            guard (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
-            let folder = file.deletingLastPathComponent().standardizedFileURL.path
-            guard folder.hasPrefix(rootPath + "/") else { continue }
-            var relative = String(folder.dropFirst(rootPath.count + 1))
-            // Bun's own scratch folder is inside the data folder, not an app of its own.
-            if relative.hasSuffix("/tmp") { relative = String(relative.dropLast(4)) } else if relative == "tmp" { continue }
-            if ArtifactApps.isValidAppPath(relative) { found.insert(relative) }
-        }
-        return found.sorted()
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: root.path) else { return [] }
+        return names.compactMap { name -> String? in
+            guard let app = ArtifactApps.app(fromDataFolderName: name),
+                  let files = try? fm.contentsOfDirectory(atPath: root.appending(path: name).path),
+                  files.contains(where: { $0.hasSuffix(".sqlite") || $0 == "worker.log" }) else { return nil }
+            return app
+        }.sorted()
     }
 
     private func artifactsRoot(_ space: UUID) -> URL? {
@@ -146,9 +140,10 @@ final class AppCenter {
     }
 
     enum KeyError: Error, LocalizedError {
-        case badName, badHost, noValue
+        case badName, badHost, noValue, shortValue
         var errorDescription: String? {
             switch self {
+            case .shortValue: return "A key's value has at least \(AppKeySubstitution.minValueLength) characters."
             case .badName: return "A key's name is letters, digits and “_”, and does not start with a digit."
             case .badHost: return "The host is a name such as api.example.com: no “https://”, no path."
             case .noValue: return "Type the key's value."
@@ -164,6 +159,7 @@ final class AppCenter {
         guard AppHostRules.isValidHost(host) else { throw KeyError.badHost }
         guard ArtifactApps.isValidAppPath(app) else { return }
         if let value, !value.isEmpty {
+            guard value.count >= AppKeySubstitution.minValueLength else { throw KeyError.shortValue }
             try keyStore.set(value, space: space, app: app, name: name)
         } else if keyStore.value(space: space, app: app, name: name) == nil {
             throw KeyError.noValue
@@ -196,11 +192,23 @@ final class AppCenter {
     /// the app's folder still exists, the next request makes an empty database from its migrations.
     func deleteData(space: UUID, app: String) {
         guard let folder = dataFolder(space: space, app: app), ArtifactApps.isValidAppPath(app) else { return }
-        restart(space: space, app: app)
-        do {
-            if FileManager.default.fileExists(atPath: folder.path) { try discardFolder(folder) }
-        } catch {
-            NSLog("Singularity: could not remove the data of app \(app): \(error)")
+        let discard = discardFolder
+        let remove: @Sendable () -> Void = {
+            do {
+                if FileManager.default.fileExists(atPath: folder.path) { try discard(folder) }
+            } catch {
+                NSLog("Singularity: could not remove the data of app \(app): \(error)")
+            }
+        }
+        // A running Worker has the database open and would go on writing into the removed
+        // folder: it is killed first, and the folder goes only when it is gone.
+        if let workers = state?.artifacts.host(space)?.apps {
+            Task {
+                await workers.kill(app: app)
+                remove()
+            }
+        } else {
+            remove()
         }
     }
 
@@ -242,11 +250,11 @@ final class AppCenter {
         let dataRoot = state.paths.appDataDirectory(space.slug)
         return AppWorkers.Environment(
             runtime: runtime, hostFolder: hostFolder,
-            dataFolder: { app in dataRoot.appending(path: app, directoryHint: .isDirectory) },
+            dataFolder: { app in dataRoot.appending(path: ArtifactApps.dataFolderName(for: app), directoryHint: .isDirectory) },
             keys: { [weak self] app in await self?.keyMaterials(space: spaceID, app: app) ?? [] },
-            fetch: { [weak self] app, request, keys in
+            fetch: { [weak self] app, request, keys, isLive in
                 guard let self else { return .failure(AppFetchRefusal("Singularity is quitting.")) }
-                return await self.outbound(space: spaceID, app: app, request: request, keys: keys)
+                return await self.outbound(space: spaceID, app: app, request: request, keys: keys, isLive: isLive)
             },
             event: { [weak self] app, event in
                 Task { @MainActor in self?.workerEvent(event, space: spaceID, app: app) }
@@ -292,7 +300,8 @@ final class AppCenter {
     ///
     /// The Space's agent policy has no say: that is about agents acting in the browser. A new
     /// host always asks, whatever the policy.
-    func outbound(space: UUID, app: String, request: AppHTTPRequest, keys: [AppKeyMaterial]) async -> Result<AppHTTPResponse, AppFetchRefusal> {
+    func outbound(space: UUID, app: String, request: AppHTTPRequest, keys: [AppKeyMaterial],
+                  isLive: @escaping @Sendable () -> Bool = { true }) async -> Result<AppHTTPResponse, AppFetchRefusal> {
         let host: String
         switch AppHostRules.target(of: request.url) {
         case .success(let target): host = target
@@ -300,6 +309,11 @@ final class AppCenter {
         }
         guard await mayReach(host, space: space, app: app) else {
             return .failure(AppFetchRefusal("\(host) is not allowed for this app. The owner can allow it in the app's panel (the button at the right of the address row)."))
+        }
+        // The owner may have answered long after the Worker that asked was stopped (its files
+        // changed meanwhile): a request written by code that no longer runs is not sent.
+        guard isLive() else {
+            return .failure(AppFetchRefusal("The Worker was stopped before the request to \(host) could be sent."))
         }
         return await AppOutbound.perform(request, keys: keys) { [weak self] redirectHost in
             // A redirect never asks: only hosts already allowed.
@@ -318,9 +332,18 @@ final class AppCenter {
         case .joinWaiting:
             return await withCheckedContinuation { hostWaiters[HostID(app: id, host: host), default: []].append($0) }
         case .ask:
-            let allowed = await askOwner(host: host, space: space, app: app)
-            if allowed { allowHost(host, space: space, app: app) }
-            gates[id]?.answered(host, allowed: allowed)
+            // The inbox takes only so many approvals per Space and answers "no" for one more
+            // without showing it. That is not the owner's no: this host stays unasked, so the
+            // next request asks again, instead of being denied for the whole run unseen.
+            let allowed: Bool
+            if let state, state.inbox.waitingApprovalCount(inSpace: space) >= InboxCenter.maxWaitingApprovalsPerSpace {
+                gates[id]?.notAsked(host)
+                allowed = false
+            } else {
+                allowed = await askOwner(host: host, space: space, app: app)
+                if allowed { allowHost(host, space: space, app: app) }
+                gates[id]?.answered(host, allowed: allowed)
+            }
             for waiter in hostWaiters.removeValue(forKey: HostID(app: id, host: host)) ?? [] { waiter.resume(returning: allowed) }
             return allowed
         }

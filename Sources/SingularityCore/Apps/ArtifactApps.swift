@@ -92,6 +92,20 @@ public enum ArtifactApps {
         return !components.contains("") && isSafe(components)
     }
 
+    /// The name of an app's data folder inside `app-data/`: the app's path as ONE folder name
+    /// ("tools/firma" → "tools%2Ffirma"). Data folders must never be inside one another: a
+    /// Worker can write its whole data folder, so a nested app's data would be the outer app's
+    /// to read, change, or swap for a link to somewhere else.
+    public static func dataFolderName(for app: String) -> String {
+        app.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: "/", with: "%2F")
+    }
+
+    /// The app a data folder's name stands for; nil when it is not one of ours.
+    public static func app(fromDataFolderName name: String) -> String? {
+        guard let app = name.removingPercentEncoding, isValidAppPath(app), dataFolderName(for: app) == name else { return nil }
+        return app
+    }
+
     private static func isSafe(_ components: [String]) -> Bool {
         !components.contains { $0 == ".." || $0 == "." || $0.hasPrefix(".") }
     }
@@ -115,6 +129,22 @@ public enum ArtifactApps {
             let file = resolved.appending(path: name).path
             return FileManager.default.fileExists(atPath: file, isDirectory: &isFolder) && !isFolder.boolValue
         }
+    }
+
+    /// A header name as HTTP allows it: visible ASCII without separators.
+    public static func isHeaderName(_ name: String) -> Bool {
+        let token = CharacterSet(charactersIn: "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        return !name.isEmpty && name.unicodeScalars.allSatisfy(token.contains)
+    }
+
+    /// A header value that stays one header: no line breaks, NUL or other control characters.
+    public static func isHeaderValue(_ value: String) -> Bool {
+        value.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F || $0.value == 0x09 }
+    }
+
+    /// A status the server may send for a Worker; anything else is the Worker's mistake.
+    public static func isResponseStatus(_ status: Int) -> Bool {
+        (200...599).contains(status)
     }
 
     // MARK: - Which requests
@@ -171,8 +201,13 @@ public enum ArtifactApps {
 
     /// The Worker's response headers as the page may get them: it may not replace our auth cookie
     /// (that would lock the Space's artifacts out until the tab is opened again).
+    ///
+    /// A header that is not well-formed is dropped. The lines come from the Worker's process,
+    /// whose code can write anything; a value with a line break in it would otherwise become a
+    /// second header of its choosing (our cookie among them) when the answer is written out.
     public static func headersFromWorker(_ headers: [(String, String)]) -> [(String, String)] {
         headers.filter { name, value in
+            guard isHeaderName(name), isHeaderValue(value) else { return false }
             guard name.lowercased() == "set-cookie" else { return true }
             let cookieName = value.split(separator: "=", maxSplits: 1).first.map { $0.trimmingCharacters(in: .whitespaces) }
             return cookieName != ArtifactAuth.cookieName

@@ -167,43 +167,95 @@ public enum AppKeySubstitution {
         return environment
     }
 
+    /// A key's value has at least this many characters. A shorter one would be found by
+    /// accident in ordinary answers and log lines ("12345" inside "9123456"), and replaced there.
+    public static let minValueLength = 8
+
     /// An outside request on its way out: placeholders become values in the address, the header
-    /// values and a text body, but only for keys that belong to `host`. A placeholder in a
-    /// request for any other host stays a placeholder, so a key can't be sent elsewhere.
+    /// values and the body, but only for keys that belong to `host`. A placeholder in a request
+    /// for any other host stays a placeholder, so a key can't be sent elsewhere.
+    ///
+    /// The value is written the way its place needs it, so a value with any characters keeps
+    /// the request well-formed: percent-encoded in the address and in a form body, with JSON's
+    /// escapes in a JSON body (by the request's `Content-Type`), as it is anywhere else.
     public static func outgoing(url: String, headers: [(String, String)], body: Data?, host: String,
                                 keys: [AppKeyMaterial]) -> (url: String, headers: [(String, String)], body: Data?) {
         let pairs = keys.filter { !$0.readable && $0.host == host && !$0.value.isEmpty }
             .map { (from: $0.placeholder, to: $0.value) }
         guard !pairs.isEmpty else { return (url, headers, body) }
-        // In the address the value must be percent-encoded as a query value would be.
-        let urlPairs = pairs.map { (from: $0.from, to: $0.to.addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? $0.to) }
-        return (replace(in: url, urlPairs),
+        let contentType = headers.first { $0.0.lowercased() == "content-type" }?.1.lowercased() ?? ""
+        let bodyPairs: [(from: String, to: String)]
+        if contentType.contains("json") {
+            bodyPairs = pairs.map { ($0.from, jsonEscaped($0.to)) }
+        } else if contentType.contains("x-www-form-urlencoded") {
+            bodyPairs = pairs.map { ($0.from, percentEncoded($0.to)) }
+        } else {
+            bodyPairs = pairs
+        }
+        return (replace(in: url, pairs.map { ($0.from, percentEncoded($0.to)) }),
                 headers.map { ($0.0, replace(in: $0.1, pairs)) },
-                replace(in: body, pairs))
+                replace(in: body, bodyPairs))
     }
 
     /// The answer on its way back: a real value the server echoed becomes the placeholder again
-    /// before the Worker sees it. Keys the code may read are left alone (it has them anyway).
+    /// before the Worker sees it, also where it comes back percent-encoded or with JSON's
+    /// escapes. Keys the code may read are left alone (it has them anyway).
     public static func incoming(headers: [(String, String)], body: Data?, keys: [AppKeyMaterial])
         -> (headers: [(String, String)], body: Data?) {
-        let pairs = keys.filter { !$0.readable && !$0.value.isEmpty }.map { (from: $0.value, to: $0.placeholder) }
+        let pairs = hiding(keys.filter { !$0.readable }) { $0.placeholder }
         guard !pairs.isEmpty else { return (headers, body) }
         return (headers.map { ($0.0, replace(in: $0.1, pairs)) }, replace(in: body, pairs))
     }
 
+    /// An address the outside gave us (a redirect's `Location`), before the Worker may see it as
+    /// `response.url` and before it is used for the next hop: a real value in it becomes the
+    /// placeholder again. The next hop then gets the value back only if its host is the key's.
+    public static func scrubURL(_ url: String, keys: [AppKeyMaterial]) -> String {
+        replace(in: url, hiding(keys.filter { !$0.readable }) { $0.placeholder })
+    }
+
     /// A line for `worker.log`, which agents read: every key value, readable or not, becomes
-    /// `[key NAME]`. Exact matches only: a key the code may read can still be printed in another
-    /// form (encoded, cut in two), which the owner accepted by making it readable.
+    /// `[key NAME]`, as do its percent-encoded and JSON-escaped forms and, for a value of several
+    /// lines (a PEM key), each of its lines. A key the code may read can still be printed in
+    /// another form (base64, cut in two), which the owner accepted by making it readable.
     public static func scrubLog(_ line: String, keys: [AppKeyMaterial]) -> String {
-        var pairs: [(from: String, to: String)] = []
+        var pairs = hiding(keys) { "[key \($0.name)]" }
         for key in keys {
-            if !key.value.isEmpty { pairs.append((key.value, "[key \(key.name)]")) }
             pairs.append((key.placeholder, "[key \(key.name)]"))
+            let lines = key.value.split(whereSeparator: \.isNewline).map(String.init)
+            if lines.count > 1 {
+                for part in lines where part.count >= minValueLength { pairs.append((part, "[key \(key.name)]")) }
+            }
         }
         return replace(in: line, pairs)
     }
 
-    /// Longest first, so a value that contains another value is replaced whole.
+    /// For each key, the forms its value can turn up in, each to be replaced by `with(key)`.
+    private static func hiding(_ keys: [AppKeyMaterial], with: (AppKeyMaterial) -> String) -> [(from: String, to: String)] {
+        var pairs: [(from: String, to: String)] = []
+        for key in keys where !key.value.isEmpty {
+            for form in Set([key.value, percentEncoded(key.value), jsonEscaped(key.value)]) {
+                pairs.append((form, with(key)))
+            }
+        }
+        return pairs
+    }
+
+    /// The text between the quotes of `value` as a JSON string.
+    static func jsonEscaped(_ value: String) -> String {
+        guard let data = try? JSONEncoder().encode(value), let quoted = String(data: data, encoding: .utf8),
+              quoted.count >= 2 else { return value }
+        // JSONEncoder writes "/" as "\/"; both are valid JSON, the plain one is what people write.
+        return String(quoted.dropFirst().dropLast()).replacingOccurrences(of: "\\/", with: "/")
+    }
+
+    /// `value` as one query (or form) value.
+    static func percentEncoded(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: queryValueAllowed) ?? value
+    }
+
+    /// Longest first, so a value that contains another value is replaced whole. Plain text
+    /// replacement (no patterns): a value may contain any characters.
     private static func replace(in text: String, _ pairs: [(from: String, to: String)]) -> String {
         var text = text
         for pair in pairs.sorted(by: { $0.from.count > $1.from.count }) where !pair.from.isEmpty {
@@ -212,13 +264,20 @@ public enum AppKeySubstitution {
         return text
     }
 
-    /// A body is only touched when it is text (UTF-8) and actually holds something to replace;
-    /// anything else (an image, a zip) goes through byte for byte.
+    /// In a body the replacement is done on bytes, not on text: the body may be in any encoding,
+    /// or not text at all (an echoed key in a Latin-1 page is still the same bytes), and every
+    /// other byte must stay exactly as it was.
     private static func replace(in body: Data?, _ pairs: [(from: String, to: String)]) -> Data? {
-        guard let body, !body.isEmpty else { return body }
-        guard pairs.contains(where: { body.range(of: Data($0.from.utf8)) != nil }),
-              let text = String(data: body, encoding: .utf8) else { return body }
-        return Data(replace(in: text, pairs).utf8)
+        guard var data = body, !data.isEmpty else { return body }
+        for pair in pairs.sorted(by: { $0.from.utf8.count > $1.from.utf8.count }) where !pair.from.isEmpty {
+            let from = Data(pair.from.utf8), to = Data(pair.to.utf8)
+            var searchFrom = data.startIndex
+            while searchFrom < data.endIndex, let found = data.range(of: from, in: searchFrom..<data.endIndex) {
+                data.replaceSubrange(found, with: to)
+                searchFrom = found.lowerBound + to.count
+            }
+        }
+        return data
     }
 
     /// Characters that need no escaping inside a query value.

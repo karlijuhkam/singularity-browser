@@ -341,6 +341,38 @@ struct AppsTests {
         #expect(f.state.apps.knownApps(space: f.space.id).map(\.path) == ["firma", "later"])
     }
 
+    /// The starter app that ships in the bundle (`Apps/template`), run as it is: copied into the
+    /// Space, its database made from its migration, its three routes answered by the real Worker.
+    /// Keeps the template from rotting.
+    @Test func theShippedTemplateWorks() async throws {
+        let f = try await makeFixture()
+        defer { tearDown(f) }
+        try FileManager.default.copyItem(at: TestAppState.repositoryRoot.appending(path: "Apps/template"),
+                                         to: f.artifacts.appending(path: "notes"))
+        var empty = try await send(f, "GET", "/notes/api/notes")
+        for _ in 0..<100 where empty.status != 200 {   // the watcher may still be on its way
+            try await Task.sleep(for: .milliseconds(50))
+            empty = try await send(f, "GET", "/notes/api/notes")
+        }
+        #expect(empty.status == 200 && empty.text == "[]")
+
+        let added = try await send(f, "POST", "/notes/api/notes", body: #"{"text":"esimene"}"#,
+                                   headers: ["Content-Type": "application/json"])
+        #expect(added.status == 201)
+        let id = try #require(try object(added.text)["id"] as? Int)
+        #expect(try await send(f, "GET", "/notes/api/notes").text.contains("esimene"))
+        #expect(try await send(f, "DELETE", "/notes/api/notes/\(id)").status == 204)
+        #expect(try await send(f, "GET", "/notes/api/notes").text == "[]")
+
+        // The page is a file, answered as a module; its import map names what it imports.
+        #expect(try await send(f, "GET", "/notes/app.tsx").status == 200)
+        let map = try String(contentsOf: f.artifacts.appending(path: "notes/importmap.json"), encoding: .utf8)
+        #expect(map.contains("preact/jsx-runtime"))
+        // The template asks for no host and no key by itself.
+        #expect(waiting(f).isEmpty)
+        #expect(f.state.apps.record(space: f.space.id, app: "notes").isEmpty)
+    }
+
     // MARK: - Outside requests
 
     @Test func aNewHostAsksOnceAndAllowIsRemembered() async throws {
@@ -487,10 +519,14 @@ struct AppsTests {
         defer { tearDown(f) }
         let apps = f.state.apps
         #expect(throws: AppCenter.KeyError.self) {
-            try apps.setKey(name: "1BAD", host: "api.example.com", readable: false, value: "v", space: f.space.id, app: "firma")
+            try apps.setKey(name: "1BAD", host: "api.example.com", readable: false, value: "long-enough", space: f.space.id, app: "firma")
         }
         #expect(throws: AppCenter.KeyError.self) {
-            try apps.setKey(name: "OK", host: "https://api.example.com/", readable: false, value: "v", space: f.space.id, app: "firma")
+            try apps.setKey(name: "OK", host: "https://api.example.com/", readable: false, value: "long-enough", space: f.space.id, app: "firma")
+        }
+        // A value so short that it would be found by accident in ordinary answers.
+        #expect(throws: AppCenter.KeyError.self) {
+            try apps.setKey(name: "OK", host: "api.example.com", readable: false, value: "1234567", space: f.space.id, app: "firma")
         }
         #expect(throws: AppCenter.KeyError.self) {
             try apps.setKey(name: "OK", host: "api.example.com", readable: false, value: nil, space: f.space.id, app: "firma")
@@ -520,13 +556,146 @@ struct AppsTests {
         #expect(seen.count == 1 && seen[0].hasSuffix(" /redirect"))
 
         // Once localhost is allowed the redirect is followed, but the key belongs to 127.0.0.1:
-        // the second hop carries the placeholder, not the value.
+        // the second hop gets neither the value nor the header it was in.
         f.state.apps.allowHost("localhost", space: f.space.id, app: "firma")
         let followed = try await send(f, "GET", fetchPath(redirect, auth: true))
         let result = try object(followed.text)
         #expect(result["status"] as? Int == 200)
-        #expect((result["text"] as? String)?.contains("Bearer sgkey_") == true)
+        #expect((result["text"] as? String)?.contains("Authorization") == false)
         #expect(!followed.text.contains("s3cr3t-value"))
+    }
+
+    /// A key the code may read is in the Worker's own header as its real value: no placeholder
+    /// rule protects it, so a redirect to another host must leave the header behind.
+    @Test func aReadableKeyDoesNotFollowARedirectToAnotherHost() async throws {
+        let api = try ApiFixtureServer.start()
+        defer { api.stop() }
+        let f = try await makeFixture()
+        defer { tearDown(f) }
+        try f.state.apps.setKey(name: "API_KEY", host: "127.0.0.1", readable: true, value: "sign-with-me",
+                                space: f.space.id, app: "firma")
+        f.state.apps.allowHost("localhost", space: f.space.id, app: "firma")
+
+        // Straight to the key's host: the header arrives.
+        let direct = try object(try await send(f, "GET", fetchPath(api.url("/echo"), auth: true)).text)
+        #expect((direct["text"] as? String)?.contains("Bearer sign-with-me") == true)
+
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=?+#")
+        let target = api.url("/echo", host: "localhost")
+        let redirect = api.url("/redirect?to=" + target.addingPercentEncoding(withAllowedCharacters: allowed)!)
+        let followed = try object(try await send(f, "GET", fetchPath(redirect, auth: true)).text)
+        #expect(followed["status"] as? Int == 200)
+        let echoed = try #require(followed["text"] as? String)
+        #expect(!echoed.contains("sign-with-me"))
+        #expect(!echoed.contains("Authorization"))
+    }
+
+    /// The server the key belongs to redirects to an address that repeats the key's real value
+    /// (a slash added, the same query). The Worker reads `response.url`: it must not find it there.
+    @Test func aRedirectThatRepeatsTheKeyDoesNotHandItToTheWorker() async throws {
+        let api = try ApiFixtureServer.start()
+        defer { api.stop() }
+        let f = try await makeFixture()
+        defer { tearDown(f) }
+        try f.state.apps.setKey(name: "API_KEY", host: "127.0.0.1", readable: false, value: "s3cr3t-value",
+                                space: f.space.id, app: "firma")
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=?+#")
+        let target = api.url("/echo?key=s3cr3t-value")
+        let redirect = api.url("/redirect?to=" + target.addingPercentEncoding(withAllowedCharacters: allowed)!)
+        let answer = try await send(f, "GET", fetchPath(redirect))
+        let result = try object(answer.text)
+        #expect(result["status"] as? Int == 200)
+        #expect((result["url"] as? String)?.contains("sgkey_") == true)
+        #expect(!answer.text.contains("s3cr3t-value"))
+        // The key's own host did get the value back in the followed address.
+        #expect(try await api.seen().count == 2)
+    }
+
+    /// The inbox shows at most five approvals per Space. A sixth new host is not the owner's
+    /// "no": it fails now, but is not denied for the run, and asks when there is room.
+    @Test func aHostThatCouldNotBeAskedAboutIsNotDenied() async throws {
+        let f = try await makeFixture()
+        defer { tearDown(f) }
+        let requests = (1...5).map { index in
+            Task { @MainActor in try await send(f, "GET", fetchPath("https://host\(index).example/")) }
+        }
+        try await waitUntil("five approvals") { waiting(f).count == 5 }
+        let sixth = try await send(f, "GET", fetchPath("https://host6.example/"))
+        #expect(sixth.status == 502)
+        #expect(waiting(f).count == 5)
+        #expect(!f.state.apps.deniedHosts(space: f.space.id, app: "firma").contains("host6.example"))
+
+        for entry in waiting(f) { f.center.decideApproval(entry.id, .denied) }
+        for request in requests { #expect(try await request.value.status == 502) }
+        #expect(f.state.apps.deniedHosts(space: f.space.id, app: "firma").count == 5)
+
+        // Room again: the sixth host is asked about now.
+        let again = Task { @MainActor in try await send(f, "GET", fetchPath("https://host6.example/")) }
+        try await waitUntil("the approval for the sixth host") { waiting(f).count == 1 }
+        f.center.decideApproval(try #require(waiting(f).first).id, .denied)
+        #expect(try await again.value.status == 502)
+    }
+
+    /// The owner answers after the Worker that asked was stopped (its file changed): the request
+    /// that old code wrote is not sent, though the host is now allowed. The page's request is
+    /// answered by the new code, which asks for nothing.
+    @Test func anAllowThatComesAfterTheWorkerWentSendsNothing() async throws {
+        let api = try ApiFixtureServer.start()
+        defer { api.stop() }
+        let f = try await makeFixture()
+        defer { tearDown(f) }
+        let request = Task { @MainActor in try await send(f, "GET", fetchPath(api.url("/echo"))) }
+        try await waitUntil("the approval") { waiting(f).count == 1 }
+
+        try #"export default { fetch() { return new Response("new code") } }"#
+            .write(to: f.artifacts.appending(path: "firma/worker.ts"), atomically: true, encoding: .utf8)
+        // The request that was inside the old Worker is answered by the new one.
+        #expect(try await request.value.text == "new code")
+
+        // The old Worker's question is still in the inbox. Allow: the answer holds…
+        f.center.decideApproval(try #require(waiting(f).first).id, .approved)
+        try await waitUntil("the host in the record") { f.state.space(f.space.id)?.apps["firma"]?.hosts == ["127.0.0.1"] }
+        // …but the request the old code wrote is not sent.
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(try await api.seen().isEmpty)
+    }
+
+    /// A request that is still inside the Worker when its file changes gets an answer, not an error.
+    @Test func aRequestInsideTheWorkerDuringARestartIsAnswered() async throws {
+        let f = try await makeFixture()
+        defer { tearDown(f) }
+        #expect(try await send(f, "GET", "/firma/api/hello").status == 200)
+        let slow = Task { @MainActor in try await send(f, "GET", "/firma/api/slow?ms=1500") }
+        try await Task.sleep(for: .milliseconds(200))
+        let worker = f.artifacts.appending(path: "firma/worker.ts")
+        try (try String(contentsOf: worker, encoding: .utf8) + "\n// changed\n").write(to: worker, atomically: true, encoding: .utf8)
+        let answer = try await slow.value
+        #expect(answer.status == 200)
+        #expect(answer.text == "slow answer")
+    }
+
+    /// Two real apps side by side, one in a subfolder of the other: each has its own database.
+    @Test func appsDoNotShareData() async throws {
+        let f = try await makeFixture()
+        defer { tearDown(f) }
+        try FileManager.default.copyItem(at: Self.appFixture, to: f.artifacts.appending(path: "firma/inner"))
+        var inner = try await send(f, "GET", "/firma/inner/api/notes")
+        for _ in 0..<100 where inner.status != 200 {
+            try await Task.sleep(for: .milliseconds(50))
+            inner = try await send(f, "GET", "/firma/inner/api/notes")
+        }
+        #expect(try await send(f, "POST", "/firma/api/notes", body: "outer").status == 200)
+        #expect(try await send(f, "POST", "/firma/inner/api/notes", body: "inner").status == 200)
+        #expect(try await send(f, "GET", "/firma/api/notes").text.contains("outer"))
+        #expect(!(try await send(f, "GET", "/firma/api/notes").text.contains("inner")))
+        #expect(!(try await send(f, "GET", "/firma/inner/api/notes").text.contains("outer")))
+        // Side by side on disk, never one inside the other.
+        let data = Paths(root: f.root).appDataDirectory("work")
+        let folders = try FileManager.default.contentsOfDirectory(atPath: data.path).sorted()
+        #expect(folders == ["firma", "firma%2Finner"], "got \(folders)")
+        #expect(f.state.apps.knownApps(space: f.space.id).map(\.path) == ["firma", "firma/inner"])
     }
 
     @Test func anAnswerOverTheLimitFails() async throws {
@@ -555,8 +724,8 @@ struct AppsTests {
         let f = try await makeFixture()
         defer { tearDown(f) }
         let apps = f.state.apps
-        try apps.setKey(name: "API_KEY", host: "api.example.com", readable: false, value: "v", space: f.space.id, app: "firma")
-        try apps.setKey(name: "OTHER", host: "api.example.com", readable: false, value: "w", space: f.space.id, app: "firma2")
+        try apps.setKey(name: "API_KEY", host: "api.example.com", readable: false, value: "value-one", space: f.space.id, app: "firma")
+        try apps.setKey(name: "OTHER", host: "api.example.com", readable: false, value: "value-two", space: f.space.id, app: "firma2")
         #expect(try await send(f, "POST", "/firma/api/notes", body: "rida").status == 200)
         let data = Paths(root: f.root).appDataDirectory("work", app: "firma")
         #expect(FileManager.default.fileExists(atPath: data.appending(path: "DB.sqlite").path))
@@ -569,7 +738,7 @@ struct AppsTests {
         apps.forget(space: f.space.id, app: "firma")
         #expect(apps.record(space: f.space.id, app: "firma").isEmpty)
         #expect(f.keys.value(space: f.space.id, app: "firma", name: "API_KEY") == nil)
-        #expect(f.keys.value(space: f.space.id, app: "firma2", name: "OTHER") == "w")
+        #expect(f.keys.value(space: f.space.id, app: "firma2", name: "OTHER") == "value-two")
         #expect(FileManager.default.fileExists(atPath: data.path))   // data is a separate choice
 
         apps.deleteData(space: f.space.id, app: "firma")

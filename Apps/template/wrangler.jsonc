@@ -1,0 +1,32 @@
+{
+  // This file makes the folder an app. It is Cloudflare's own config file, so the same folder
+  // deploys with wrangler later. Singularity reads "main", "d1_databases" (binding and
+  // migrations_dir) and "vars"; it ignores the rest.
+
+  // Change to your app's name: letters, digits and dashes.
+  "name": "my-app",
+
+  // The Worker. Requests the folder has no file for go to its fetch().
+  "main": "worker.ts",
+
+  // Only Cloudflare reads this. Set it to the day you move out.
+  "compatibility_date": "2026-11-14",
+
+  "d1_databases": [
+    {
+      // env.DB in the Worker. In Singularity the file is <app data folder>/DB.sqlite.
+      "binding": "DB",
+      // The next two are placeholders: Singularity does not read them. When you move to
+      // Cloudflare, run `wrangler d1 create <name>` and put its name and id here.
+      "database_name": "my-app",
+      "database_id": "local"
+    }
+  ],
+
+  // Plain values for env (never keys: the owner types those into the app's panel).
+  // "vars": { "COMPANY": "Example OÜ" },
+
+  // Only for Cloudflare, after the page was built into dist/ (see the guide, "Moving out").
+  // Singularity serves the folder's own files and does not read this.
+  // "assets": { "directory": "./dist" }
+}
