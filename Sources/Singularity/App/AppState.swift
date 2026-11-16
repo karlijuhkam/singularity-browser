@@ -57,6 +57,8 @@ final class AppState {
 
     let web: WebViewRegistry
     let terminals: TerminalRegistry
+    /// The editors of open note tabs (see Notes/).
+    let notes = NoteRegistry()
     let artifacts: ArtifactHosts
     let favicons: FaviconStore
     /// Approval policy checks for agent actions; the questions wait as inbox entries.
@@ -122,6 +124,10 @@ final class AppState {
     /// Artifact tabs whose file is gone (deleted, renamed, moved). The sidebar marks them; the tab
     /// itself shows the server's "file is missing" page and comes back when the file does.
     private(set) var missingArtifactTabs: Set<UUID> = []
+    /// The selected Space's notes without a tab, for the palette (`refreshPaletteNotes`).
+    var paletteNotes: [String] = []
+    /// How a note's file is discarded: into the Trash. A property so tests never reach the real Trash.
+    @ObservationIgnored var trashFile: (URL) throws -> Void = { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
     /// Per Space: artifact pages we already know about, so only genuinely new files open a tab.
     @ObservationIgnored private var knownArtifactPages: [UUID: Set<String>] = [:]
 
@@ -225,6 +231,7 @@ final class AppState {
             self?.space(spaceID)?.sitesWherePluginIsOff(pluginID) ?? []
         }
         terminals.state = self
+        notes.state = self
         artifacts.state = self
         apps.state = self
         artifacts.appEnvironment = { [weak self] space in self?.apps.environment(for: space) }
@@ -284,6 +291,7 @@ final class AppState {
                 self?.flushSaves()
                 self?.artifacts.stopAll()
                 self?.terminals.tearDownAll()
+                self?.notes.stopAll()
                 self?.mcp?.stop()
                 self?.plugins.terminateAll()
             }
@@ -599,6 +607,7 @@ final class AppState {
         little.spaceWillBeDeleted(id)
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
+        notes.removeHosts(for: space.tabs.map(\.id))
         for tab in space.tabs { inbox.tabClosed(tab.id) }
         inbox.spaceDeleted(id) // approvals without a tab (artifact prompts) are denied too
         artifacts.stop(id)
@@ -881,6 +890,7 @@ final class AppState {
         }
         web.removeControllers(for: [tabID])
         terminals.removeSessions(for: [tabID])
+        notes.removeHosts(for: [tabID])
         inbox.tabClosed(tabID)
         mutateSpace(spaceID) { $0.closeTab(tabID) }
         missingArtifactTabs.remove(tabID)
@@ -971,6 +981,7 @@ final class AppState {
 
     func showPalette(_ mode: PaletteMode) {
         closeWelcome()
+        refreshPaletteNotes()
         palette = mode
     }
 
@@ -1228,6 +1239,10 @@ final class AppState {
             if let title = plugins.panelTitle(pluginID), title != tab.title {
                 mutateSpace(space.id) { $0.updateTab(tab.id) { $0.title = title } }
             }
+        case .note:
+            // The editor is made here (it reads its file by itself). nil for a bare debug binary,
+            // which has no editor beside it: `TabContentView` then says so.
+            _ = notes.host(for: tab, in: space)
         case .artifact(let path):
             guard web.existingController(tab.id) == nil else { return }
             // The page can only load once the Space's server runs.
@@ -1414,7 +1429,7 @@ final class AppState {
         case .artifact(let path):
             guard let host = await ensureArtifactHost(space), let request = host.request(for: path) else { return nil }
             return web.existingController(tabID) ?? web.artifactController(for: tab, in: space, host: host, request: request)
-        case .terminal, .plugin:
+        case .terminal, .plugin, .note:
             return nil
         }
     }
@@ -1581,7 +1596,7 @@ final class AppState {
         mutateSpace(id, change)
     }
 
-    private func mutateSpace(_ id: UUID, _ change: (inout Space) -> Void) {
+    func mutateSpace(_ id: UUID, _ change: (inout Space) -> Void) {
         guard let index = spaces.firstIndex(where: { $0.id == id }) else { return }
         change(&spaces[index])
         markDirty(id)

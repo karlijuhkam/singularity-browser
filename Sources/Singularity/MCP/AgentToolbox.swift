@@ -283,7 +283,7 @@ final class AgentToolbox {
             case .web(let url): entry["kind"] = "web"; entry["url"] = url.absoluteString
             case .terminal(let directory): entry["kind"] = "terminal"; entry["directory"] = directory
             case .artifact(let path): entry["kind"] = "artifact"; entry["path"] = path
-            case .plugin: break // filtered out above
+            case .plugin, .note: break // filtered out above
             }
             switch tab.section {
             case .pinned: entry["section"] = "pinned"
@@ -338,7 +338,7 @@ final class AgentToolbox {
     private func close(_ space: Space, tabID: UUID, record: CallRecord) async throws -> String {
         guard let state, let tab = space.tab(tabID) else { throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space.") }
         guard !tab.isTerminal else { throw ToolError("Terminal tabs cannot be closed by agents.") }
-        guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
+        guard !tab.isHiddenFromAgents else { throw Self.notAWebPage(tabID) }
         try refuseOffSite(tab, space, record)
         let origin = AgentApprovalRules.origin(of: tab.url ?? state.artifacts.host(space.id)?.origin)
         try await authorize(
@@ -456,7 +456,7 @@ final class AgentToolbox {
             throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space. Call \(AgentToolName.make(slug: space.slug, tool: "list_tabs")).")
         }
         record.tabID = tabID
-        guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
+        guard !tab.isHiddenFromAgents else { throw Self.notAWebPage(tabID) }
         guard case .web = tab.kind else {
             throw ToolError("Console and network can only be read for web tabs, not terminals or artifacts.")
         }
@@ -593,7 +593,7 @@ final class AgentToolbox {
             throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space. Call \(AgentToolName.make(slug: space.slug, tool: "list_tabs")).")
         }
         guard !tab.isTerminal else { throw ToolError("Tab \(tabID.uuidString.lowercased()) is a terminal, not a web page.") }
-        guard !tab.isPlugin else { throw Self.notAWebPage(tabID) }
+        guard !tab.isHiddenFromAgents else { throw Self.notAWebPage(tabID) }
         // Before the tab is loaded or marked: where it is now (live page and stored address).
         try refuseOffSite(tab, space, record)
         if record.tabID == nil {
@@ -633,7 +633,7 @@ final class AgentToolbox {
     private func currentAddresses(of tab: BrowserTab) -> [URL] {
         switch tab.kind {
         case .web, .artifact: return [state?.web.existingController(tab.id)?.webView.url, tab.url].compactMap { $0 }
-        case .terminal, .plugin: return []
+        case .terminal, .plugin, .note: return []
         }
     }
 
@@ -651,7 +651,7 @@ final class AgentToolbox {
 
     /// A tab `caller` may know about: never a plugin's page; for a plugin, nothing on a switched-off site.
     private func tabIsVisible(_ tab: BrowserTab, in space: Space, to caller: AgentCaller) -> Bool {
-        !tab.isPlugin && !tabIsOff(tab, space, caller)
+        !tab.isHiddenFromAgents && !tabIsOff(tab, space, caller)
     }
 
     private func refuseOffSite(_ tab: BrowserTab, _ space: Space, _ record: CallRecord) throws {

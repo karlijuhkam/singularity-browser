@@ -1,0 +1,17 @@
+{
+  "name": "singularity-note-editor",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@floating-ui/dom": "1.7.4",
+    "@tiptap/core": "3.32.2",
+    "@tiptap/extension-image": "3.32.2",
+    "@tiptap/extension-list": "3.32.2",
+    "@tiptap/extension-table": "3.32.2",
+    "@tiptap/extensions": "3.32.2",
+    "@tiptap/markdown": "3.32.2",
+    "@tiptap/pm": "3.32.2",
+    "@tiptap/starter-kit": "3.32.2",
+    "@tiptap/suggestion": "3.32.2"
+  }
+}

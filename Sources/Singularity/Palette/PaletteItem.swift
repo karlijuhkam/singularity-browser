@@ -61,6 +61,12 @@ enum PaletteResults {
                             hint: "Artifact", icon: .symbol("doc.richtext"), action: .run { state.openArtifact(path) })
             }
 
+        // The Space's notes that have no tab (read from disk when the palette opened).
+        let notes = (splitTarget != nil ? [] : state.paletteNotes).map { path in
+            PaletteItem(id: "note-\(path)", title: NoteFiles.title(ofPath: path), subtitle: NoteFiles.subtitle(tabPath: path),
+                        hint: "Note", icon: .symbol("note.text"), action: .run { state.openNote(path) })
+        }
+
         if trimmed.isEmpty {
             return Array(tabs.prefix(8)) + commands
         }
@@ -74,7 +80,8 @@ enum PaletteResults {
                 return (item, score + bonus)
             }
         }
-        let matches = (ranked(tabs, bonus: 300) + ranked(commands, bonus: 200) + ranked(artifacts, bonus: 100) + ranked(Array(history), bonus: 0))
+        let matches = (ranked(tabs, bonus: 300) + ranked(commands, bonus: 200) + ranked(artifacts, bonus: 100) + ranked(notes, bonus: 100)
+            + ranked(Array(history), bonus: 0))
             .sorted { $0.1 > $1.1 }
             .prefix(30)
             .map(\.0)
@@ -148,6 +155,8 @@ enum PaletteResults {
                 .symbol("terminal")
             } else if tab.isPlugin {
                 .symbol("puzzlepiece.extension")
+            } else if tab.isNote {
+                .symbol("note.text")
             } else if tab.isArtifact {
                 .symbol("doc.richtext")
             } else {
@@ -156,7 +165,8 @@ enum PaletteResults {
             return PaletteItem(
                 id: "tab-\(tab.id)",
                 title: tab.displayTitle,
-                subtitle: tab.url?.absoluteString ?? tab.workingDirectory ?? tab.artifactPath.map { "artifacts/\($0)" } ?? "",
+                subtitle: tab.url?.absoluteString ?? tab.workingDirectory ?? tab.artifactPath.map { "artifacts/\($0)" }
+                    ?? tab.notePath.map { NoteFiles.subtitle(tabPath: $0) } ?? "",
                 hint: tab.id == space.selectedTabID ? "Current Tab" : "Switch to Tab",
                 icon: icon,
                 action: .selectTab(tab.id)
@@ -217,6 +227,9 @@ enum PaletteResults {
             })
         }
         items.append(command("new-terminal", "New Terminal", "terminal") { state.openTerminal() })
+        items.append(command("new-note", "New Note", "note.text.badge.plus") { state.newNote() })
+        items.append(command("today-note", "Today's Note", "calendar") { state.openTodayNote() })
+        items.append(command("open-file", "Open Markdown File…", "doc.text") { state.openMarkdownFilePanel() })
         for launcher in state.launchers {
             items.append(command("launcher-\(launcher.id)", "New \(launcher.displayName) Terminal", "terminal") {
                 state.openTerminal(launcher: launcher)
@@ -236,7 +249,7 @@ enum PaletteResults {
                     state.togglePin(tab.id)
                 })
             }
-            if !tab.isTerminal && !tab.isPlugin {
+            if !tab.isTerminal && !tab.isPlugin && !tab.isNote {
                 items.append(command("reload", "Reload Page", "arrow.clockwise") {
                     state.web.existingController(tab.id)?.reload()
                 })
@@ -260,6 +273,7 @@ enum PaletteResults {
         }
         items.append(command("new-folder", "New Folder…", "folder.badge.plus") { state.promptNewFolder() })
         items.append(command("artifacts-folder", "Show Artifacts Folder in Finder", "folder") { state.revealArtifactsFolder() })
+        items.append(command("notes-folder", "Show Notes Folder in Finder", "folder") { state.revealNotesFolder() })
         items.append(command("agent-log", "Show Agent Log File", "sparkles") { state.revealAgentLog() })
         items.append(command("new-space", "New Space…", "plus.square.on.square") {
             state.showSpaceEditor(spaceID: nil)

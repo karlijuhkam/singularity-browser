@@ -44,6 +44,22 @@ set_plist_version() {
 # has the same bundle id, so if build/, test or scratch bundles claimed links too, macOS could hand
 # a link to a copy that isn't the running one, which exits (the data folder is in use) and the
 # link is lost. The checked-in Resources/Info.plist therefore has no CFBundleURLTypes.
+# claim_markdown_files <Info.plist>: lets Finder offer the app for Markdown files ("Open With",
+# a drop on the Dock icon); they open as notes. Rank "Alternate": the app is offered, but never
+# becomes the default program for Markdown by itself. Release bundles only, like claim_web_links
+# and for the same reason (a copy that isn't the running one would get the file and lose it).
+claim_markdown_files() {
+  local plist="$1" pb=/usr/libexec/PlistBuddy
+  "$pb" -c "Add :CFBundleDocumentTypes array" \
+        -c "Add :CFBundleDocumentTypes:0 dict" \
+        -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string 'Markdown document'" \
+        -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" \
+        -c "Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate" \
+        -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array" \
+        -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string net.daringfireball.markdown" \
+        "$plist" >/dev/null
+}
+
 claim_web_links() {
   local plist="$1" pb=/usr/libexec/PlistBuddy
   "$pb" -c "Add :CFBundleURLTypes array" \

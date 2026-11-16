@@ -269,7 +269,7 @@ extension PluginPageHost: WKUIDelegate {
 /// The delegates of a torn-down page: every navigation, window, download, dialog and camera or
 /// microphone request is refused. One for the app, so it outlives every host.
 @MainActor
-private final class ClosedPageGuard: NSObject, WKNavigationDelegate, WKUIDelegate {
+final class ClosedPageGuard: NSObject, WKNavigationDelegate, WKUIDelegate {
     static let shared = ClosedPageGuard()
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {

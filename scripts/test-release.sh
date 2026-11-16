@@ -63,6 +63,13 @@ expect "plist: http claimed"  [ "$($PB -c 'Print CFBundleURLTypes:0:CFBundleURLS
 expect "plist: https claimed" [ "$($PB -c 'Print CFBundleURLTypes:0:CFBundleURLSchemes:1' "$TMP/Links.plist")" = https ]
 expect_not "plist: no third scheme" plist_has "$TMP/Links.plist" CFBundleURLTypes:0:CFBundleURLSchemes:2
 expect "plist: still a valid plist" plutil -lint -s "$TMP/Links.plist"
+# claim_markdown_files offers the app for Markdown files without making it their default program
+expect_not "plist: the checked-in file claims no document types" plist_has "$ROOT/Resources/Info.plist" CFBundleDocumentTypes
+cp "$ROOT/Resources/Info.plist" "$TMP/Docs.plist"
+claim_markdown_files "$TMP/Docs.plist"
+expect "plist: Markdown claimed" [ "$($PB -c 'Print CFBundleDocumentTypes:0:LSItemContentTypes:0' "$TMP/Docs.plist")" = net.daringfireball.markdown ]
+expect "plist: only as an alternate" [ "$($PB -c 'Print CFBundleDocumentTypes:0:LSHandlerRank' "$TMP/Docs.plist")" = Alternate ]
+expect "release.sh: Markdown files are claimed in release mode only" [ "$(grep -c 'claim_markdown_files "\$BUNDLE_PLIST"' "$ROOT/scripts/release.sh")" = 1 ]
 expect "release.sh: links are claimed in release mode only" [ "$(grep -c 'claim_web_links "\$BUNDLE_PLIST"' "$ROOT/scripts/release.sh")" = 1 ]
 
 # ---- release-helpers.sh -------------------------------------------------------------------------

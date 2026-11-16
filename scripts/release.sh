@@ -447,6 +447,7 @@ cp "$ROOT/Vendor/bun/bun" "$APP/Contents/Helpers/bun"
 cp "$PLIST" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
 cp -R "$ROOT/Resources/plugin-host" "$APP/Contents/Resources/"   # plugins' host.ts
+cp -R "$ROOT/Resources/note-editor" "$APP/Contents/Resources/"   # the note editor's page
 # Ready-made plugins (every folder of Plugins/ except the template) and the authoring guide with the
 # template, for the welcome flow. Copied before signing, so the signature seals them.
 RSYNC_SKIP=(--exclude node_modules --exclude .git --exclude .DS_Store)
@@ -479,6 +480,8 @@ if [[ "$MODE" == release ]]; then
   plutil -replace SUPublicEDKey -string "$PUBLIC_ED_KEY" "$BUNDLE_PLIST"
   # Only a real release receives links from other apps (little windows); see claim_web_links.
   claim_web_links "$BUNDLE_PLIST"
+  # And only a real release is offered by Finder for Markdown files, for the same reason.
+  claim_markdown_files "$BUNDLE_PLIST"
 elif [[ "$MODE" == scratch ]]; then
   set_plist_version "$BUNDLE_PLIST" "$VERSION" "$BUILD"
   plutil -replace SUFeedURL -string "$SCRATCH_FEED_URL" "$BUNDLE_PLIST"

@@ -54,7 +54,14 @@ struct SingularityApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var state: AppState? {
         // Links that arrived before the app state was attached (a link that started the app).
-        didSet { links.deliver = state.map { state in { [weak state] url in state?.openLink(url) } } }
+        didSet {
+            links.deliver = state.map { state in
+                { [weak state] url in
+                    // A Markdown file from Finder opens as a note; a web link in a little window.
+                    if LinkInbox.isMarkdownFile(url) { state?.openMarkdownFile(url) } else { state?.openLink(url) }
+                }
+            }
+        }
     }
     /// Links from other apps, on their way to little windows.
     let links = LinkInbox()
@@ -133,8 +140,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Cmd+Q: ask first if a terminal is running something (e.g. an agent).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         terminalLog.notice("applicationShouldTerminate called; state set: \(self.state != nil)")
-        return (state?.confirmQuit() ?? true) ? .terminateNow : .terminateCancel
+        // Second pass (see below): the question was answered and the notes are written.
+        if notesWrittenForQuit { return .terminateNow }
+        guard state?.confirmQuit() ?? true else { return .terminateCancel }
+        // Open notes may hold a moment's typing that isn't on disk yet (the editor saves 0.4 s
+        // after the last keystroke). So this quit is called off, the editors write, and the app
+        // quits again by itself right after; each editor gives up after 2 s.
+        //
+        // Not `.terminateLater`: that waits in a nested run loop, and when the quit came from
+        // inside a main-queue block (SIGTERM does: `quitOnSigterm`) the main queue can't run
+        // there, so the writes would never happen and the app would never quit.
+        guard let state, !state.notes.isEmpty else { return .terminateNow }
+        Task { @MainActor in
+            await state.notes.flushAll()
+            self.notesWrittenForQuit = true
+            NSApp.terminate(nil)
+        }
+        return .terminateCancel
     }
+
+    /// Set once the open notes were written for a quit that is about to be repeated.
+    private var notesWrittenForQuit = false
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true

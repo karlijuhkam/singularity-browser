@@ -1,0 +1,317 @@
+/* Singularity's note editor. Light and dark follow the system; colours are the tokens below. */
+
+:root {
+  color-scheme: light dark;
+  --page: #ffffff;
+  --text: #1d1d1f;
+  --muted: #86868b;
+  --faint: #c7c7cc;
+  --line: #e5e5ea;
+  --wash: #f5f5f7;
+  --accent: #0a84ff;
+  --accent-wash: rgba(10, 132, 255, 0.16);
+  --done: #a1a1a6;
+  --menu: #ffffff;
+  --menu-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.14), 0 10px 32px rgba(0, 0, 0, 0.16);
+  --warn-wash: #fff6dd;
+  --warn-line: #f0d98a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #1c1c1e;
+    --text: #f2f2f7;
+    --muted: #98989f;
+    --faint: #545458;
+    --line: #38383a;
+    --wash: #2a2a2d;
+    --accent: #409cff;
+    --accent-wash: rgba(64, 156, 255, 0.26);
+    --done: #6e6e73;
+    --menu: #2c2c2e;
+    --menu-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.16), 0 10px 32px rgba(0, 0, 0, 0.5);
+    --warn-wash: #3a3320;
+    --warn-line: #6b5a22;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body { min-height: 100vh; display: flex; flex-direction: column; }
+
+::selection { background: var(--accent-wash); }
+
+/* The page: one readable column. The left padding leaves room for the grip. */
+#page {
+  flex: 1;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 56px 64px 30vh;
+  cursor: text;
+}
+
+#title {
+  margin: 0 0 14px;
+  font-size: 34px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  outline: none;
+  overflow-wrap: anywhere;
+}
+#title:empty::before { content: attr(data-placeholder); color: var(--faint); }
+
+/* MARK: The strip (file changed, file gone, a save that failed) */
+
+#strip {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 16px;
+  background: var(--warn-wash);
+  border-bottom: 1px solid var(--warn-line);
+  font-size: 13px;
+  line-height: 1.4;
+}
+#strip[hidden] { display: none; }
+#strip-buttons { display: flex; gap: 8px; flex-shrink: 0; }
+#strip button {
+  font: inherit;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--warn-line);
+  background: var(--page);
+  color: var(--text);
+}
+#strip button:active { background: var(--wash); }
+
+/* MARK: The text */
+
+.note { outline: none; overflow-wrap: anywhere; caret-color: var(--accent); }
+/* Space between blocks is always a top margin: nothing in here has a bottom one. */
+.note p, .note ul, .note ol, .note pre, .note blockquote, .note li { margin: 0; }
+.note > p, .note > ul, .note > ol { margin-top: 0.6em; }
+.note > pre, .note > blockquote, .note > img { margin-top: 0.9em; }
+.note > h1 + *, .note > h2 + *, .note > h3 + * { margin-top: 0.4em; }
+
+.note h1, .note h2, .note h3 { margin: 0; font-weight: 650; letter-spacing: -0.015em; line-height: 1.25; }
+.note h1 { font-size: 27px; margin-top: 1.4em; }
+.note h2 { font-size: 22px; margin-top: 1.25em; }
+.note h3 { font-size: 18px; margin-top: 1.1em; }
+
+.note a { color: var(--accent); text-decoration: underline; text-decoration-color: var(--accent-wash); text-underline-offset: 3px; cursor: text; }
+.note strong { font-weight: 650; }
+.note s { color: var(--muted); }
+
+.note code {
+  font: 0.86em/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  background: var(--wash);
+  border-radius: 5px;
+  padding: 0.15em 0.4em;
+}
+.note pre {
+  background: var(--wash);
+  border-radius: 10px;
+  padding: 14px 18px;
+  overflow-x: auto;
+}
+.note pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.55; white-space: pre; }
+
+.note blockquote {
+  padding: 2px 0 2px 18px;
+  border-left: 3px solid var(--text);
+  color: var(--text);
+}
+.note blockquote > * + * { margin-top: 0.45em; }
+
+.note hr { border: none; height: 1px; background: var(--line); margin: 1.4em 0; }
+.note hr.ProseMirror-selectednode { background: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+.note > :first-child { margin-top: 0; }
+
+/* Lists */
+.note ul, .note ol { padding-left: 1.6em; }
+.note li + li, .note li > ul, .note li > ol, .note li > div > ul, .note li > div > ol, .note li p + p { margin-top: 0.3em; }
+.note ul > li::marker { color: var(--muted); }
+.note ol > li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* To-do lists: the library draws <li><label><input><span></label><div>text</div></li>. */
+.note ul[data-type="taskList"] { list-style: none; padding-left: 0; }
+.note ul[data-type="taskList"] > li { display: flex; align-items: flex-start; gap: 10px; }
+.note ul[data-type="taskList"] > li > label { flex: none; height: 1.65em; display: flex; align-items: center; user-select: none; }
+.note ul[data-type="taskList"] > li > div { flex: 1; min-width: 0; }
+.note ul[data-type="taskList"] input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border: 1.5px solid var(--faint);
+  border-radius: 5px;
+  background: var(--page);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.note ul[data-type="taskList"] input[type="checkbox"]:hover { border-color: var(--accent); }
+.note ul[data-type="taskList"] input[type="checkbox"]:checked {
+  border-color: var(--accent);
+  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 17 17'%3E%3Cpath d='M4.4 8.9l2.7 2.7 5.4-6' fill='none' stroke='white' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 17px no-repeat;
+}
+.note ul[data-type="taskList"] > li[data-checked="true"] > div > p { color: var(--done); text-decoration: line-through; text-decoration-color: var(--faint); }
+
+/* Tables */
+.note .tableWrapper { overflow-x: auto; margin-top: 0.9em; }
+.note table { border-collapse: collapse; width: 100%; table-layout: fixed; margin: 0; }
+.note th, .note td { border: 1px solid var(--line); padding: 7px 11px; vertical-align: top; text-align: left; position: relative; }
+.note th { background: var(--wash); font-weight: 600; }
+.note .selectedCell::after { content: ""; position: absolute; inset: 0; background: var(--accent-wash); pointer-events: none; }
+
+/* Pictures */
+.note img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+.note img.ProseMirror-selectednode { outline: 2px solid var(--accent); outline-offset: 2px; }
+.note img[data-remote] {
+  min-height: 44px;
+  padding: 10px 14px;
+  background: var(--wash);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Hints in empty blocks */
+.note p.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--faint);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.note .ProseMirror-selectednode:not(img):not(hr) { background: var(--accent-wash); border-radius: 6px; }
+.note .ProseMirror-gapcursor::after { border-top-color: var(--text); }
+.drop-cursor { background: var(--accent) !important; border-radius: 2px; }
+
+/* The "/" trigger while the menu is open */
+.note .suggestion { color: var(--muted); }
+
+/* MARK: The grip */
+
+.block-grip {
+  position: fixed;
+  z-index: 4;
+  width: 16px;
+  height: 20px;
+  padding: 4px 4px;
+  display: grid;
+  grid-template-columns: 3px 3px;
+  gap: 2px 2px;
+  place-content: center;
+  border-radius: 4px;
+  cursor: grab;
+  opacity: 0.55;
+  transition: opacity 0.12s, background 0.12s;
+}
+.block-grip[hidden] { display: none; }
+.block-grip i { width: 3px; height: 3px; border-radius: 50%; background: var(--muted); }
+.block-grip:hover { opacity: 1; background: var(--wash); }
+.block-grip.dragging { cursor: grabbing; }
+
+/* MARK: The "/" menu */
+
+.slash-menu {
+  position: fixed;
+  z-index: 10;
+  width: 264px;
+  max-height: 322px;
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--menu);
+  border-radius: 11px;
+  box-shadow: var(--menu-shadow);
+  font-size: 13.5px;
+  line-height: 1.3;
+  user-select: none;
+}
+.slash-row { display: flex; align-items: center; gap: 10px; padding: 5px 7px; border-radius: 7px; cursor: default; }
+.slash-row.selected { background: var(--wash); }
+.slash-glyph {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--page);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.slash-text { display: flex; flex-direction: column; min-width: 0; }
+.slash-title { font-weight: 500; }
+.slash-hint { color: var(--muted); font-size: 12px; }
+.slash-empty { padding: 9px 9px; color: var(--muted); }
+
+/* MARK: The selection toolbar */
+
+.bubble {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  background: var(--menu);
+  border-radius: 10px;
+  box-shadow: var(--menu-shadow);
+  font-size: 13px;
+  user-select: none;
+}
+.bubble[hidden], .bubble-buttons[hidden], .bubble-link[hidden], .bubble button[hidden] { display: none; }
+.bubble-buttons, .bubble-link { display: flex; align-items: center; gap: 2px; }
+.bubble-button {
+  font: inherit;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 7px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  cursor: default;
+}
+.bubble-button:hover { background: var(--wash); }
+.bubble-button.active { color: var(--accent); background: var(--accent-wash); }
+.bubble-button.bold { font-weight: 700; }
+.bubble-button.italic { font-style: italic; font-family: Georgia, serif; }
+.bubble-button.strike { text-decoration: line-through; }
+.bubble-button.code { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+.bubble-link input {
+  font: inherit;
+  width: 230px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--text);
+  outline: none;
+}
+.bubble-link input:focus { border-color: var(--accent); }
+
+@media (max-width: 640px) {
+  #page { padding: 36px 44px 30vh; }
+  #title { font-size: 28px; }
+}

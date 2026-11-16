@@ -151,12 +151,14 @@ private struct AddressRow: View {
         if tab.isArtifact { return "doc.richtext" }
         if tab.isTerminal { return "terminal" }
         if tab.isPlugin { return "puzzlepiece.extension" }
+        if tab.isNote { return "note.text" }
         return tab.url?.scheme == "https" ? "lock.fill" : "magnifyingglass"
     }
 
     private var addressText: String {
         if let path = state.selectedTab?.artifactPath { return "artifacts/\(path)" }
         if let directory = state.selectedTab?.workingDirectory { return directory }
+        if let path = state.selectedTab?.notePath { return NoteFiles.subtitle(tabPath: path) }
         // A plugin's page has no address: the row names it (a click still opens the palette).
         if let tab = state.selectedTab, let pluginID = tab.pluginID { return state.pluginTitle(pluginID, fallback: tab.title) }
         guard let url = state.selectedTab?.url else { return "Search or enter address" }

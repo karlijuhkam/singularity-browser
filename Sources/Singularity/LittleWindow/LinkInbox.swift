@@ -15,8 +15,13 @@ final class LinkInbox {
     }
 
     func receive(_ urls: [URL]) {
-        waiting.append(contentsOf: urls.filter(LittleWindowRules.accepts))
+        // Web links (they open little windows) and Markdown files from Finder (they open as notes).
+        waiting.append(contentsOf: urls.filter { LittleWindowRules.accepts($0) || Self.isMarkdownFile($0) })
         flush()
+    }
+
+    static func isMarkdownFile(_ url: URL) -> Bool {
+        url.isFileURL && NoteFiles.isNoteName(url.lastPathComponent)
     }
 
     private func flush() {

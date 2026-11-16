@@ -15,6 +15,19 @@ struct TabContentView: View {
         }
         if let pluginID = tab.pluginID {
             PluginPageArea(pluginID: pluginID, fallbackTitle: tab.title, tabID: tab.id, onDrop: onDrop)
+        } else if tab.isNote {
+            if let host = state.notes.existingHost(tab.id) {
+                // The editor takes the keyboard when its tab is shown, like a terminal.
+                HostedView(view: host.webView, tabID: tab.id, focusOnShow: isFocused, onDrop: onDrop)
+                    // A tab that is closed and opened again gets a new editor; `.id` rebuilds the host view.
+                    .id(ObjectIdentifier(host))
+            } else if !state.notes.editorIsAvailable {
+                // A bare debug binary: the editor's files are in the app bundle.
+                ContentUnavailableView("Notes need the app bundle", systemImage: "note.text",
+                                       description: Text("Build it with scripts/build-app.sh."))
+            } else {
+                Color(nsColor: .textBackgroundColor)
+            }
         } else if let controller = state.web.existingController(tab.id) {
             HostedView(view: controller.webView, tabID: tab.id, onDrop: onDrop)
                 .overlay(alignment: .top) { LoadingBar(controller: controller) }

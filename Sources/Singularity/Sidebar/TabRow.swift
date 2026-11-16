@@ -55,6 +55,7 @@ extension TabRow {
     fileprivate var helpText: String {
         if isMissing { return "The file of this artifact is missing" }
         if let project = space.projectName(of: tab) { return "Project: \(project)" }
+        if let path = tab.notePath { return NoteFiles.subtitle(tabPath: path) }
         return tab.url?.absoluteString ?? ""
     }
 }
@@ -68,6 +69,9 @@ struct TabIcon: View {
     var body: some View {
         if tab.isPlugin {
             Image(systemName: "puzzlepiece.extension")
+                .foregroundStyle(.secondary)
+        } else if tab.isNote {
+            Image(systemName: "note.text")
                 .foregroundStyle(.secondary)
         } else if tab.isArtifact {
             let isMissing = state.missingArtifactTabs.contains(tab.id)
@@ -178,6 +182,11 @@ struct TabContextMenu: View {
                 NSWorkspace.shared.activateFileViewerSelecting([file])
             }
             .disabled(state.missingArtifactTabs.contains(tab.id))
+        }
+
+        if tab.isNote {
+            Button("Show in Finder") { state.revealNote(tabID: tab.id, spaceID: space.id) }
+            Button("Delete Note…") { state.deleteNote(tabID: tab.id, spaceID: space.id) }
         }
 
         if let url = tab.url {

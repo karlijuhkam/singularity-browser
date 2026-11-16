@@ -34,16 +34,23 @@ struct SingularityCommands: Commands {
             // without projects there is nothing to pick, and it opens a terminal like New Terminal.
             Button("New Terminal in…") { inMainWindow { state.openTerminalChoosingProject() } }
                 .keyboardShortcut("t", modifiers: [.command, .option, .shift])
+            Button("New Note") { inMainWindow { state.newNote() } }
+                .keyboardShortcut("n")
+            // The day's journal note (notes/Journal/<date>.md), made when it isn't there yet.
+            Button("Today's Note") { inMainWindow { state.openTodayNote() } }
+                .keyboardShortcut("n", modifiers: [.command, .option])
             Button("Command Palette") { inMainWindow { state.showPalette(.newTab) } }
                 .keyboardShortcut("k")
             // Changes the main window's selected tab, so it is off while a little window is in front.
             Button("Open Location…") { state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent) }
                 .keyboardShortcut("l")
                 .disabled(littleInFront)
-            // A little window: its page becomes a tab of the Space chosen in its title bar.
-            Button(openInSpaceTitle) { if let key = state.little.frontWindow { state.little.openInSpace(key) } }
-                .keyboardShortcut("o")
-                .disabled(!littleInFront)
+            // One shortcut, two meanings. A little window in front: its page becomes a tab of the
+            // Space chosen in its title bar. Otherwise: open Markdown files from the disk as notes.
+            Button(littleInFront ? openInSpaceTitle : "Open File…") {
+                if let key = state.little.frontWindow { state.little.openInSpace(key) } else { state.openMarkdownFilePanel() }
+            }
+            .keyboardShortcut("o")
             Divider()
             // Adds a folder to the hidden sidebar, so it waits until the flow is closed.
             Button("New Folder…") { state.promptNewFolder() }

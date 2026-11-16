@@ -49,6 +49,8 @@ fi
 cp "$ROOT"/Resources/*.png "$APP/Contents/Resources/"
 # The script every plugin's background program starts through (gives plugins their API).
 cp -R "$ROOT/Resources/plugin-host" "$APP/Contents/Resources/"
+# The note editor's page (built and committed by scripts/build-note-editor.sh).
+cp -R "$ROOT/Resources/note-editor" "$APP/Contents/Resources/"
 # Ready-made plugins (every folder of Plugins/ except the template) and the authoring guide with the
 # template, for the welcome flow. Copied before signing, so the signature seals them.
 RSYNC_SKIP=(--exclude node_modules --exclude .git --exclude .DS_Store)

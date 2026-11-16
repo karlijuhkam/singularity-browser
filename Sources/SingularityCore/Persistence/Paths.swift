@@ -15,6 +15,7 @@ import Foundation
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
 ///        ├─ artifacts/              HTML artifacts, served by the Space's local server
+///        ├─ notes/                  the Space's notes: Markdown files, pictures in assets/ (NoteFiles.swift)
 ///        ├─ app-data/<app>/         an app's database files and worker.log (see ArtifactApps.swift)
 ///        ├─ agent-log.jsonl         one line per agent action
 ///        └─ favicons/<host>.png
@@ -81,6 +82,11 @@ public struct Paths: Sendable {
 
     public func artifactsDirectory(_ slug: String) -> URL {
         spaceDirectory(slug).appending(path: "artifacts", directoryHint: .isDirectory)
+    }
+
+    /// The Space's notes: Markdown files the note editor reads and writes (see NoteFiles.swift).
+    public func notesDirectory(_ slug: String) -> URL {
+        spaceDirectory(slug).appending(path: "notes", directoryHint: .isDirectory)
     }
 
     /// The data of the Space's apps (see ArtifactApps.swift): one folder per app, named after the

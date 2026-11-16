@@ -115,6 +115,8 @@ public enum PluginReach {
             guard let other = lastOtherPane.flatMap({ space.tab($0) }), !other.isPlugin else { return .hidden(.nothing) }
             tab = other
         }
+        // A note is the owner's own writing: a plugin learns nothing about it, not even that it is there.
+        if tab.isNote { return .hidden(.nothing) }
 
         let live = liveURL(tab.id)
         var ref = FrontTab.TabRef(id: tab.id.uuidString.lowercased(), kind: "terminal")
@@ -145,7 +147,7 @@ public enum PluginReach {
             ref.url = String(path.prefix(urlLimit))
         case .terminal:
             break
-        case .plugin:
+        case .plugin, .note:
             return .hidden(.nothing) // unreachable: resolved above
         }
         return .tab(FrontTab(space: .init(slug: space.slug, name: space.name), tab: ref))

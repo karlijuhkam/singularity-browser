@@ -14,6 +14,9 @@ public enum TabKind: Codable, Hashable, Sendable {
     /// A plugin's own page (its manifest `panel`), shown as a tab. Only the plugin's id is stored;
     /// the page itself is found again from the plugin folder at launch.
     case plugin(pluginID: String)
+    /// A note: a Markdown file, edited in Singularity's own editor. `path` is relative to the
+    /// Space's `notes/` folder (e.g. "Journal/2026-11-16.md"); see NoteFiles.swift.
+    case note(path: String)
 }
 
 /// A tab belongs to exactly one Space. Its position in the sidebar is determined by
@@ -70,18 +73,23 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
         BrowserTab(kind: .plugin(pluginID: pluginID), title: title)
     }
 
+    /// A tab for a note file (`path` inside the Space's `notes/` folder).
+    public static func note(path: String) -> BrowserTab {
+        BrowserTab(kind: .note(path: path), title: NoteFiles.title(ofPath: path))
+    }
+
     /// The page URL for web tabs; nil for other kinds.
     public var url: URL? {
         switch kind {
         case .web(let url): return url
-        case .terminal, .artifact, .plugin: return nil
+        case .terminal, .artifact, .plugin, .note: return nil
         }
     }
 
     /// The directory for terminal tabs; nil for other kinds.
     public var workingDirectory: String? {
         switch kind {
-        case .web, .artifact, .plugin: return nil
+        case .web, .artifact, .plugin, .note: return nil
         case .terminal(let directory): return directory
         }
     }
@@ -90,7 +98,7 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
     public var artifactPath: String? {
         switch kind {
         case .artifact(let path): return path
-        case .web, .terminal, .plugin: return nil
+        case .web, .terminal, .plugin, .note: return nil
         }
     }
 
@@ -100,9 +108,19 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
         return nil
     }
 
+    /// The path inside the notes folder for note tabs; nil for other kinds.
+    public var notePath: String? {
+        if case .note(let path) = kind { return path }
+        return nil
+    }
+
     public var isTerminal: Bool { workingDirectory != nil }
     public var isArtifact: Bool { artifactPath != nil }
     public var isPlugin: Bool { pluginID != nil }
+    public var isNote: Bool { notePath != nil }
+    /// Tabs no agent tool lists, reads or acts on, and `front` never names: a plugin's own page
+    /// and the owner's notes.
+    public var isHiddenFromAgents: Bool { isPlugin || isNote }
 
     /// Title to show in the UI: the page title, else the host, else the raw URL.
     public var displayTitle: String {
@@ -115,6 +133,7 @@ public struct BrowserTab: Codable, Hashable, Identifiable, Sendable {
         if isTerminal { return "Terminal" }
         if let artifactPath { return (artifactPath as NSString).lastPathComponent }
         if let pluginID { return pluginID }
+        if let notePath { return NoteFiles.title(ofPath: notePath) }
         if let host = url?.host(), !host.isEmpty { return host }
         return url?.absoluteString ?? "New Tab"
     }
