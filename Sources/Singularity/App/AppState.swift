@@ -1080,6 +1080,21 @@ final class AppState {
         palette = mode
     }
 
+    /// The selected tab's full address, for web tabs only: what the address row's copy button and
+    /// "Copy Link" (⇧⌘C) copy, and what the palette starts with after a click on the address.
+    var selectedAddress: String? {
+        selectedTab?.url?.absoluteString
+    }
+
+    /// Puts the selected web tab's address on the pasteboard; false when there is none.
+    /// Tests pass a private named pasteboard, never the user's.
+    @discardableResult
+    func copySelectedAddress(to pasteboard: NSPasteboard = .general) -> Bool {
+        guard let address = selectedAddress else { return false }
+        CopyText.copy(address, to: pasteboard)
+        return true
+    }
+
     // MARK: - A plugin's page: right-hand panel or tab (the rules are in Core: PluginSurface.swift)
 
     /// The plugin whose page the right-hand panel shows now; nil when the panel is closed, while

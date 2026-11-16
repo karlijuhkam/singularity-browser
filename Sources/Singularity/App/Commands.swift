@@ -45,6 +45,10 @@ struct SingularityCommands: Commands {
             Button("Open Location…") { state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent) }
                 .keyboardShortcut("l")
                 .disabled(littleInFront)
+            // The selected web tab's address (the address row's copy button does the same).
+            Button("Copy Link") { state.copySelectedAddress() }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(covered || littleInFront || state.selectedAddress == nil)
             // One shortcut, two meanings. A little window in front: its page becomes a tab of the
             // Space chosen in its title bar. Otherwise: open Markdown files from the disk as notes.
             Button(littleInFront ? openInSpaceTitle : "Open File…") {

@@ -55,7 +55,20 @@ struct CommandPaletteView: View {
             .shadow(color: .black.opacity(0.25), radius: 30, y: 10)
             .padding(.top, 90)
         }
-        .onAppear { fieldFocused = true }
+        .onAppear {
+            fieldFocused = true
+            // After a click on the address (or ⌘L) the field starts with the page's address,
+            // selected: typing replaces it, ⌘C copies it, an arrow key lets you edit it.
+            guard mode == .navigateCurrent, let address = state.selectedAddress else { return }
+            query = address
+            // SwiftUI's TextField has no "select all" on macOS 14. Once the field has the keyboard,
+            // the window's first responder is its text editor; ask that to select everything.
+            // (One turn of the run loop later: the focus and the text arrive after `onAppear`.)
+            DispatchQueue.main.async {
+                guard state.palette == .navigateCurrent else { return }
+                NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+            }
+        }
         .onChange(of: query) { selectedIndex = 0 }
         .onExitCommand(perform: close)
     }
@@ -63,7 +76,7 @@ struct CommandPaletteView: View {
     private var placeholder: String {
         switch mode {
         case .newTab: "Search tabs, history, commands, or enter a URL"
-        case .navigateCurrent: state.selectedTab?.url?.absoluteString ?? "Enter a URL"
+        case .navigateCurrent: "Search or enter a URL"
         case .splitWith: "Choose a tab, or enter a URL, to show beside this one"
         case .newTerminalIn: "New terminal in…"
         }

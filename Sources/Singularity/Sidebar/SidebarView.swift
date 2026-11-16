@@ -118,32 +118,63 @@ private struct NavigationButtons: View {
 
 // MARK: - Address row
 
-/// Shows the selected tab's host. Clicking it opens the palette to navigate the current tab.
+/// Shows the selected tab's host. Clicking it opens the palette to navigate the current tab,
+/// starting with the page's full address. A web tab also gets a copy button at the right end.
 private struct AddressRow: View {
     @Environment(AppState.self) private var state
+    /// True for two seconds after a copy: the button shows a tick.
+    @State private var copied = false
 
     var body: some View {
-        Button {
-            state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: addressSymbol)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Text(addressText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(state.selectedTab == nil ? .secondary : .primary)
-                Spacer(minLength: 0)
+        HStack(spacing: 0) {
+            Button {
+                state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: addressSymbol)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(addressText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(state.selectedTab == nil ? .secondary : .primary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 10)
+                .padding(.trailing, state.selectedAddress == nil ? 10 : 4)
+                .frame(height: 30)
+                .contentShape(Rectangle())
             }
-            .font(.system(size: 12))
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help("Search or enter address")
+
+            // Two buttons side by side, not one inside the other: a button inside a button's
+            // label never gets the click.
+            if state.selectedAddress != nil {
+                Button {
+                    copied = state.copySelectedAddress()
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Copy Link (⇧⌘C)")
+                .accessibilityLabel("Copy Link")
+            }
         }
-        .buttonStyle(.plain)
-        .help("Search or enter address")
+        .font(.system(size: 12))
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // The tick turns back into the copy symbol after two seconds, or at once on another tab.
+        // (`.task(id:)` starts again, and cancels the previous wait, each time `copied` changes.)
+        .task(id: copied) {
+            guard copied else { return }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            copied = false
+        }
+        .onChange(of: state.selectedTab?.id) { copied = false }
     }
 
     private var addressSymbol: String {
