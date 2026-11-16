@@ -34,6 +34,20 @@ struct TabContentView: View {
                 .overlay(alignment: .topTrailing) {
                     if controller.isFindBarVisible { FindBar(controller: controller) }
                 }
+        } else if tab.isTerminal, let address = state.shownChild[tab.id],
+                  let child = state.terminals.existingChildSession(address) {
+            // The pane shows one of the tab's child terminals (a Bot's worker) instead of the
+            // tab's own, which keeps running behind it.
+            VStack(spacing: 0) {
+                HostedView(view: child.view, tabID: tab.id, focusOnShow: isFocused, onDrop: onDrop)
+                    .padding(8)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .id(ObjectIdentifier(child))
+                HerdrChildStrip(tab: tab, address: address)
+            }
+        } else if tab.isTerminal, state.shownChild[tab.id] != nil {
+            // The child that was shown here has ended. The owner goes back (the button, ⌘W).
+            HerdrChildEnded(tab: tab)
         } else if let session = state.terminals.existingSession(tab.id) {
             HostedView(view: session.view, tabID: tab.id, focusOnShow: isFocused, onDrop: onDrop)
                 .padding(8)

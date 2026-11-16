@@ -26,7 +26,8 @@ the option on, Singularity's terminal tabs become viewers of herdr terminals.
 
 - Bundling `hc`, installing it, or updating it.
 - Speaking herdr-core's socket protocol, or its holder's (which is internal to herdr-core).
-- Showing herdr terminals that Singularity didn't start, agent orchestration, templates,
+- Showing herdr terminals that Singularity didn't start (reversed 2026-11-16 for a tab's own
+  descendants: `2026-11-16-herdr-child-terminals-design.md`), agent orchestration, templates,
   remote machines (`--on`). CLAUDE.md: "we only host terminals".
 - A plugin. Plugins are sandboxed and get no terminal; `hc` hands out a full shell.
 

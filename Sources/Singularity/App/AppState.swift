@@ -70,6 +70,14 @@ final class AppState {
     let downloads = DownloadCenter()
     /// The agent inbox: what agents in terminal tabs are waiting for.
     let inbox = InboxCenter()
+    /// herdr-core's terminals under each terminal tab (a Bot's workers), for the sidebar.
+    let herdr = HerdrWatcher()
+    /// Terminal tabs whose pane shows one of their child terminals instead of their own: tab id →
+    /// the child's herdr address. In memory only; change it with `showChild` / `showOwnTerminal`.
+    /// Only the owner clears an entry (a click, ⌘W, a card's Go to terminal). When the child ends
+    /// the entry stays and the pane says so: if the tab's own terminal took the pane and the
+    /// keyboard by itself, the rest of what the owner was typing to a worker would go to the Bot.
+    private(set) var shownChild: [UUID: String] = [:]
     /// The sidebar's width while dragged, and the slide-out of a hidden sidebar.
     let sidebarPeek = SidebarPeekController()
     /// macOS notifications and the Dock badge for the inbox (wired in `init`).
@@ -281,6 +289,9 @@ final class AppState {
 
         plugins.start()
 
+        herdr.state = self
+        herdr.updateRunning()
+
         // When the app quits: deny waiting approvals, hand held hook requests back to their
         // terminals, write pending changes, hang up all shells, kill plugin processes.
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
@@ -291,6 +302,7 @@ final class AppState {
                 self?.flushSaves()
                 self?.artifacts.stopAll()
                 self?.terminals.tearDownAll()
+                self?.herdr.stop()
                 self?.notes.stopAll()
                 self?.mcp?.stop()
                 self?.plugins.terminateAll()
@@ -310,7 +322,10 @@ final class AppState {
 
     /// The tab is on screen in the window: the selected tab of the selected Space, or in its split.
     func isTabOnScreen(_ tabID: UUID) -> Bool {
-        selectedSpace?.visibleTabIDs.contains(tabID) ?? false
+        // A terminal tab whose pane shows one of its child terminals is not itself on screen:
+        // what its own program asks must still reach the inbox.
+        guard shownChild[tabID] == nil else { return false }
+        return selectedSpace?.visibleTabIDs.contains(tabID) ?? false
     }
 
     func space(_ id: UUID) -> Space? {
@@ -593,7 +608,8 @@ final class AppState {
     /// tab now showing. Called from `selectSpace` and `selectTab` (so `showTab` and `focusPane` too),
     /// never on app activation: coming back to the app must leave the entries there to read.
     private func inboxNoteVisibleTabs() {
-        for tabID in selectedSpace?.visibleTabIDs ?? [] {
+        // Not a tab whose pane shows a child terminal: the owner went to the child, not to it.
+        for tabID in selectedSpace?.visibleTabIDs ?? [] where shownChild[tabID] == nil {
             inbox.wentToTerminal(tabID)
         }
     }
@@ -605,6 +621,7 @@ final class AppState {
         // Its little windows first: their pages are in no tab list, and the Space's WebKit data
         // store (removed below) can't be deleted while a web view still uses it.
         little.spaceWillBeDeleted(id)
+        for tab in space.tabs { shownChild[tab.id] = nil }
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
         notes.removeHosts(for: space.tabs.map(\.id))
@@ -622,6 +639,7 @@ final class AppState {
             selectedSpaceID = spaces.first?.id
             loadSelectedTab()
         }
+        herdr.updateRunning() // its terminal tabs may have been the last ones
         stateFileDirty = true
         scheduleSave()
         // A plugin's connection may have had it too (`plugins.spaceRemoved` took it out of its switches).
@@ -706,8 +724,43 @@ final class AppState {
     func showTab(_ tabID: UUID, in spaceID: UUID) {
         guard space(spaceID)?.tab(tabID) != nil else { return }
         closeWelcome() // the user asked to see the tab (an approval's "Show Tab")
+        // The tab itself, not a child terminal its pane may be showing.
+        shownChild[tabID] = nil
         if selectedSpaceID != spaceID { selectSpace(spaceID) }
         selectTab(tabID)
+    }
+
+    // MARK: - Terminals under a tab (herdr-core children)
+
+    /// A click on a child row: the tab's pane shows that herdr terminal. The tab's own terminal
+    /// keeps running behind it.
+    func showChild(_ address: String, under tabID: UUID) {
+        guard let spaceID = selectedSpaceID, space(spaceID)?.tab(tabID)?.isTerminal == true,
+              herdr.children(of: tabID).rows.contains(where: { $0.address == address }) else { return }
+        _ = terminals.childSession(address: address)
+        shownChild[tabID] = address
+        selectTab(tabID)
+    }
+
+    /// Back to the tab's own terminal (a click on the tab's row, the strip under a child, ⌘W).
+    func showOwnTerminal(_ tabID: UUID) {
+        shownChild[tabID] = nil
+        selectTab(tabID)
+    }
+
+    /// herdr-core's picture changed: the views of terminals that ended are let go. A pane that
+    /// showed one then says it has ended (`shownChild` stays, see there).
+    func herdrFactsChanged() {
+        // No picture at all means the listener is down, not that every terminal ended: the
+        // views stay (each notices by itself when its terminal is gone, `herdrChildGone`).
+        guard !herdr.facts.terminals.isEmpty else { return }
+        let live = Set(herdr.facts.terminals.values.filter(\.isLive).map(\.address))
+        terminals.removeChildSessions(keeping: live)
+    }
+
+    /// A child's `hc attach` ended and herdr-core says the terminal is gone.
+    func herdrChildGone(_ address: String) {
+        terminals.removeChildSession(address)
     }
 
     /// Opens a URL in a new tab and selects it (in the current Space unless one is given).
@@ -880,25 +933,37 @@ final class AppState {
     func closeTab(_ tabID: UUID, in spaceID: UUID? = nil, confirmIfBusy: Bool = true) {
         guard let spaceID = spaceID ?? selectedSpaceID else { return }
         terminalLog.notice("closeTab \(tabID, privacy: .public): confirmIfBusy=\(confirmIfBusy) program=\(self.terminals.existingSession(tabID)?.foregroundProgram ?? "<none>", privacy: .public)")
-        if confirmIfBusy, let program = terminals.existingSession(tabID)?.foregroundProgram {
+        // Also with the shell at its prompt when herdr terminals hang under the tab (a dev server
+        // started with `hc run --bg`, a Bot's workers): most of them end with it.
+        if confirmIfBusy, let warning = herdr.children(of: tabID).closeWarning(
+            program: terminals.existingSession(tabID)?.foregroundProgram) {
             let alert = NSAlert()
             alert.messageText = "Close this terminal?"
-            alert.informativeText = "“\(program)” is still running in it and will be stopped."
+            alert.informativeText = warning
             alert.addButton(withTitle: "Close")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
+        shownChild[tabID] = nil
         web.removeControllers(for: [tabID])
         terminals.removeSessions(for: [tabID])
         notes.removeHosts(for: [tabID])
         inbox.tabClosed(tabID)
         mutateSpace(spaceID) { $0.closeTab(tabID) }
         missingArtifactTabs.remove(tabID)
+        herdr.updateRunning() // the last terminal tab may be gone: nothing left to listen for
         if spaceID == selectedSpaceID { loadSelectedTab() }
     }
 
     func closeSelectedTab() {
-        if let id = selectedTab?.id { closeTab(id) }
+        guard let id = selectedTab?.id else { return }
+        // ⌘W while the pane shows a child terminal goes back to the tab's own terminal: there is
+        // nothing of the child to close, and the tab must not close by surprise.
+        if shownChild[id] != nil {
+            showOwnTerminal(id)
+        } else {
+            closeTab(id)
+        }
     }
 
     func togglePin(_ tabID: UUID) {
@@ -1232,7 +1297,9 @@ final class AppState {
         case .web:
             _ = web.controller(for: tab, in: space)
         case .terminal:
-            _ = terminals.session(for: tab, in: space)
+            // Tests hand in fake terminals (`terminalHandleOverride`) and must never start the
+            // owner's login shell, so with fakes in place a terminal tab on screen starts nothing.
+            if terminalHandleOverride == nil { _ = terminals.session(for: tab, in: space) }
         case .plugin(let pluginID):
             // Nothing to start: the page belongs to the plugin (`PluginManager.pageHost`), shown by
             // `PluginPageArea`. Only keep the tab's stored title in step with the manifest.
@@ -1661,6 +1728,9 @@ final class AppState {
         }
         if settings.checksForUpdates != before.checksForUpdates {
             updates.setChecksAutomatically(settings.checksForUpdates)
+        }
+        if settings.terminalUsesHerdrCore != before.terminalUsesHerdrCore {
+            herdr.updateRunning()
         }
     }
 
