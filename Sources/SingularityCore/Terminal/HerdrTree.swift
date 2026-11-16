@@ -95,6 +95,20 @@ public struct HerdrChildren: Equatable, Sendable {
         self.liveCount = liveCount
         self.needsYou = needsYou
     }
+
+    /// What the "Close this terminal?" question says, or nil when closing needs no question:
+    /// nothing runs in the tab and no terminal hangs under it. Whether a child ends with its tab
+    /// is herdr-core's rule (by default it does), so the text doesn't promise either way.
+    public func closeWarning(program: String?) -> String? {
+        var sentences: [String] = []
+        if let program { sentences.append("“\(program)” is still running in it and will be stopped.") }
+        if liveCount == 1 {
+            sentences.append("It has 1 terminal under it, which most likely ends with it.")
+        } else if liveCount > 1 {
+            sentences.append("It has \(liveCount) terminals under it. Most end with it.")
+        }
+        return sentences.isEmpty ? nil : sentences.joined(separator: " ")
+    }
 }
 
 /// herdr-core's terminals as last heard from `hc events --json`.

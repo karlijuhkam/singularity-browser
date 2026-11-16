@@ -283,6 +283,7 @@ private func dropHighlight(_ isTargeted: Bool) -> some View {
 
 /// A sidebar row: a single tab (selectable List row), or a split shown as one row of chips.
 private struct SidebarItemRow: View {
+    @Environment(AppState.self) private var state
     let item: SidebarItem
     let space: Space
 
@@ -290,12 +291,27 @@ private struct SidebarItemRow: View {
         switch item {
         case .tab(let id):
             if let tab = space.tab(id) {
-                TabRow(tab: tab, space: space).tag(id)
+                // A terminal with herdr terminals under it (a Bot's workers) lists them in its row.
+                let children = tab.isTerminal ? state.herdr.children(of: id) : .none
+                if children.rows.isEmpty {
+                    TabRow(tab: tab, space: space).tag(id)
+                } else {
+                    TabWithChildrenRow(tab: tab, space: space, children: children)
+                }
             }
         case .split(_, let tabIDs):
             // Not tagged: the chips handle selection themselves, so a click on one chip isn't
             // overridden by the List selecting "the row".
-            SplitRow(tabIDs: tabIDs, space: space)
+            VStack(alignment: .leading, spacing: 1) {
+                SplitRow(tabIDs: tabIDs, space: space)
+                // The child terminals of the split's terminal tabs hang under its row.
+                ForEach(tabIDs, id: \.self) { id in
+                    if let tab = space.tab(id), tab.isTerminal {
+                        HerdrChildList(tab: tab, children: state.herdr.children(of: id),
+                                       isTabSelected: space.selectedTabID == id)
+                    }
+                }
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 # Child terminals under a terminal tab: design
 
-Status: draft, waiting for the owner's approval. Nothing is built.
+Status: approved by the owner 2026-11-16 (the three open points as drafted) and built the same day.
+The "As built" section at the end overrides the design where they differ.
 
 ## Why
 
@@ -233,3 +234,36 @@ with live children.)
    splits, which is a good deal more.
 3. **No inbox entry for a child that needs you**, only the mark on its row and on a collapsed tab.
    A Bot is told by hc when a worker is blocked and tells the owner itself.
+
+## As built (2026-11-16)
+
+Built as designed, with these differences and findings.
+
+- **`hc events --json`, checked on hc 0.1.20 against a throwaway core (`HC_SESSION`).** The first
+  line is `{"channel":null,"seq":N,"terminals":[…]}`. Each change is
+  `{"jsonrpc":"2.0","method":"event","params":{"type":T,"terminal":"t3","seq":N,"data":{…}}}`.
+  Folded in: `created` (`data` is the whole terminal), `status` (`data.status` is
+  `{"app","state"}` or null), `labels` (`data.labels`, the whole set), `foreground` (`data` is the
+  foreground program itself), `finished`, `removed`. A `turn` event has a `state` of its own (the
+  turn's), so nothing is merged blindly. `missed` restarts the listener for a full picture; this
+  replaced the `hc ls` fallback, which was not needed. Other types change nothing shown.
+- **The strip that names a shown child is at the bottom of the pane**, not the top: the top of a
+  lone pane is the window's title-bar strip, where macOS turns a click into a window drag.
+- **A tab with children is one List row** holding the tab's row and the child rows, and it is not
+  tagged for the List's selection (as a split's row of chips isn't): the taps select and the row
+  draws its own highlight. So the arrow keys in the sidebar skip such a tab.
+- **A split's row has no fold triangle**: the children of its terminal tabs are always listed
+  under it.
+- **The tab's own session** is made when the tab comes on screen, as before, also when the click
+  that brought it there was on a child row.
+- **Return after a detach** replaces the child's view with a fresh one (as a tab's terminal is
+  replaced after its shell ended), rather than starting `hc attach` again in the same view.
+- **Marks:** working is a filled dot in the accent colour, needs you an orange exclamation mark,
+  error a red octagon, done a green check, idle a hollow dot.
+- **A test seam:** while `AppState.terminalHandleOverride` is set (tests' fake terminals), a
+  terminal tab that comes on screen starts no session, so tests can select a terminal tab.
+
+Not tried, left for the owner's hands in the daily copy: a click on a child row, typing into a
+child, the strip's way back, ⌘W, a worker ending while shown, the close question, a Bot's
+question arriving while a worker is shown, and two viewers (the Herdr app and Singularity) on
+one terminal. This shell cannot click in a window.
