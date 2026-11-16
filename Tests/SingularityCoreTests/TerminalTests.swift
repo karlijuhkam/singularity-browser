@@ -28,6 +28,35 @@ import Testing
     }
 }
 
+@Suite struct ProgramNameTests {
+    @Test func aScriptIsCalledByItsOwnName() {
+        // What the owner's Bot launcher really is: a shell script.
+        #expect(ProcessInspector.programName(arguments: ["/bin/sh", "/Users/x/.local/bin/herdr-bot", "createdat"]) == "herdr-bot")
+        #expect(ProcessInspector.programName(arguments: ["bash", "./deploy.sh", "--prod"]) == "deploy.sh")
+        #expect(ProcessInspector.programName(arguments: ["/opt/homebrew/bin/python3.14", "collect.py"]) == "collect.py")
+        #expect(ProcessInspector.programName(arguments: ["node", "/x/server.js"]) == "server.js")
+        #expect(ProcessInspector.programName(arguments: ["sh", "herdr-bot"]) == "herdr-bot")
+    }
+
+    @Test func everythingElseKeepsItsName() {
+        #expect(ProcessInspector.programName(arguments: ["/usr/local/bin/claude", "--resume"]) == "claude")
+        #expect(ProcessInspector.programName(arguments: ["-zsh"]) == "zsh")
+        #expect(ProcessInspector.programName(arguments: ["zsh", "-l"]) == "zsh")
+        #expect(ProcessInspector.programName(arguments: ["sh", "-c", "sleep 5"]) == "sh")
+        #expect(ProcessInspector.programName(arguments: ["python3", "-m", "http.server"]) == "python3")
+        #expect(ProcessInspector.programName(arguments: ["python3"]) == "python3")
+        // A sub-command is not a script.
+        #expect(ProcessInspector.programName(arguments: ["bun", "run", "dev"]) == "bun")
+        #expect(ProcessInspector.programName(arguments: ["deno", "test"]) == "deno")
+        #expect(ProcessInspector.programName(arguments: ["node", "inspect"]) == "node")
+        #expect(ProcessInspector.programName(arguments: ["vim", "notes.txt"]) == "vim")
+        #expect(ProcessInspector.programName(arguments: ["shellcheck", "x.sh"]) == "shellcheck")
+        #expect(ProcessInspector.programName(arguments: ["sh", ""]) == "sh")
+        #expect(ProcessInspector.programName(arguments: []) == nil)
+        #expect(ProcessInspector.programName(arguments: [""]) == nil)
+    }
+}
+
 @Suite struct TerminalTitleTests {
     let home = "/Users/k"
 

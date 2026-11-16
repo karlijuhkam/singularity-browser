@@ -16,10 +16,40 @@ public enum ProcessInspector {
     /// leading "-"). We use argv[0] rather than the kernel's process name because the kernel
     /// reports the *resolved* file: `claude` is a symlink to a file named after its version.
     public static func programName(pid: pid_t) -> String? {
-        guard let arguments = arguments(pid: pid), let first = arguments.first else { return nil }
+        arguments(pid: pid).flatMap(programName(arguments:))
+    }
+
+    /// The name to show for a program started with these arguments.
+    ///
+    /// A script is run by its interpreter: `herdr-bot gwb` is really `/bin/sh /…/herdr-bot gwb`,
+    /// and a tab called "sh" says nothing. So when argv[0] is an interpreter and the next
+    /// argument is a file to run (not an option: `sh -c '…'` and `python3 -m x` stay as they
+    /// are), the script's name is the program's name.
+    public static func programName(arguments: [String]) -> String? {
+        guard let first = arguments.first else { return nil }
         var name = (first as NSString).lastPathComponent
         if name.hasPrefix("-") { name.removeFirst() }
+        if arguments.count > 1, !arguments[1].isEmpty, !arguments[1].hasPrefix("-"),
+           let kind = interpreterKind(name) {
+            let argument = arguments[1]
+            // A shell's first plain argument is always a script. For the others it may be a
+            // sub-command (`bun run dev`, `deno test`), so it must look like a file.
+            if kind == .shell || argument.contains("/") || argument.contains(".") {
+                let script = (argument as NSString).lastPathComponent
+                if !script.isEmpty { name = script }
+            }
+        }
         return name.isEmpty ? nil : name
+    }
+
+    enum InterpreterKind { case shell, language }
+
+    /// Shells and the common script languages, with or without a version ("python3.12").
+    static func interpreterKind(_ name: String) -> InterpreterKind? {
+        let base = String(name.prefix { !$0.isNumber && $0 != "." })
+        if ["sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh"].contains(base) { return .shell }
+        if ["python", "node", "ruby", "perl", "php", "bun", "deno", "lua"].contains(base) { return .language }
+        return nil
     }
 
     /// The process's parent, from the kernel's process table (`proc_pidinfo`, BSD info).
