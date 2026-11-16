@@ -63,6 +63,7 @@ public final class PluginProcess: @unchecked Sendable {
     private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
     private var _onFrontRequest: (@Sendable (Int) -> Void)?
     private var _onBrowserServerRequest: (@Sendable (Int) -> Void)?
+    private var _onAppRequest: (@Sendable (Int, String, JSONValue) -> Void)?
     private var _onProgramExit: (@Sendable () -> Void)?
     /// The plugin's one program: reserved (`running` nil) while it starts, cleared when its exit
     /// has been sent.
@@ -115,6 +116,12 @@ public final class PluginProcess: @unchecked Sendable {
     public var onBrowserServerRequest: (@Sendable (Int) -> Void)? {
         get { lock.withLock { _onBrowserServerRequest } }
         set { lock.withLock { _onBrowserServerRequest = newValue } }
+    }
+    /// The plugin asks for something a permission allows (`PluginWire.appRequest`): the request's
+    /// id, its name and its payload. Whoever handles it answers with `.reply`.
+    public var onAppRequest: (@Sendable (Int, String, JSONValue) -> Void)? {
+        get { lock.withLock { _onAppRequest } }
+        set { lock.withLock { _onAppRequest = newValue } }
     }
     /// The plugin's program ended (after `programPID` became nil). The agent door then closes the
     /// connections that came from it.
@@ -363,6 +370,12 @@ public final class PluginProcess: @unchecked Sendable {
             lock.withLock { _onFrontRequest }?(requestID)
         case let .browserServerRequest(requestID):
             lock.withLock { _onBrowserServerRequest }?(requestID)
+        case let .appRequest(requestID, name, payload):
+            if let handler = lock.withLock({ _onAppRequest }) {
+                handler(requestID, name, payload)
+            } else {
+                send(.reply(requestID: requestID, payload: .object(["ok": .bool(false), "error": .string("not available")])))
+            }
         case .pageMessage, .commandResult, .panelMessage, .programStarted, .programFailed, .programOutput, .programExit,
              .frontChanged:
             log("error", "ignored a message the app sends, not the plugin: \(String(decoding: data.prefix(200), as: UTF8.self))")
@@ -520,7 +533,8 @@ public final class PluginProcess: @unchecked Sendable {
     /// The manifest's two reach permissions as JSON, passed to host.ts as its third argument so the
     /// API can refuse `front()` locally (the app refuses again; this only gives a clear error).
     static func permissionFlags(_ permissions: PluginManifest.Permissions) -> String {
-        #"{"frontTab":\#(permissions.frontTab),"browser":\#(permissions.browser),"terminals":\#(permissions.terminals)}"#
+        #"{"frontTab":\#(permissions.frontTab),"browser":\#(permissions.browser),"terminals":\#(permissions.terminals),"#
+            + #""openTerminals":\#(!permissions.openTerminals.isEmpty),"notifications":\#(permissions.notifications)}"#
     }
 
     /// Exactly what Bun gets; nothing is inherited from the app (whose environment may hold tokens,
@@ -650,6 +664,7 @@ public final class PluginSupervisor: @unchecked Sendable {
     private var _onPanelPost: (@Sendable (JSONValue) -> Void)?
     private var _onFrontRequest: (@Sendable (Int) -> Void)?
     private var _onBrowserServerRequest: (@Sendable (Int) -> Void)?
+    private var _onAppRequest: (@Sendable (Int, String, JSONValue) -> Void)?
     private var _onProgramExit: (@Sendable () -> Void)?
 
     /// - Parameters:
@@ -696,6 +711,12 @@ public final class PluginSupervisor: @unchecked Sendable {
     public var onBrowserServerRequest: (@Sendable (Int) -> Void)? {
         get { lock.withLock { _onBrowserServerRequest } }
         set { lock.withLock { _onBrowserServerRequest = newValue } }
+    }
+    /// The plugin asks for something a permission allows (`PluginWire.appRequest`): the request's
+    /// id, its name and its payload. Whoever handles it answers with `.reply`.
+    public var onAppRequest: (@Sendable (Int, String, JSONValue) -> Void)? {
+        get { lock.withLock { _onAppRequest } }
+        set { lock.withLock { _onAppRequest = newValue } }
     }
     /// The plugin's program ended (after `programPID` became nil). The agent door then closes the
     /// connections that came from it.
@@ -785,6 +806,7 @@ public final class PluginSupervisor: @unchecked Sendable {
         process.onFrontRequest = { [weak self] id in self?.onFrontRequest?(id) }
         process.onProgramExit = { [weak self] in self?.onProgramExit?() }
         process.onBrowserServerRequest = { [weak self] id in self?.onBrowserServerRequest?(id) }
+        process.onAppRequest = { [weak self] id, name, payload in self?.onAppRequest?(id, name, payload) }
         process.onExit = { [weak self] status in self?.processExited(status: status, generation: generation) }
         do {
             try process.start()

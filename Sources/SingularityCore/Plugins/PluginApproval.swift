@@ -285,6 +285,8 @@ extension PluginManifest.Permissions {
         if frontTab && !approved.frontTab { return true }
         if browser && !approved.browser { return true }
         if terminals && !approved.terminals { return true }
+        if openTerminals.contains(where: { !approved.openTerminals.contains($0) }) { return true }
+        if notifications && !approved.notifications { return true }
         return false
     }
 }

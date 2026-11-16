@@ -123,6 +123,25 @@ final class InboxNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// A banner that belongs to no inbox entry: a plugin's notification (`singularity.notify`),
+    /// already cleaned, cut and headed with the plugin's name (`PluginNotice`). It is not
+    /// withdrawn by `sync` and adds nothing to the Dock badge. The same permission question as
+    /// for inbox banners, asked only while macOS has no answer yet.
+    func post(title: String, body: String) {
+        guard let backend else { return }
+        let id = "plugin-" + UUID().uuidString
+        enqueue {
+            let allowed: Bool
+            switch await backend.authorisationStatus() {
+            case .allowed: allowed = true
+            case .denied: allowed = false
+            case .notDetermined: allowed = await backend.requestAuthorisation()
+            }
+            guard allowed else { return }
+            await backend.post(id: id, title: title, body: body)
+        }
+    }
+
     /// Call after every change of the list: withdraws the banners this process posted whose
     /// entry is gone (then forgets them), and sets the Dock badge to the number of entries (none
     /// at 0).

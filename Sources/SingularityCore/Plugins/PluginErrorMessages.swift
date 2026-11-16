@@ -19,6 +19,7 @@ extension PluginError {
         case .refusedCommand(let name): return "it may not run “\(name)”"
         case .refusedProgram(let name): return "it asks to keep “\(name)” running, which plugins may not"
         case .programsNeedBackground: return "it asks to keep a program running but has no background program"
+        case .refusedTerminalProgram(let name): return "it asks to open terminals that run “\(name)”, which plugins may not"
         case .browserNeedsProgram: return "it asks to use the browser but keeps no program running"
         case .terminalsNeedBrowser: return "it asks to see terminals but not to use the browser"
         case .invalidProgramEnv(let name): return "it asks to set “\(name)” for its program, which plugins may not"

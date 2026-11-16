@@ -136,6 +136,15 @@ final class PluginManager {
     @ObservationIgnored var frontProvider: ((String) -> PluginReach.Front)?
     /// How to start the browser server, as `{command, args, env}` JSON or null (set by `AppState`).
     @ObservationIgnored var browserServerProvider: (() -> JSONValue)?
+    /// Opens a terminal tab with this line typed in; false when it couldn't (no Space, the welcome
+    /// flow is open). Set by `AppState`. For a plugin with `openTerminals`.
+    @ObservationIgnored var terminalOpener: ((String) -> Bool)?
+    /// Shows a macOS notification (title, body). Set by `AppState`. For a plugin with `notifications`.
+    @ObservationIgnored var noticePoster: ((String, String) -> Void)?
+    @ObservationIgnored private var terminalLimits: [String: PluginRateLimit] = [:]
+    @ObservationIgnored private var noticeLimits: [String: PluginRateLimit] = [:]
+    /// The clock for those limits (tests pass their own).
+    @ObservationIgnored var now: () -> Date = { Date() }
     /// Called after a plugin was switched on or off in a Space (`AppState` tells the MCP hub).
     @ObservationIgnored var onSpacesChanged: (() -> Void)?
     /// The owner switched a Space off for a plugin (`setEnabled`): what the plugin's connection is
@@ -405,6 +414,14 @@ final class PluginManager {
                 }
             }
         }
+        supervisor.onAppRequest = { [weak self, weak supervisor] requestID, name, payload in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let supervisor, self.supervisors[id] === supervisor else { return }
+                    supervisor.send(.reply(requestID: requestID, payload: self.answerAppRequest(pluginID: id, name: name, payload: payload)))
+                }
+            }
+        }
         supervisor.onPanelPost = { [weak self, weak supervisor] payload in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -470,6 +487,50 @@ final class PluginManager {
     /// message came from; the caller knows it, so it is passed in rather than looked up here);
     /// nil after 75 s without a reply, or when the plugin stops meanwhile. Request ids increase
     /// per manager; replies with unknown or stale ids are ignored.
+    // MARK: - Terminals and notifications a plugin asks for
+
+    /// Answers `singularity.terminal.open` and `singularity.notify` for the running plugin `id`:
+    /// `{"ok": true}` or `{"ok": false, "error": …}`. The permission is read from the approved
+    /// manifest here, whatever host.ts thought; every rule is in Core (`PluginActions.swift`).
+    func answerAppRequest(pluginID id: String, name: String, payload: JSONValue) -> JSONValue {
+        func refuse(_ why: String) -> JSONValue { .object(["ok": .bool(false), "error": .string(why)]) }
+        guard let plugin = plugin(id), plugin.status == .approved, let manifest = plugin.validManifest,
+              case .object(let fields) = payload else { return refuse("not allowed") }
+        switch name {
+        case "openTerminal":
+            guard case .string(let program)? = fields["program"], manifest.permissions.openTerminals.contains(program),
+                  let path = plugin.approval?.commandPaths[program] else { return refuse("not allowed by the manifest") }
+            // Checked again now: the file at the pinned path may have been replaced since approval.
+            guard PluginLaunch.isAllowedProgram(path) else { return refuse("the program is missing or changed") }
+            var arguments: [String] = []
+            if case .array(let values)? = fields["args"] {
+                for value in values {
+                    guard case .string(let text) = value else { return refuse("arguments must be plain words") }
+                    arguments.append(text)
+                }
+            }
+            guard let line = PluginTerminalRules.commandLine(path: path, arguments: arguments) else {
+                return refuse("arguments must be plain words (letters, digits and - . _ / : = @ + ,)")
+            }
+            guard terminalLimits[id, default: .terminals].allow(now: now()) else { return refuse("too many terminals at once") }
+            guard terminalOpener?(line) == true else { return refuse("no Space to open a terminal in") }
+            return .object(["ok": .bool(true)])
+        case "notify":
+            guard manifest.permissions.notifications else { return refuse("not allowed by the manifest") }
+            var title = "", body = ""
+            if case .string(let text)? = fields["title"] { title = text }
+            if case .string(let text)? = fields["body"] { body = text }
+            guard let text = PluginNotice.text(pluginName: manifest.name, title: title, body: body) else {
+                return refuse("nothing to show")
+            }
+            guard noticeLimits[id, default: .notifications].allow(now: now()) else { return refuse("too many notifications") }
+            noticePoster?(text.title, text.body)
+            return .object(["ok": .bool(true)])
+        default:
+            return refuse("unknown request")
+        }
+    }
+
     func send(pluginID: String, tabID: UUID, space: UUID, frameHost: String, payload: JSONValue) async -> JSONValue? {
         guard let plugin = plugin(pluginID), plugin.status == .approved,
               plugin.approval?.enabledSpaces.contains(space) == true,

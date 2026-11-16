@@ -14,6 +14,9 @@ public enum PluginError: Error, Equatable, Sendable {
     /// A name in `programs` that is invalid, refused, repeated, or beyond the fourth.
     case refusedProgram(String)
     case programsNeedBackground
+    /// A name in `openTerminals` that is invalid, refused, repeated, beyond the fourth, or with
+    /// no background program to ask for it.
+    case refusedTerminalProgram(String)
     /// `browser` without a program: the browser tools are for a program the plugin keeps running.
     case browserNeedsProgram
     /// `terminals` without `browser`: terminals are reached through the browser's door.

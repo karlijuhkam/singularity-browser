@@ -220,6 +220,8 @@ final class AppState {
         plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
         plugins.frontProvider = { [weak self] id in self?.pluginFront(id) ?? .hidden(.nothing) }
         plugins.browserServerProvider = { [weak self] in self?.browserServerDescription() ?? .null }
+        plugins.terminalOpener = { [weak self] line in self?.openTerminal(typing: line) ?? false }
+        plugins.noticePoster = { [weak self] title, body in self?.inboxNotifier?.post(title: title, body: body) }
         // A plugin's Space switches change only what its own connection sees, never an outside agent's.
         plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged(pluginsOnly: true) }
         plugins.onProgramEnded = { [weak self] id in self?.mcp?.closeStaleConnections(ofPlugin: id) }
@@ -852,6 +854,24 @@ final class AppState {
     /// with the launcher's command typed into the new shell.
     func openTerminal(launcher: Launcher) {
         newTerminal(inFolder: selectedSpace?.folderForNewTerminal, alwaysAsk: false, launcher: launcher)
+    }
+
+    /// A terminal tab for a plugin with `openTerminals`: a new tab in the Space in front, in the
+    /// Space's own folder, with `line` typed into its first shell exactly as a launcher's command
+    /// is (once, never after a restart). `PluginManager` built the line from the plugin's pinned
+    /// program and checked arguments. No project picker: nobody is there to answer it. False when
+    /// there is nowhere to open it (no Space, or the welcome flow covers the window).
+    func openTerminal(typing line: String) -> Bool {
+        guard let space = selectedSpace, !welcomeCoversWindow, !line.isEmpty else { return false }
+        var tabID: UUID?
+        mutateSpace(space.id) {
+            tabID = $0.addTerminal(directory: space.workingDirectory, projectID: nil, inFolder: nil, select: true)
+        }
+        guard let tabID else { return false }
+        pendingCommands[tabID] = line
+        if little.frontWindow != nil { showMainWindow() }
+        loadSelectedTab()
+        return true
     }
 
     /// The launchers as they are used (Settings holds them as typed: `Launcher.clean`).

@@ -37,11 +37,25 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         /// The plugin may see the terminals of Spaces switched on for it (`terminalSpaces`), read their
         /// screens, and send text after the owner approved it. Needs `browser` (it goes through the door).
         public var terminals: Bool
+        /// Names of programs the plugin may open a terminal tab for: the app types the pinned path
+        /// and the plugin's arguments into a new tab's shell (`singularity.terminal.open`). Resolved
+        /// and pinned like commands. Owner decision 2026-11-16.
+        public var openTerminals: [String]
+        /// The plugin may show macOS notifications under its own name (`singularity.notify`).
+        public var notifications: Bool
+
+        /// Every program name whose path is pinned at approval.
+        public var pinnedNames: Set<String> {
+            Set(commands.keys).union(programs).union(openTerminals)
+        }
 
         public init(pageAdditions: [String] = [], fillForms: [String] = [],
                     commands: [String: [String]] = [:], network: [String] = [],
                     programs: [String] = [], programEnv: [String] = [],
-                    frontTab: Bool = false, browser: Bool = false, terminals: Bool = false) {
+                    frontTab: Bool = false, browser: Bool = false, terminals: Bool = false,
+                    openTerminals: [String] = [], notifications: Bool = false) {
+            self.openTerminals = openTerminals
+            self.notifications = notifications
             self.pageAdditions = pageAdditions
             self.fillForms = fillForms
             self.commands = commands
@@ -63,7 +77,8 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         /// Decodes by hand so an unknown key (e.g. "cookies") is an error, not silently ignored.
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Key.self)
-            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv", "frontTab", "browser", "terminals"]
+            let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv", "frontTab", "browser", "terminals",
+                                      "openTerminals", "notifications"]
             for key in c.allKeys where !known.contains(key.stringValue) {
                 throw PluginError.unknownPermission(key.stringValue)
             }
@@ -79,6 +94,8 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             frontTab = try field("frontTab", false)
             browser = try field("browser", false)
             terminals = try field("terminals", false)
+            openTerminals = try field("openTerminals", [String]())
+            notifications = try field("notifications", false)
         }
     }
 
@@ -158,6 +175,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         }
 
         try validatePrograms()
+        try validateOpenTerminals()
         try validatePanel()
 
         for path in [background, page?.script, panel?.page].compactMap({ $0 }) {
@@ -183,6 +201,19 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         for name in permissions.programEnv where !Self.isAllowedProgramEnv(name) { throw .invalidProgramEnv(name) }
         // Settings with no program to receive them make no sense.
         if !permissions.programEnv.isEmpty, programs.isEmpty { throw .invalidProgramEnv(permissions.programEnv[0]) }
+    }
+
+    /// Program names for `openTerminals`: the rules of `commands` (bare names, none of the refused
+    /// ones), at most 4, no duplicates, and only with a background program (it is what asks).
+    private func validateOpenTerminals() throws(PluginError) {
+        let names = permissions.openTerminals
+        for name in names where CommandPolicy.isRefused(name) || !CommandPolicy.isValidName(name) {
+            throw .refusedTerminalProgram(name)
+        }
+        if Set(names).count != names.count || names.count > 4 {
+            throw .refusedTerminalProgram(names.first { name in names.filter { $0 == name }.count > 1 } ?? names[4])
+        }
+        if !names.isEmpty, background == nil { throw .refusedTerminalProgram(names[0]) }
     }
 
     /// `^[A-Z][A-Z0-9_]{0,63}$`, minus the names that change how a program starts or where it looks.

@@ -46,6 +46,11 @@ public enum PermissionDescriptions {
         if permissions.terminals {
             out.append("See the terminals of Spaces you switch on for it, read their screens, and send text to one after you approved the exact text")
         }
+        for name in permissions.openTerminals.sorted() {
+            out.append("Opens terminal tabs that run \(commandPaths[name] ?? name) with arguments it chooses. "
+                       + "That program is not sandboxed: it uses the internet and acts as you")
+        }
+        if permissions.notifications { out.append("Shows notifications under its name") }
         if let packages, !packages.packages.isEmpty {
             let n = packages.packages.count
             var line = "Installs \(n) \(n == 1 ? "package" : "packages") from the npm registry"
@@ -54,7 +59,7 @@ public enum PermissionDescriptions {
         }
         if hasBackground {
             out.append(permissions.network.isEmpty
-                       ? (permissions.commands.isEmpty && permissions.programs.isEmpty
+                       ? (permissions.commands.isEmpty && permissions.programs.isEmpty && permissions.openTerminals.isEmpty
                           ? "Its background program never uses the internet"
                           // The background program has no network, but programs it runs (outside its
                           // sandbox) can use it, so don't promise more than that.

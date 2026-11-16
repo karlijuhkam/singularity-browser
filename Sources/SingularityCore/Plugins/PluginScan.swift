@@ -93,7 +93,7 @@ public enum PluginLaunch {
                 return .blocked("\(path) is now a program plugins may not run — review to re-approve")
             }
         }
-        for name in (Set(manifest.permissions.commands.keys).union(manifest.permissions.programs)).sorted()
+        for name in manifest.permissions.pinnedNames.sorted()
         where approval.commandPaths[name] == nil {
             return .blocked("no approved path for \(name) — review to re-approve")
         }
@@ -270,8 +270,9 @@ public struct PluginReview: Equatable, Sendable {
         } catch { return .failure(error) }
         var paths: [String: String] = [:]
         var missing: [String] = []
-        // Programs are pinned in the same map as commands (a name in both is resolved once).
-        for name in Set(manifest.permissions.commands.keys).union(manifest.permissions.programs).sorted() {
+        // Programs (and those a terminal may be opened for) are pinned in the same map as commands
+        // (a name in several lists is resolved once).
+        for name in manifest.permissions.pinnedNames.sorted() {
             if let path = resolve(name) { paths[name] = path } else { missing.append(name) }
         }
         return .success(PluginReview(

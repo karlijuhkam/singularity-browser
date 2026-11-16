@@ -83,9 +83,13 @@ public enum PluginWire: Codable, Equatable, Sendable {
     /// Asks how to start the browser server (`singularity-mcp`); the app answers with `.reply`
     /// (`{command, args, env}`, or null when the plugin may not or there is none).
     case browserServerRequest(requestID: Int)
+    /// Asks the app to do one of the small things a permission allows: `name` is "openTerminal"
+    /// (`permissions.openTerminals`) or "notify" (`permissions.notifications`). The app answers
+    /// with `.reply`: `{"ok": true}` or `{"ok": false, "error": "<why>"}`.
+    case appRequest(requestID: Int, name: String, payload: JSONValue)
 
     private enum Key: String, CodingKey {
-        case kind, requestID, tabID, frameHost, payload, callID, result, command, arguments, level, message
+        case kind, requestID, tabID, frameHost, payload, callID, result, command, arguments, level, message, name
         case programID, program, environment, data, signal, status, reason, bytes
     }
 
@@ -150,6 +154,10 @@ public enum PluginWire: Codable, Equatable, Sendable {
             self = .frontRequest(requestID: try c.decode(Int.self, forKey: .requestID))
         case "browserServerRequest":
             self = .browserServerRequest(requestID: try c.decode(Int.self, forKey: .requestID))
+        case "appRequest":
+            self = .appRequest(requestID: try c.decode(Int.self, forKey: .requestID),
+                               name: try c.decode(String.self, forKey: .name),
+                               payload: try c.decodeIfPresent(JSONValue.self, forKey: .payload) ?? .null)
         case let other:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "unknown kind \(other)")
         }
@@ -235,6 +243,11 @@ public enum PluginWire: Codable, Equatable, Sendable {
         case let .browserServerRequest(requestID):
             try c.encode("browserServerRequest", forKey: .kind)
             try c.encode(requestID, forKey: .requestID)
+        case let .appRequest(requestID, name, payload):
+            try c.encode("appRequest", forKey: .kind)
+            try c.encode(requestID, forKey: .requestID)
+            try c.encode(name, forKey: .name)
+            try c.encode(payload, forKey: .payload)
         }
     }
 }

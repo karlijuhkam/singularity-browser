@@ -42,6 +42,10 @@
 //                   {"kind":"panelPost","payload":…}
 //                   {"kind":"frontRequest","requestID":3}                        (needs permissions.frontTab)
 //                   {"kind":"browserServerRequest","requestID":4}                (needs permissions.browser)
+//                   {"kind":"appRequest","requestID":5,"name":"openTerminal","payload":{"program":"x","args":[]}}
+//                                                                                (needs permissions.openTerminals; "notify" with
+//                                                                                 {"title","body"} needs permissions.notifications;
+//                                                                                 answered with a reply: {"ok":true} or {"ok":false,"error":…})
 //
 // Limits: Singularity buffers at most 16 MB of messages that the plugin hasn't read yet. If more
 // would be waiting (the plugin is stuck, or a single message is larger than 16 MB), the plugin is
@@ -451,7 +455,7 @@ type FrontTab = {
 type BrowserServer = { command: string; args: string[]; env: Record<string, string> };
 
 // What the manifest grants, passed by the app as our third argument (a JSON object).
-let reach = { frontTab: false, browser: false };
+let reach = { frontTab: false, browser: false, openTerminals: false, notifications: false };
 try {
   reach = { ...reach, ...JSON.parse(process.argv[3] ?? "{}") };
 } catch {
@@ -462,6 +466,38 @@ let nextAppRequestID = 1;
 /** Questions the plugin asked the app (frontRequest, browserServerRequest), by request id. */
 const pendingAppRequests = new Map<number, (payload: unknown) => void>();
 let frontChangeHandler: ((front: FrontTab | null) => void) | null = null;
+
+/** Asks the app for one of the small things a permission allows; resolves with `{ ok, error? }`. */
+function requestApp(name: "openTerminal" | "notify", payload: unknown): Promise<AppAnswer> {
+  const requestID = nextAppRequestID++;
+  return new Promise((resolve) => {
+    pendingAppRequests.set(requestID, (answer) => {
+      const a = (answer ?? {}) as { ok?: unknown; error?: unknown };
+      resolve(a.ok === true ? { ok: true } : { ok: false, error: typeof a.error === "string" ? a.error : "refused" });
+    });
+    send({ kind: "appRequest", requestID, name, payload });
+  });
+}
+
+type AppAnswer = { ok: true } | { ok: false; error: string };
+
+const terminal = Object.freeze({
+  /**
+   * Opens a new terminal tab in the Space in front and types `<program> <args>` into its shell,
+   * as if the user had: `await singularity.terminal.open("herdr-bot", ["gwb"])`. The program
+   * must be listed under permissions.openTerminals (its path was pinned at approval). Each
+   * argument is one plain word: letters, digits and - . _ / : = @ + , (no spaces, quotes or
+   * shell characters). Resolves with `{ ok: true }` or `{ ok: false, error }`; never rejects for
+   * a refusal. At most 5 a minute.
+   */
+  open(program: string, args: string[] = []): Promise<AppAnswer> {
+    if (typeof program !== "string" || !Array.isArray(args) || !args.every((a) => typeof a === "string")) {
+      return Promise.reject(new TypeError("terminal.open(program: string, args?: string[])"));
+    }
+    if (!reach.openTerminals) return Promise.resolve({ ok: false, error: "needs the openTerminals permission" });
+    return requestApp("openTerminal", { program, args });
+  },
+});
 
 function askApp(kind: "frontRequest" | "browserServerRequest"): Promise<unknown> {
   const requestID = nextAppRequestID++;
@@ -537,6 +573,23 @@ const singularity = Object.freeze({
 
   /** Singularity's browser server for an MCP client (needs permissions.browser): `browser.server()`. */
   browser,
+
+  /** Terminal tabs (needs permissions.openTerminals): `terminal.open(program, args)`. */
+  terminal,
+
+  /**
+   * Shows a macOS notification headed with this plugin's name (needs permissions.notifications):
+   * `await singularity.notify("Pilot", "PLAT-9 waits for your answer")`. Text only; the title is
+   * cut to 80 characters and the body to 300. Resolves with `{ ok: true }` or `{ ok: false, error }`.
+   * At most 20 an hour. Whether a banner appears is the user's choice in System Settings.
+   */
+  notify(title: string, body = ""): Promise<AppAnswer> {
+    if (typeof title !== "string" || typeof body !== "string") {
+      return Promise.reject(new TypeError("notify(title: string, body?: string)"));
+    }
+    if (!reach.notifications) return Promise.resolve({ ok: false, error: "needs the notifications permission" });
+    return requestApp("notify", { title, body });
+  },
 
   /**
    * A small key → value store that survives restarts: `await singularity.storage.set("seen", [1, 2])`,
