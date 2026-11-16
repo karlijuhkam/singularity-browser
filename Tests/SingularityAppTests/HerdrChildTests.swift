@@ -133,21 +133,30 @@ extension AppTests {
             feedBot(f)
             f.state.showChild("t3", under: f.bot.id)
             f.state.herdr.feed(line: event("finished", "t3"))
-            #expect(f.state.shownChild[f.bot.id] == nil)
+            // Its view is let go, but the tab's own terminal does not take the pane (and the
+            // keyboard) back by itself: the owner may be typing to the worker. The pane says
+            // it has ended, and the tab still doesn't count as on screen.
             #expect(f.state.terminals.existingChildSession("t3") == nil)
-            #expect(f.state.selectedTab?.id == f.bot.id)
+            #expect(f.state.shownChild[f.bot.id] == "t3")
+            #expect(!f.state.isTabOnScreen(f.bot.id))
+            // The owner goes back: ⌘W, or the button.
+            f.state.closeTabCommand()
+            #expect(f.state.shownChild[f.bot.id] == nil)
+            #expect(f.state.space(f.space.id)?.tab(f.bot.id) != nil)
 
             // The same when its `hc attach` reports it gone before the watcher says so.
             f.state.showChild("t4", under: f.bot.id)
             f.state.herdrChildGone("t4")
-            #expect(f.state.shownChild[f.bot.id] == nil)
+            #expect(f.state.terminals.existingChildSession("t4") == nil)
+            #expect(f.state.shownChild[f.bot.id] == "t4")
+            f.state.showOwnTerminal(f.bot.id)
 
-            // And when the listener is stopped, every row and view goes.
+            // The listener going away is not every terminal ending: rows go, a shown view stays.
             f.state.showChild("t5", under: f.bot.id)
             f.state.herdr.stop()
-            #expect(f.state.shownChild.isEmpty)
             #expect(f.state.herdr.children(of: f.bot.id) == .none)
-            #expect(f.state.terminals.existingChildSession("t5") == nil)
+            #expect(f.state.terminals.existingChildSession("t5") != nil)
+            #expect(f.state.shownChild[f.bot.id] == "t5")
         }
 
         @Test func closeTabCommandGoesBackBeforeItCloses() throws {
@@ -267,6 +276,8 @@ extension AppTests {
             f.state.herdr.collapsed.remove(bot.id)
             let pane = TabContentView(tab: bot)
             #expect(try await drawsSomething(pane.environment(f.state), size: NSSize(width: 480, height: 300), name: "pane"))
+            f.state.herdr.feed(line: event("finished", "t4"))
+            #expect(try await drawsSomething(TabContentView(tab: bot).environment(f.state), size: NSSize(width: 480, height: 300), name: "pane-ended"))
         }
 
         private func drawsSomething(_ view: some View, size: NSSize, name: String) async throws -> Bool {

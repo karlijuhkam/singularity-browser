@@ -50,7 +50,8 @@ final class HerdrWatcher {
             heardFromCore()
         case .resync:
             // herdr-core says we fell behind: listen again from a full picture.
-            if process != nil { restart(after: .zero) }
+            // Not at once: if a fresh listener were told "missed" straight away, this would spin.
+            if process != nil { restart(after: .seconds(1)) }
         case .skipped:
             // Never the line itself: it can carry anything a program put in a title.
             terminalLog.notice("herdr watcher: a line was not understood (\(line.utf8.count) bytes)")
@@ -151,6 +152,8 @@ final class HerdrWatcher {
             self.process = process
         } catch {
             terminalLog.notice("herdr watcher: hc events didn't start: \(error.localizedDescription, privacy: .public)")
+            // Never started, so `endProcess` has nothing to clear: let go of the pipe here.
+            pipe.fileHandleForReading.readabilityHandler = nil
             processEnded()
         }
     }

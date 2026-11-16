@@ -196,6 +196,28 @@ import Testing
         #expect(facts.terminals["t2"] == nil)
     }
 
+    @Test func aRestartedTerminalIsLiveAgain() {
+        var facts = Self.facts([Self.terminal("t1", name: Self.root), Self.terminal("t2", name: "w", parent: "t1")])
+        _ = facts.apply(line: Self.event("finished", "t2"))
+        #expect(rows(facts) == [])
+        #expect(facts.apply(line: Self.event("restarted", "t2", ["pid": 5])) == .changed)
+        #expect(rows(facts) == ["1 w"])
+        _ = facts.apply(line: Self.event("finished", "t2"))
+        #expect(facts.apply(line: Self.event("restarted", "t2", Self.terminal("t2", name: "again", parent: "t1"))) == .changed)
+        #expect(rows(facts) == ["1 again"])
+    }
+
+    @Test func onlyAddressesThatLookLikeHerdrsAreTaken() {
+        let facts = Self.facts([
+            Self.terminal("t1", name: Self.root),
+            Self.terminal("--observe", name: "a", parent: "t1"),
+            Self.terminal("t2 --force", name: "b", parent: "t1"),
+            Self.terminal("box/t7", name: "c", parent: "t1"),
+            Self.terminal("", name: "d", parent: "t1"),
+        ])
+        #expect(rows(facts) == ["1 c"])
+    }
+
     @Test func aTurnsStateIsNotTheTerminals() {
         var facts = Self.facts([Self.terminal("t1", name: Self.root), Self.terminal("t2", name: "w", parent: "t1", status: "working")])
         #expect(facts.apply(line: Self.event("turn", "t2", ["state": "blocked", "turn": 1])) == .unchanged)

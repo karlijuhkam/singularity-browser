@@ -72,6 +72,9 @@ final class AppState {
     let herdr = HerdrWatcher()
     /// Terminal tabs whose pane shows one of their child terminals instead of their own: tab id →
     /// the child's herdr address. In memory only; change it with `showChild` / `showOwnTerminal`.
+    /// Only the owner clears an entry (a click, ⌘W, a card's Go to terminal). When the child ends
+    /// the entry stays and the pane says so: if the tab's own terminal took the pane and the
+    /// keyboard by itself, the rest of what the owner was typing to a worker would go to the Bot.
     private(set) var shownChild: [UUID: String] = [:]
     /// The sidebar's width while dragged, and the slide-out of a hidden sidebar.
     let sidebarPeek = SidebarPeekController()
@@ -610,6 +613,7 @@ final class AppState {
         // Its little windows first: their pages are in no tab list, and the Space's WebKit data
         // store (removed below) can't be deleted while a web view still uses it.
         little.spaceWillBeDeleted(id)
+        for tab in space.tabs { shownChild[tab.id] = nil }
         web.removeControllers(for: space.tabs.map(\.id))
         terminals.removeSessions(for: space.tabs.map(\.id))
         for tab in space.tabs { inbox.tabClosed(tab.id) }
@@ -626,6 +630,7 @@ final class AppState {
             selectedSpaceID = spaces.first?.id
             loadSelectedTab()
         }
+        herdr.updateRunning() // its terminal tabs may have been the last ones
         stateFileDirty = true
         scheduleSave()
         // A plugin's connection may have had it too (`plugins.spaceRemoved` took it out of its switches).
@@ -734,21 +739,18 @@ final class AppState {
         selectTab(tabID)
     }
 
-    /// herdr-core's picture changed: a child that is no longer under its tab stops being shown,
-    /// and views of terminals that ended are let go.
+    /// herdr-core's picture changed: the views of terminals that ended are let go. A pane that
+    /// showed one then says it has ended (`shownChild` stays, see there).
     func herdrFactsChanged() {
-        for (tabID, address) in shownChild where !herdr.children(of: tabID).rows.contains(where: { $0.address == address }) {
-            shownChild[tabID] = nil
-        }
+        // No picture at all means the listener is down, not that every terminal ended: the
+        // views stay (each notices by itself when its terminal is gone, `herdrChildGone`).
+        guard !herdr.facts.terminals.isEmpty else { return }
         let live = Set(herdr.facts.terminals.values.filter(\.isLive).map(\.address))
         terminals.removeChildSessions(keeping: live)
     }
 
     /// A child's `hc attach` ended and herdr-core says the terminal is gone.
     func herdrChildGone(_ address: String) {
-        for (tabID, shown) in shownChild where shown == address {
-            shownChild[tabID] = nil
-        }
         terminals.removeChildSession(address)
     }
 

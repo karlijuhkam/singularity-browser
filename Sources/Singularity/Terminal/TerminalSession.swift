@@ -297,6 +297,13 @@ final class TerminalSession {
         }
     }
 
+    /// A tab that has no session (not shown since launch) was closed: end its herdr terminal.
+    /// Only ever the tab's *own* terminal, by the name derived from the tab's id.
+    nonisolated static func endHerdrTerminal(hc path: String, tabID: UUID) {
+        let name = HerdrCore.terminalName(tabID: tabID)
+        Task.detached { await endHerdrTerminal(hc: path, name: name) }
+    }
+
     /// The tab was closed: end the shell (`hc kill` hangs up, then escalates) and remove the
     /// finished terminal from herdr-core's list.
     private nonisolated static func endHerdrTerminal(hc path: String, name: String) async {

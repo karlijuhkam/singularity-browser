@@ -87,8 +87,15 @@ final class TerminalRegistry {
 
     /// The tabs are being closed: their shells end.
     func removeSessions(for tabIDs: [UUID]) {
+        // A herdr-core tab that was not shown since launch has no session, but its shell (and
+        // what runs under it) is still in herdr-core from before: closing the tab ends it too.
+        let hc = state?.settings.terminalUsesHerdrCore == true ? HerdrCore.locate() : nil
         for id in tabIDs {
-            sessions.removeValue(forKey: id)?.tearDown()
+            if let session = sessions.removeValue(forKey: id) {
+                session.tearDown()
+            } else if let hc, state?.spaces.contains(where: { $0.tab(id)?.isTerminal == true }) == true {
+                TerminalSession.endHerdrTerminal(hc: hc, tabID: id)
+            }
         }
     }
 

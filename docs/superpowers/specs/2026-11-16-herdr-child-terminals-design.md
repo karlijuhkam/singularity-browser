@@ -258,12 +258,22 @@ Built as designed, with these differences and findings.
   that brought it there was on a child row.
 - **Return after a detach** replaces the child's view with a fresh one (as a tab's terminal is
   replaced after its shell ended), rather than starting `hc attach` again in the same view.
+- **A child that ends while shown does not hand the pane back by itself** (a finding of the
+  review): the pane says "This terminal has ended." with a button back to the tab, and ⌘W goes
+  back too. The design had the pane return to the tab's own terminal, which would also have
+  given it the keyboard in the middle of the owner's typing. For the same reason the 10 s
+  "stale" rule removes rows only, never a view that is shown.
+- **The fold triangle is at the end of the tab's row**, inside it.
+- **Closing a herdr-core tab that was not shown since launch** now ends its own terminal too;
+  before this it left the shell in herdr-core with no tab.
+- **`restarted`** makes a terminal live again; a `missed` restart waits 1 s.
 - **Marks:** working is a filled dot in the accent colour, needs you an orange exclamation mark,
   error a red octagon, done a green check, idle a hollow dot.
 - **A test seam:** while `AppState.terminalHandleOverride` is set (tests' fake terminals), a
   terminal tab that comes on screen starts no session, so tests can select a terminal tab.
 
 Not tried, left for the owner's hands in the daily copy: a click on a child row, typing into a
-child, the strip's way back, ⌘W, a worker ending while shown, the close question, a Bot's
+child, the strip's way back, ⌘W, a worker ending while shown, dragging a tab that has children
+(onto the page, into a folder), the close question, a Bot's
 question arriving while a worker is shown, and two viewers (the Herdr app and Singularity) on
 one terminal. This shell cannot click in a window.

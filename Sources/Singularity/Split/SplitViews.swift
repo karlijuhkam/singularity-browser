@@ -32,6 +32,9 @@ struct TabContentView: View {
                     .id(ObjectIdentifier(child))
                 HerdrChildStrip(tab: tab, address: address)
             }
+        } else if tab.isTerminal, state.shownChild[tab.id] != nil {
+            // The child that was shown here has ended. The owner goes back (the button, ⌘W).
+            HerdrChildEnded(tab: tab)
         } else if let session = state.terminals.existingSession(tab.id) {
             HostedView(view: session.view, tabID: tab.id, focusOnShow: isFocused, onDrop: onDrop)
                 .padding(8)

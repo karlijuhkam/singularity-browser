@@ -169,6 +169,13 @@ public struct HerdrFacts: Equatable, Sendable {
             terminals[address] = nil
         case "finished":
             terminals[address]?.isLive = false
+        case "restarted":
+            // A kept terminal got a program again. With the whole terminal in `data`, take it.
+            if let terminal = Self.terminal(from: data) {
+                terminals[terminal.address] = terminal
+            } else {
+                terminals[address]?.isLive = true
+            }
         case "status":
             terminals[address]?.status = Self.status(data["status"])
         case "labels":
@@ -189,7 +196,11 @@ public struct HerdrFacts: Equatable, Sendable {
 
     /// A terminal from herdr-core's JSON, or nil when it has no address.
     private static func terminal(from object: [String: Any]) -> HerdrTerminal? {
-        guard let address = object["address"] as? String, !address.isEmpty else { return nil }
+        // The address later goes to `hc attach` as an argument: only what herdr-core's own
+        // addresses look like ("t64", "machine/t7"), never something that reads as an option.
+        guard let address = object["address"] as? String, !address.isEmpty, address.count <= 80, !address.hasPrefix("-"),
+              address.unicodeScalars.allSatisfy({ $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "_-/".unicodeScalars.contains($0)) })
+        else { return nil }
         let foreground = object["foreground"] as? [String: Any]
         let created = (object["created_ms"] as? NSNumber)?.int64Value ?? 0
         return HerdrTerminal(
@@ -249,7 +260,8 @@ public struct HerdrFacts: Equatable, Sendable {
                 let mark = HerdrMark(status: child.status)
                 if mark == .needsYou { needsYou = true }
                 rows.append(HerdrChildRow(address: child.address, name: Self.rowName(child), mark: mark,
-                                          level: min(level, Self.maxLevel), folder: child.cwd))
+                                          level: min(level, Self.maxLevel),
+                                          folder: child.cwd.map { InboxText.clean($0, limit: 200) }))
                 walk(child.address, level: level + 1)
             }
         }
@@ -275,7 +287,7 @@ public struct HerdrFacts: Equatable, Sendable {
     }
 
     /// The row's text: the terminal's name, else its program, else its address.
-    static func rowName(_ terminal: HerdrTerminal) -> String {
+    public static func rowName(_ terminal: HerdrTerminal) -> String {
         for candidate in [terminal.name, terminal.program] {
             let cleaned = InboxText.clean(candidate ?? "", limit: nameLimit)
             if !cleaned.isEmpty { return cleaned }

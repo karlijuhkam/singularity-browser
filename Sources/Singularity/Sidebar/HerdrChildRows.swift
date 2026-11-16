@@ -26,6 +26,18 @@ struct TabWithChildrenRow: View {
                 TabRow(tab: tab, space: space)
                 // Folded away, the tab's row says when something under it waits for the owner.
                 if isCollapsed, children.needsYou { HerdrMarkView(mark: .needsYou) }
+                // Inside the row, at its end: a view hung outside the row's bounds may get no clicks.
+                Button {
+                    if isCollapsed { state.herdr.collapsed.remove(tab.id) } else { state.herdr.collapsed.insert(tab.id) }
+                } label: {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isCollapsed ? "Show the terminals under this one" : "Hide the terminals under this one")
             }
             .frame(minHeight: 22)
             // The highlight reaches a little past the row, so the tab's icon stays in line with
@@ -33,26 +45,13 @@ struct TabWithChildrenRow: View {
             .background(HerdrRowHighlight(isOn: isSelected && state.shownChild[tab.id] == nil).padding(.horizontal, -4))
             .contentShape(Rectangle())
             .onTapGesture { state.showOwnTerminal(tab.id) }
-            // The triangle hangs in the row's left margin, so the tab's icon stays in line with
-            // the rows above and below.
-            .overlay(alignment: .leading) {
-                Button {
-                    if isCollapsed { state.herdr.collapsed.remove(tab.id) } else { state.herdr.collapsed.insert(tab.id) }
-                } label: {
-                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isCollapsed ? "Show the terminals under this one" : "Hide the terminals under this one")
-                .offset(x: -15)
-            }
             if !isCollapsed {
                 HerdrChildList(tab: tab, children: children, isTabSelected: isSelected)
             }
         }
+        // At the List row's root, where the List looks for it: the tab can still be dragged onto
+        // the page (a split) or into another section.
+        .itemProvider { TabDrag.provider(for: tab.id) }
     }
 }
 
@@ -162,7 +161,7 @@ struct HerdrChildStrip: View {
     let address: String
 
     var body: some View {
-        let name = state.herdr.children(of: tab.id).rows.first { $0.address == address }?.name ?? address
+        let name = state.herdr.facts.terminals[address].map(HerdrFacts.rowName) ?? address
         HStack(spacing: 6) {
             Button {
                 state.showOwnTerminal(tab.id)
@@ -182,5 +181,28 @@ struct HerdrChildStrip: View {
         .padding(.horizontal, 10)
         .frame(height: 22)
         .background(Color.primary.opacity(0.06))
+    }
+}
+
+/// What a tab's pane shows after the child terminal shown in it has ended. The tab's own terminal
+/// does not take the pane back by itself: the owner may be in the middle of typing to the child,
+/// and the rest would land in the tab's own program.
+struct HerdrChildEnded: View {
+    @Environment(AppState.self) private var state
+    let tab: BrowserTab
+
+    var body: some View {
+        ZStack {
+            Color(nsColor: .textBackgroundColor)
+            VStack(spacing: 10) {
+                Text("This terminal has ended.")
+                    .foregroundStyle(.secondary)
+                Button {
+                    state.showOwnTerminal(tab.id)
+                } label: {
+                    Text(verbatim: "Back to \(tab.displayTitle)")
+                }
+            }
+        }
     }
 }
