@@ -136,9 +136,13 @@ final class PluginManager {
     @ObservationIgnored var frontProvider: ((String) -> PluginReach.Front)?
     /// How to start the browser server, as `{command, args, env}` JSON or null (set by `AppState`).
     @ObservationIgnored var browserServerProvider: (() -> JSONValue)?
-    /// Opens a terminal tab with this line typed in; false when it couldn't (no Space, the welcome
-    /// flow is open). Set by `AppState`. For a plugin with `openTerminals`.
-    @ObservationIgnored var terminalOpener: ((String) -> Bool)?
+    /// Opens a terminal tab with this line typed in and returns its id; nil when it couldn't (no
+    /// Space, the welcome flow is open). Set by `AppState`. For a plugin with `openTerminals`.
+    @ObservationIgnored var terminalOpener: ((String) -> UUID?)?
+    /// Is that tab still open? Set by `AppState`.
+    @ObservationIgnored var terminalIsOpen: ((UUID) -> Bool)?
+    /// The terminal tabs each plugin opened in this run, to cap how many are open at once.
+    @ObservationIgnored private var openedTerminals: [String: [UUID]] = [:]
     /// Shows a macOS notification (title, body). Set by `AppState`. For a plugin with `notifications`.
     @ObservationIgnored var noticePoster: ((String, String) -> Void)?
     @ObservationIgnored private var terminalLimits: [String: PluginRateLimit] = [:]
@@ -482,11 +486,6 @@ final class PluginManager {
 
     // MARK: - Messages from pages (Task 8)
 
-    /// Sends a page script's message to the plugin's background program and waits for its reply.
-    /// nil at once when the plugin isn't running or isn't on in `space` (the Space of the tab the
-    /// message came from; the caller knows it, so it is passed in rather than looked up here);
-    /// nil after 75 s without a reply, or when the plugin stops meanwhile. Request ids increase
-    /// per manager; replies with unknown or stale ids are ignored.
     // MARK: - Terminals and notifications a plugin asks for
 
     /// Answers `singularity.terminal.open` and `singularity.notify` for the running plugin `id`:
@@ -500,8 +499,8 @@ final class PluginManager {
         case "openTerminal":
             guard case .string(let program)? = fields["program"], manifest.permissions.openTerminals.contains(program),
                   let path = plugin.approval?.commandPaths[program] else { return refuse("not allowed by the manifest") }
-            // Checked again now: the file at the pinned path may have been replaced since approval.
-            guard PluginLaunch.isAllowedProgram(path) else { return refuse("the program is missing or changed") }
+            // A test or development copy starts none of a plugin's programs on the owner's account.
+            guard programs.allowed else { return refuse("programs are off in a test copy") }
             var arguments: [String] = []
             if case .array(let values)? = fields["args"] {
                 for value in values {
@@ -512,8 +511,17 @@ final class PluginManager {
             guard let line = PluginTerminalRules.commandLine(path: path, arguments: arguments) else {
                 return refuse("arguments must be plain words (letters, digits and - . _ / : = @ + ,)")
             }
+            // The cheap limits first: a plugin asking in a loop costs no file-system work.
             guard terminalLimits[id, default: .terminals].allow(now: now()) else { return refuse("too many terminals at once") }
-            guard terminalOpener?(line) == true else { return refuse("no Space to open a terminal in") }
+            let stillOpen = (openedTerminals[id] ?? []).filter { terminalIsOpen?($0) == true }
+            openedTerminals[id] = stillOpen
+            guard stillOpen.count < PluginRateLimit.maxOpenTerminals else {
+                return refuse("it already has \(PluginRateLimit.maxOpenTerminals) terminals open: close one first")
+            }
+            // Checked again now: the file at the pinned path may have been replaced since approval.
+            guard PluginLaunch.isAllowedProgram(path) else { return refuse("the program is missing or changed") }
+            guard let tabID = terminalOpener?(line) else { return refuse("no Space to open a terminal in") }
+            openedTerminals[id, default: []].append(tabID)
             return .object(["ok": .bool(true)])
         case "notify":
             guard manifest.permissions.notifications else { return refuse("not allowed by the manifest") }
@@ -531,6 +539,11 @@ final class PluginManager {
         }
     }
 
+    /// Sends a page script's message to the plugin's background program and waits for its reply.
+    /// nil at once when the plugin isn't running or isn't on in `space` (the Space of the tab the
+    /// message came from; the caller knows it, so it is passed in rather than looked up here);
+    /// nil after 75 s without a reply, or when the plugin stops meanwhile. Request ids increase
+    /// per manager; replies with unknown or stale ids are ignored.
     func send(pluginID: String, tabID: UUID, space: UUID, frameHost: String, payload: JSONValue) async -> JSONValue? {
         guard let plugin = plugin(pluginID), plugin.status == .approved,
               plugin.approval?.enabledSpaces.contains(space) == true,

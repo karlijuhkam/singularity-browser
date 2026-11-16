@@ -87,19 +87,26 @@ import Testing
     // MARK: - What may be typed
 
     @Test func onlyPlainWordsBecomeACommandLine() {
-        #expect(PluginTerminalRules.commandLine(path: "/u/bin/herdr-bot", arguments: ["gwb", "--fresh"]) == "/u/bin/herdr-bot gwb --fresh")
-        #expect(PluginTerminalRules.commandLine(path: "/u/bin/herdr-bot", arguments: []) == "/u/bin/herdr-bot")
+        #expect(PluginTerminalRules.commandLine(path: "/u/bin/herdr-bot", arguments: ["gwb", "--fresh"]) == "'/u/bin/herdr-bot' 'gwb' '--fresh'")
+        #expect(PluginTerminalRules.commandLine(path: "/u/bin/herdr-bot", arguments: []) == "'/u/bin/herdr-bot'")
+        // Every word is quoted: a plain word could be one of the owner's zsh aliases (`G` for
+        // `| grep`), and zsh reads `=ls` as the path of ls.
+        #expect(PluginTerminalRules.commandLine(path: "/u/bin/x", arguments: ["G", "=ls"]) == "'/u/bin/x' 'G' '=ls'")
         #expect(PluginTerminalRules.commandLine(path: "/u/bin/x", arguments: ["--topic", "a_b-1", "k=v", "a/b.c", "x@y", "1,2", "a:b", "+1"])
-            == "/u/bin/x --topic a_b-1 k=v a/b.c x@y 1,2 a:b +1")
+            == "'/u/bin/x' '--topic' 'a_b-1' 'k=v' 'a/b.c' 'x@y' '1,2' 'a:b' '+1'")
         for bad in ["a b", "a;b", "$(x)", "`x`", "a|b", "a&b", "a>b", "'", "\"", "a\nb", "", "~", "*", "a\\b", "ä", "#x", "!x", "(x)",
                     String(repeating: "a", count: 201)] {
             #expect(PluginTerminalRules.commandLine(path: "/u/bin/x", arguments: ["ok", bad]) == nil, "\(bad)")
         }
         #expect(PluginTerminalRules.commandLine(path: "/u/bin/x", arguments: Array(repeating: "a", count: 17)) == nil)
         // The pinned path is one shell word whatever is in it.
-        #expect(PluginTerminalRules.commandLine(path: "/Users/a b/it's/x", arguments: ["y"]) == "'/Users/a b/it'\\''s/x' y")
+        #expect(PluginTerminalRules.commandLine(path: "/Users/a b/it's/x", arguments: ["y"]) == "'/Users/a b/it'\\''s/x' 'y'")
         #expect(PluginTerminalRules.commandLine(path: "relative/x", arguments: []) == nil)
         #expect(PluginTerminalRules.commandLine(path: "/a\nrm -rf", arguments: []) == nil)
+        // A control character in the path would be a key in the shell's line editor.
+        for key in ["\t", "\u{1b}", "\u{3}", "\u{f}", "\r", "\u{0}"] {
+            #expect(PluginTerminalRules.commandLine(path: "/u/bin/x\(key)y", arguments: []) == nil)
+        }
     }
 
     @Test func theLimits() {
@@ -114,14 +121,19 @@ import Testing
         #expect(PluginRateLimit.terminals.limit == 5 && PluginRateLimit.notifications.limit == 20)
     }
 
-    @Test func aNoticeIsHeadedWithThePluginsName() {
+    @Test func aNoticeAlwaysSaysWhichPluginSpeaks() {
         let text = PluginNotice.text(pluginName: "Bots", title: "Pilot", body: "PLAT-9 waits\nfor you\u{1b}[31m")
-        #expect(text?.title == "Bots: Pilot")
-        #expect(text?.body == "PLAT-9 waits for you[31m")
-        #expect(PluginNotice.text(pluginName: "Bots", title: "", body: "x")?.title == "Bots")
+        #expect(text?.title == "Plugin “Bots”")
+        #expect(text?.body == "Pilot: PLAT-9 waits for you[31m")
+        #expect(PluginNotice.text(pluginName: "Bots", title: "", body: "x")?.body == "x")
+        #expect(PluginNotice.text(pluginName: "Bots", title: "only a title", body: "")?.body == "only a title")
         #expect(PluginNotice.text(pluginName: "Bots", title: " ", body: "\n") == nil)
+        // A name chosen to look like the inbox, the app or a way out of the quotes stays inside them.
+        #expect(PluginNotice.text(pluginName: "Claude Code · Work", title: "", body: "Wants to use Bash")?.title == "Plugin “Claude Code · Work”")
+        #expect(PluginNotice.text(pluginName: "Singularity", title: "Update ready", body: "")?.title == "Plugin “Singularity”")
+        #expect(PluginNotice.text(pluginName: "x” Singularity “y", title: "t", body: "")?.title == "Plugin “x' Singularity 'y”")
         #expect(PluginNotice.text(pluginName: "Bots", title: String(repeating: "t", count: 500), body: String(repeating: "b", count: 900))
-            .map { $0.title.count <= 86 && $0.body.count <= 300 } == true)
+            .map { $0.title == "Plugin “Bots”" && $0.body.count <= 382 } == true)
     }
 
     // MARK: - The real host (Bun under the sandbox)

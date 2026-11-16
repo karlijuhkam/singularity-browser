@@ -124,20 +124,18 @@ final class InboxNotifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// A banner that belongs to no inbox entry: a plugin's notification (`singularity.notify`),
-    /// already cleaned, cut and headed with the plugin's name (`PluginNotice`). It is not
-    /// withdrawn by `sync` and adds nothing to the Dock badge. The same permission question as
-    /// for inbox banners, asked only while macOS has no answer yet.
+    /// already cleaned, cut and titled `Plugin “<name>”` (`PluginNotice`). It is not withdrawn by
+    /// `sync` and adds nothing to the Dock badge.
+    ///
+    /// It is shown only when macOS already allows Singularity's notifications. A plugin never
+    /// brings up macOS's permission question: the owner should meet that for the inbox, not at a
+    /// moment a plugin picked, and an unanswered question would hold up the inbox's own banners
+    /// queued behind it.
     func post(title: String, body: String) {
         guard let backend else { return }
         let id = "plugin-" + UUID().uuidString
         enqueue {
-            let allowed: Bool
-            switch await backend.authorisationStatus() {
-            case .allowed: allowed = true
-            case .denied: allowed = false
-            case .notDetermined: allowed = await backend.requestAuthorisation()
-            }
-            guard allowed else { return }
+            guard await backend.authorisationStatus() == .allowed else { return }
             await backend.post(id: id, title: title, body: body)
         }
     }

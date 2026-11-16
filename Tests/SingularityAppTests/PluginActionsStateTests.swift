@@ -86,11 +86,14 @@ extension AppTests {
         #expect(f.open(["gwb", "--fresh"]) == Self.ok)
         let tab = try #require(f.terminalTabs.first)
         #expect(f.terminalTabs.count == 1)
-        #expect(f.state.selectedTab?.id == tab.id)
+        // Not selected: a plugin picks the moment, and the owner's page and keyboard stay theirs.
+        #expect(f.state.selectedTab?.id == f.space.selectedTabID)
+        #expect(f.state.selectedTab?.id != tab.id)
         #expect(tab.workingDirectory == "~/Developer")
         // Typed once, by the tab's first shell, like a launcher's command; never saved.
-        #expect(f.state.pendingCommands[tab.id] == "\(f.program.path) gwb --fresh")
-        #expect(f.state.takePendingCommand(tab.id) == "\(f.program.path) gwb --fresh")
+        let line = "'\(f.program.path)' 'gwb' '--fresh'"
+        #expect(f.state.pendingCommands[tab.id] == line)
+        #expect(f.state.takePendingCommand(tab.id) == line)
         #expect(f.state.takePendingCommand(tab.id) == nil)
         f.state.flushSaves()
         let saved = try String(contentsOf: Paths(root: f.root).spaceFile("work"), encoding: .utf8)
@@ -129,9 +132,14 @@ extension AppTests {
         }
         f.clock += 3
         #expect(f.open(["d"]) == Self.refused("too many terminals at once"))    // five in a minute
+        // A minute later the rate allows one more, but five of its terminals are still open.
         f.clock += 60
-        #expect(f.open(["e"]) == Self.ok)
-        #expect(f.terminalTabs.count == 6)
+        #expect(f.open(["e"]) == Self.refused("it already has 5 terminals open: close one first"))
+        #expect(f.terminalTabs.count == 5)
+        f.state.closeTab(try #require(f.terminalTabs.first).id, in: f.space.id, confirmIfBusy: false)
+        f.clock += 3
+        #expect(f.open(["f"]) == Self.ok)
+        #expect(f.terminalTabs.count == 5)
     }
 
     @Test func nothingOpensUnderTheWelcomeFlow() async throws {
@@ -147,12 +155,12 @@ extension AppTests {
         defer { f.tearDown() }
         #expect(f.ask("notify", ["title": .string("Pilot"), "body": .string("PLAT-9 waits\nfor you")]) == Self.ok)
         #expect(f.notices.count == 1)
-        #expect(f.notices[0].title == "Acts: Pilot" && f.notices[0].body == "PLAT-9 waits for you")
+        #expect(f.notices[0].title == "Plugin “Acts”" && f.notices[0].body == "Pilot: PLAT-9 waits for you")
         #expect(f.ask("notify", ["title": .string("again")]) == Self.refused("too many notifications"))   // under 5 s apart
         f.clock += 6
         #expect(f.ask("notify", ["title": .string(" "), "body": .string("")]) == Self.refused("nothing to show"))
         #expect(f.ask("notify", ["body": .string("only a body")]) == Self.ok)
-        #expect(f.notices.last?.title == "Acts")
+        #expect(f.notices.last?.title == "Plugin “Acts”" && f.notices.last?.body == "only a body")
         #expect(f.notices.count == 2)
     }
 
@@ -176,10 +184,15 @@ extension AppTests {
         MainRunLoopGuard.start
         let backend = InboxNotifierTests.FakeBackend()
         let notifier = InboxNotifier(onOpen: {}, backend: backend)
-        notifier.post(title: "Bots: Pilot", body: "PLAT-9 waits for you")
+        // macOS has not been asked yet: a plugin never brings the question up, and shows nothing.
+        notifier.post(title: "Plugin “Bots”", body: "too early")
+        await notifier.settle()
+        #expect(backend.posted.isEmpty && backend.authorisationRequests == 0)
+        backend.status = .allowed
+        notifier.post(title: "Plugin “Bots”", body: "Pilot: PLAT-9 waits for you")
         await notifier.settle()
         #expect(backend.posted.count == 1)
-        #expect(backend.posted[0].title == "Bots: Pilot" && backend.posted[0].body == "PLAT-9 waits for you")
+        #expect(backend.posted[0].title == "Plugin “Bots”" && backend.posted[0].body == "Pilot: PLAT-9 waits for you")
         #expect(backend.posted[0].id.hasPrefix("plugin-"))
         notifier.sync(with: [])
         await notifier.settle()
@@ -188,7 +201,7 @@ extension AppTests {
         backend.status = .denied
         notifier.post(title: "Bots", body: "x")
         await notifier.settle()
-        #expect(backend.posted.count == 1 && backend.authorisationRequests == 1)
+        #expect(backend.posted.count == 1 && backend.authorisationRequests == 0)
     }
 }
 }

@@ -15,10 +15,10 @@ a launcher", and plugins had no notifications.
 
 - **`permissions.openTerminals: ["program", …]`** (at most 4). `singularity.terminal.open(program,
   args)` opens a new terminal tab in the Space in front, in the Space's own folder, and types
-  `<pinned path> <args>` into its first shell, exactly as a launcher's command is typed (once,
-  never saved, never after a restart).
+  `'<pinned path>' '<arg>' …` into its first shell, exactly as a launcher's command is typed
+  (once, never saved, never after a restart). The tab is not selected.
 - **`permissions.notifications: true`.** `singularity.notify(title, body)` shows a macOS
-  notification whose title starts with the plugin's name.
+  notification titled `Plugin “<name>”`, with the plugin's text in the body.
 
 Both answer `{ ok: true }` or `{ ok: false, error }`.
 
@@ -37,18 +37,46 @@ same power made visible, and the owner can see and stop it. So the rules are `co
 What is new and needs its own rule is that the line is typed into a **shell**. So every argument
 must be one plain word (letters, digits and `- . _ / : = @ + ,`, at most 200 bytes, at most 16
 arguments); anything else refuses the whole request. A plugin picks arguments for its declared
-program, never a second command. The pinned path is single-quoted when it isn't plain.
+program, never a second command. Every word, the path included, is then typed in single quotes
+(see "From the review").
 
 ## Limits
 
 - Terminals: 5 a minute, 2 s apart, per plugin. Notifications: 20 an hour, 5 s apart.
-- A terminal opens only in the Space in front and not under the welcome flow. It is selected, as
-  a launcher's is. No project picker (nobody is there to answer it).
-- A notification is text: title cut to 80, body to 300, cleaned with `InboxText.clean`, headed
-  "<plugin name>: ". It belongs to no inbox entry, is not withdrawn with the inbox and adds
-  nothing to the Dock badge. macOS's own permission decides whether it shows.
+- At most 5 terminals a plugin opened may be open at once.
+- A terminal opens only in the Space in front and not under the welcome flow, and not in a test
+  copy (`ProgramPolicy`). It is **not selected**. No project picker (nobody is there to answer it).
+- A notification is text: the plugin's title (cut to 80) and body (cut to 300), cleaned with
+  `InboxText.clean`, shown as the body under the fixed title `Plugin “<name>”`. It belongs to no
+  inbox entry, is not withdrawn with the inbox and adds nothing to the Dock badge. It is shown
+  only when macOS already allows Singularity's notifications: a plugin never brings up the
+  permission question.
 - Only an approved plugin whose files are the approved ones gets either (`PluginManager`
   reads the permission from the approved manifest, whatever host.ts believed).
+
+## From the review (before release)
+
+An independent review found no way for an argument to become a second command in a stock shell,
+and these, all fixed:
+
+- **A banner could be forged.** The title used to be `<name>: <title>`, and the name is the
+  author's: a plugin called "Claude Code · Work" with an empty title matched an inbox banner
+  exactly. Now the title is always `Plugin “<name>”` and the plugin's words are the body.
+- **zsh aliases made plain words into syntax.** A global alias (`G` for `| grep`, as oh-my-zsh's
+  common-aliases defines) expands anywhere on a line, an alias or suffix alias can replace the
+  command, and zsh reads `=name` as a path. So every word is single-quoted.
+- **The new tab took the keyboard.** It was selected like a launcher's; a plugin picks the
+  moment, so the owner's typing could land in it. Now it opens unselected, its shell is started
+  at once, and it does not become the terminal an artifact's `prompt()` pastes into.
+- No ceiling on open terminals (now 5 per plugin); a control character in the pinned path would
+  act as a key (now refused); the pinned file was checked before the cheap limits (now after);
+  a plugin could be the one to trigger macOS's notification question (now never).
+
+Left as it is, knowingly: arguments are free (as the approval sheet says: "with arguments it
+chooses"), so for some programs they amount to running anything (`make -f <file>`); the owner
+decides that per program at approval. The line can be typed into something that isn't a prompt
+when the owner's shell start-up asks a question (the same as for a launcher). A zsh function
+named exactly like the path would still run instead of it (the owner's own configuration).
 
 ## Not done
 

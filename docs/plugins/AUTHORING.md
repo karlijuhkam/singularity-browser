@@ -298,7 +298,7 @@ type FrontTab = {
 
 ### Terminal tabs and notifications
 
-**`terminal.open(program, args)`** (needs `openTerminals`) opens a new terminal tab in the Space in front and types `<program's pinned path> <args>` into its shell, as if the user had typed it. The tab is the user's from then on: the plugin can't read it, type into it or close it.
+**`terminal.open(program, args)`** (needs `openTerminals`) opens a new terminal tab in the Space in front and types the program's pinned path and your arguments into its shell, each word in single quotes. The tab appears in the sidebar and starts running but is **not selected**: the user goes to it when they choose (a tab that took the screen by itself would also take whatever they were typing). The tab is the user's from then on: the plugin can't read it, type into it or close it.
 
 ```ts
 const answer = await singularity.terminal.open("herdr-bot", ["gwb"]);
@@ -306,10 +306,10 @@ if (!answer.ok) singularity.log("couldn't open a terminal:", answer.error);
 ```
 
 - `program` must be listed in `openTerminals`. Each argument is **one plain word**: letters, digits and `- . _ / : = @ + ,`, 1 to 200 characters, at most 16 of them. A space, a quote, `;`, `$`, `|`, `~`, `*` or a non-ASCII letter refuses the whole call (`arguments must be plain words …`): the line goes to a shell, and a plugin picks arguments for its program, never a second command.
-- At most 5 a minute and not two within 2 seconds (`too many terminals at once`). Nothing opens under the welcome flow or with no Space (`no Space to open a terminal in`).
-- Call it for something the user just asked for (a button in your page). A tab that appears by itself takes the user's place on screen.
+- At most 5 a minute and not two within 2 seconds (`too many terminals at once`), and at most 5 of your terminals open at once (`it already has 5 terminals open: close one first`). Nothing opens under the welcome flow or with no Space (`no Space to open a terminal in`), nor in a test copy (`programs are off in a test copy`).
+- Call it for something the user just asked for (a button in your page), and say in your page that the terminal is in the sidebar.
 
-**`notify(title, body)`** (needs `notifications`) shows a macOS notification. Its title is `<your plugin's name>: <title>`; the title is cut to 80 characters and the body to 300, and both are shown as plain text on one line. At most 20 an hour and not two within 5 seconds (`too many notifications`). Whether a banner appears is the user's setting in System Settings; `ok: true` means it was handed over, not that it was seen. A click on it brings Singularity forward. Never put secrets in a notification: it shows on the lock screen.
+**`notify(title, body)`** (needs `notifications`) shows a macOS notification. Its title is always `Plugin “<your plugin's name>”`; your title (cut to 80 characters) and body (cut to 300) are shown under it as `title: body`, plain text on one line. At most 20 an hour and not two within 5 seconds (`too many notifications`). It is shown only if the user already allows Singularity's notifications (a plugin never brings up macOS's permission question); `ok: true` means it was handed over, not that it was seen. A click on it brings Singularity forward. Never put secrets in a notification: it shows on the lock screen.
 
 Both resolve with `{ ok: true }` or `{ ok: false, error }` and never reject for a refusal. Without the permission they resolve with `needs the openTerminals permission` / `needs the notifications permission`.
 

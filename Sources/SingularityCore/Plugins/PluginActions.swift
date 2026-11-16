@@ -7,11 +7,15 @@ import Foundation
 
 /// What may be typed into a new terminal tab for a plugin.
 ///
-/// The line is `<pinned path> <arguments>`, typed into the tab's login shell as a launcher's
-/// command is. The path is the one resolved and shown at approval; the arguments are the
-/// plugin's, so each must be made only of characters the shell reads as plain text. Anything
-/// else (a space, a quote, `;`, `$`, `|`, a newline) refuses the whole request: a plugin can pick
-/// arguments for its declared program, never a second command.
+/// The line is `'<pinned path>' '<argument>' …`, typed into the tab's login shell as a launcher's
+/// command is. The path is the one resolved and shown at approval; the arguments are the plugin's.
+/// Two guards, because the line goes to a shell:
+/// - Each argument must be made only of characters with no meaning to a shell. Anything else
+///   (a space, a quote, `;`, `$`, `|`, `~`, `*`, a newline) refuses the whole request: a plugin
+///   picks arguments for its declared program, never a second command.
+/// - Every word is still put in single quotes. Unquoted, a plain word can be one of the owner's
+///   zsh aliases (a global alias such as `G` for `| grep` expands anywhere on the line, and an
+///   alias or suffix alias can replace the command itself), and zsh reads `=name` as a path.
 public enum PluginTerminalRules {
     public static let maxArguments = 16
     public static let maxArgumentLength = 200
@@ -24,17 +28,19 @@ public enum PluginTerminalRules {
         }                                                                           // - . _ / : = @ + ,
     }
 
-    /// The line to type, or nil when an argument is not plain text or there are too many.
+    /// The line to type, or nil when an argument is not plain text, there are too many, or the
+    /// path could act as keys in the shell's line editor (a control character: Tab, Esc, Ctrl-C).
     public static func commandLine(path: String, arguments: [String]) -> String? {
-        guard path.hasPrefix("/"), !path.contains(where: { $0.isNewline || $0 == "\u{0}" }),
+        guard path.hasPrefix("/"),
+              !path.unicodeScalars.contains(where: { $0.properties.generalCategory == .control || $0 == "\u{2028}" || $0 == "\u{2029}" }),
               arguments.count <= maxArguments, arguments.allSatisfy(isSafeArgument) else { return nil }
-        return ([quote(path)] + arguments).joined(separator: " ")
+        return ([path] + arguments).map(quote).joined(separator: " ")
     }
 
-    /// The path as one shell word: as it is when it is plain, else in single quotes (inside which
-    /// the shell reads everything literally; a quote in the path is closed, escaped, reopened).
-    static func quote(_ path: String) -> String {
-        isSafeArgument(path) ? path : "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    /// One shell word in single quotes, inside which the shell reads everything literally; a
+    /// quote in the word (only a path can have one) is closed, escaped and reopened.
+    static func quote(_ word: String) -> String {
+        "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
@@ -54,6 +60,8 @@ public struct PluginRateLimit: Sendable {
 
     /// Terminals a plugin may open: 5 a minute, 2 s apart.
     public static let terminals = PluginRateLimit(limit: 5, window: 60, minimumGap: 2)
+    /// And at most this many of them still open at once, per plugin.
+    public static let maxOpenTerminals = 5
     /// Notifications: 20 an hour, 5 s apart.
     public static let notifications = PluginRateLimit(limit: 20, window: 3600, minimumGap: 5)
 
@@ -67,14 +75,21 @@ public struct PluginRateLimit: Sendable {
     }
 }
 
-/// A plugin's notification as it is shown. The plugin's own name always leads the title, so a
-/// banner can't pass for Singularity's or another program's; the text is cleaned and cut.
+/// A plugin's notification as it is shown.
+///
+/// The title is always `Plugin “<name>”`, a shape no banner of Singularity's own has (an inbox
+/// banner is "<agent> · <Space>"), and everything the plugin wrote goes into the body. So a plugin
+/// that names itself "Claude Code · Work" or "Singularity" still can't pass for the inbox, the app
+/// or another program: its name always sits inside "Plugin “…”". Text is cleaned and cut.
 public enum PluginNotice {
     public static func text(pluginName: String, title: String, body: String) -> (title: String, body: String)? {
-        let name = InboxText.clean(pluginName, limit: 40)
+        // No quote marks of the plugin's own inside ours.
+        var name = InboxText.clean(pluginName, limit: 40)
+        for mark in ["“", "”", "\""] { name = name.replacingOccurrences(of: mark, with: "'") }
         let cleanTitle = InboxText.clean(title, limit: 80)
         let cleanBody = InboxText.clean(body, limit: 300)
         guard !name.isEmpty, !(cleanTitle.isEmpty && cleanBody.isEmpty) else { return nil }
-        return (cleanTitle.isEmpty ? name : name + ": " + cleanTitle, cleanBody)
+        let text = [cleanTitle, cleanBody].filter { !$0.isEmpty }.joined(separator: ": ")
+        return ("Plugin “\(name)”", text)
     }
 }

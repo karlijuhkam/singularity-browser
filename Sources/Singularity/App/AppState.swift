@@ -220,7 +220,8 @@ final class AppState {
         plugins.onChange = { [weak pluginScripts] in pluginScripts?.scheduleRefresh() }
         plugins.frontProvider = { [weak self] id in self?.pluginFront(id) ?? .hidden(.nothing) }
         plugins.browserServerProvider = { [weak self] in self?.browserServerDescription() ?? .null }
-        plugins.terminalOpener = { [weak self] line in self?.openTerminal(typing: line) ?? false }
+        plugins.terminalOpener = { [weak self] line in self?.openTerminal(typing: line) }
+        plugins.terminalIsOpen = { [weak self] tabID in self?.spaces.contains { $0.tab(tabID) != nil } ?? false }
         plugins.noticePoster = { [weak self] title, body in self?.inboxNotifier?.post(title: title, body: body) }
         // A plugin's Space switches change only what its own connection sees, never an outside agent's.
         plugins.onSpacesChanged = { [weak self] in self?.mcp?.toolsChanged(pluginsOnly: true) }
@@ -859,19 +860,28 @@ final class AppState {
     /// A terminal tab for a plugin with `openTerminals`: a new tab in the Space in front, in the
     /// Space's own folder, with `line` typed into its first shell exactly as a launcher's command
     /// is (once, never after a restart). `PluginManager` built the line from the plugin's pinned
-    /// program and checked arguments. No project picker: nobody is there to answer it. False when
-    /// there is nowhere to open it (no Space, or the welcome flow covers the window).
-    func openTerminal(typing line: String) -> Bool {
-        guard let space = selectedSpace, !welcomeCoversWindow, !line.isEmpty else { return false }
+    /// program and checked arguments. No project picker: nobody is there to answer it.
+    ///
+    /// The tab is **not selected**: it appears in the sidebar and starts running, and the owner
+    /// goes to it when they choose. A plugin decides when it opens, so if it took the page and
+    /// the keyboard, whatever the owner was typing (a password, a line for another terminal) would
+    /// land in it. For the same reason it does not become the terminal an artifact's `prompt()`
+    /// pastes into. Returns the tab's id, or nil when there is nowhere to open it (no Space, or
+    /// the welcome flow covers the window).
+    func openTerminal(typing line: String) -> UUID? {
+        guard let space = selectedSpace, !welcomeCoversWindow, !line.isEmpty else { return nil }
         var tabID: UUID?
         mutateSpace(space.id) {
-            tabID = $0.addTerminal(directory: space.workingDirectory, projectID: nil, inFolder: nil, select: true)
+            tabID = $0.addTerminal(directory: space.workingDirectory, projectID: nil, inFolder: nil, select: false)
         }
-        guard let tabID else { return false }
+        guard let tabID, let tab = self.space(space.id)?.tab(tabID) else { return nil }
         pendingCommands[tabID] = line
-        if little.frontWindow != nil { showMainWindow() }
-        loadSelectedTab()
-        return true
+        // Not on screen, so nothing would start its shell: start it now. (Tests hand in fake
+        // terminals and must never start a shell: see `loadTab`.)
+        if terminalHandleOverride == nil, let current = self.space(space.id) {
+            _ = terminals.session(for: tab, in: current)
+        }
+        return tabID
     }
 
     /// The launchers as they are used (Settings holds them as typed: `Launcher.clean`).
