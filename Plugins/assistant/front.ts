@@ -9,7 +9,8 @@
 
 export type FrontTab = {
   space: { slug: string; name: string };
-  tab: { id: string; kind: "web" | "artifact" | "terminal"; title?: string; url?: string };
+  /** A "home" (the Space's new tab page) never has a title or address. */
+  tab: { id: string; kind: "web" | "artifact" | "terminal" | "home"; title?: string; url?: string };
 };
 
 /** A running tool shows "waiting for your OK" after this long (Singularity may be asking the user). */
@@ -17,6 +18,8 @@ export const WAITING_AFTER_MS = 1500;
 export const WAITING_SUFFIX = " — waiting for your OK";
 export const FAILED_SUFFIX = " — not done";
 export const NOTHING_SHARED = "Nothing shared from here";
+/** The chip for the Space's home (a new tab), which has no title or address. */
+export const HOME_CHIP = "New tab";
 const NOTHING_VISIBLE = "Nothing in front is visible to you.";
 /** An address or a search text in a line is cut here (the model chooses them). */
 const MAX_SHOWN = 200;
@@ -38,6 +41,15 @@ function defang(text: string): string {
 export function frontBlock(front: FrontTab | null): string {
   if (front === null) return NOTHING_VISIBLE;
   const { space, tab } = front;
+  if (tab.kind === "home") {
+    // Nothing from a page here: no title, no address, so nothing to wrap.
+    return [
+      "Where the user is (from Singularity, not typed by the user):",
+      `Space: ${defang(space.slug)} (${defang(space.name)})`,
+      `Tab id: ${defang(tab.id)}`,
+      "Kind: a new tab (home)",
+    ].join("\n");
+  }
   const lines = [
     "Where the user is (from Singularity, not typed by the user):",
     `Space: ${defang(space.slug)} (${defang(space.name)})`,
@@ -54,6 +66,7 @@ export function frontBlock(front: FrontTab | null): string {
 /** The chip above the input: what the next message will share. */
 export function chipText(front: FrontTab | null): string {
   if (front === null) return NOTHING_SHARED;
+  if (front.tab.kind === "home") return HOME_CHIP;
   return front.tab.title || front.tab.url || "Untitled tab";
 }
 

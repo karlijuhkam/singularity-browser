@@ -12,6 +12,7 @@ import type { Message, ToolLine } from "./conversation.ts";
 import { chipText, mayWaitForOK, WAITING_AFTER_MS, WAITING_SUFFIX } from "./front.ts";
 import { render as renderMarkdown } from "./markdown.ts";
 import {
+  appendDraft,
   applyDelta,
   BROWSER_PROBLEM,
   billingLabel,
@@ -21,6 +22,7 @@ import {
   EMPTY_CHAT,
   firstStaleIndex,
   keyAction,
+  newDrafts,
   STALE_LINE,
   START_RETRY_AFTER_MS,
   STARTING,
@@ -111,6 +113,14 @@ function App() {
       } else if (m?.type === "front" && typeof (m as { chip?: unknown }).chip === "string") {
         const chip = (m as { chip: string }).chip;
         setState((current) => (current === null ? current : { ...current, chip }));
+      } else if (m?.type === "draft" && typeof (m as { id?: unknown }).id === "number" && typeof m.text === "string") {
+        // An ask from the home that couldn't be sent: the input takes it (Footer, below). Before
+        // the first state it is left out here; the hello answer carries it.
+        const piece = { id: (m as { id: number }).id, text: m.text };
+        setState((current) =>
+          current === null || current.drafts?.some((d) => d.id === piece.id)
+            ? current
+            : { ...current, drafts: [...(current.drafts ?? []), piece] });
       } else if (m?.type === "delta" && typeof m.text === "string" && typeof m.version === "number") {
         const delta = { text: m.text, version: m.version };
         setState((current) => {
@@ -258,6 +268,19 @@ function Footer({ state, request, hidden }: { state: ViewState; request: Request
   const typing = canType(state.status);
   const editable = canEdit(state.status);
   const slowStart = useSlowStart(state.status, state.version);
+  /** The id of the last ask put into the input (drafts come from the background, view.ts). */
+  const lastDraft = useRef(0);
+
+  // An ask from the home that couldn't be sent: appended to what is typed here, and the input
+  // takes the focus; the owner presses Send. The background keeps it until told it was taken.
+  useEffect(() => {
+    const pieces = newDrafts(state.drafts, lastDraft.current);
+    if (pieces.length === 0) return;
+    lastDraft.current = Math.max(...pieces.map((p) => p.id));
+    setDraft((current) => pieces.reduce((text, piece) => appendDraft(text, piece.text), current));
+    void request({ type: "draftTaken", id: lastDraft.current });
+    input.current?.focus();
+  }, [state.drafts]);
 
   // When the page loads and whenever typing becomes possible again, the input takes the focus,
   // unless something else on the page has it (the settings' field, a button).

@@ -151,3 +151,13 @@ test("control and format characters are removed, and title and address are cut",
   expect(title).toContain("ABC D");
   expect(address.length).toBeLessThanOrEqual("Address: ".length + 2000);
 });
+
+test("frontHomeHasNoTitle: a home is named as a new tab, with no title or address", () => {
+  const home: FrontTab = { space: front.space, tab: { id: "H1", kind: "home" } };
+  const block = frontBlock(home);
+  expect(block).toContain("H1");
+  expect(block).toContain("a new tab (home)");
+  expect(block).not.toContain("Title:");
+  expect(block).not.toContain("Address:");
+  expect(chipText(home)).toBe("New tab");
+});
