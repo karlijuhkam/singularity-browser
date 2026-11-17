@@ -52,6 +52,17 @@ struct MainView: View {
         .sheet(isPresented: $state.isImportingFromArc) {
             ArcImportSheet()
         }
+        // A browser extension waiting for Install (Chrome Web Store, Add Extension…, a download).
+        .sheet(item: Binding(
+            get: { state.extensions.pending },
+            // Closed some other way than its buttons: same as Cancel (the staged files go).
+            set: { if $0 == nil, let pending = state.extensions.pending { state.extensions.cancel(pending) } }
+        )) { pending in
+            ExtensionApprovalSheet(pending: pending)
+        }
+        .alert(item: Binding(get: { state.extensions.installMessage }, set: { state.extensions.installMessage = $0 })) { message in
+            Alert(title: Text(verbatim: message.title), message: Text(verbatim: message.text))
+        }
         .onAppear {
             state.openSettingsWindow = { [openSettings] in openSettings() }
             // "main" is the id of the browser window's scene (SingularityApp). Opening it shows

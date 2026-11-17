@@ -11,7 +11,7 @@ import WebKit
 @MainActor
 @Observable
 final class AppState {
-    enum SettingsTab: Hashable { case general, terminal, agents, plugins, data }
+    enum SettingsTab: Hashable { case general, terminal, agents, plugins, extensions, data }
 
     /// Opens Settings → Plugins (the palette's "Plugins: N need your review").
     func showPluginSettings() {
@@ -68,6 +68,8 @@ final class AppState {
     let apps: AppCenter
     /// Downloads of this run, for the sidebar's Downloads list.
     let downloads = DownloadCenter()
+    /// Browser extensions, per Space (WebKit's WKWebExtension; see ExtensionCenter).
+    let extensions: ExtensionCenter
     /// The agent inbox: what agents in terminal tabs are waiting for.
     let inbox = InboxCenter()
     /// herdr-core's terminals under each terminal tab (a Bot's workers), for the sidebar.
@@ -160,6 +162,7 @@ final class AppState {
         self.terminals = TerminalRegistry()
         self.artifacts = ArtifactHosts()
         self.favicons = FaviconStore(paths: paths)
+        self.extensions = ExtensionCenter(paths: paths)
         // Bun and the plugin host ship inside the app bundle (see scripts/build-app.sh).
         let bundle = Bundle.main.bundleURL
         self.plugins = pluginManager ?? PluginManager(paths: paths, runtime: bundle.appending(path: "Contents/Helpers/bun"),
@@ -203,6 +206,9 @@ final class AppState {
 
         web.state = self
         little.state = self
+        extensions.state = self
+        // Before any web view is made: restored pages wait for the approved extensions to load.
+        extensions.start()
         // The inbox belongs to the browser window, also while a little window is in front: its panel
         // opens there, and a terminal counts as "looked at" only while the *browser* window is key
         // (with a little window in front, the owner is reading a link, not the terminal behind it).
@@ -579,6 +585,7 @@ final class AppState {
     private func siteSettingsDidChange(_ spaceID: UUID) {
         pluginScripts.scheduleRefresh()
         plugins.frontDidChange()
+        extensions.applySiteSwitches(spaceID)
         guard let space = space(spaceID) else { return }
         for controller in web.controllers(in: spaceID)
         where !InspectionRules.isAllowed(space, site: SiteInfo.site(of: controller.webView.url)) {
@@ -662,6 +669,8 @@ final class AppState {
         // shown, took the app down. Making a configuration is enough to set WebKit up.
         _ = WKWebViewConfiguration()
         Task {
+            // The Space's extension controller holds its data store too: its data goes, then it does.
+            await extensions.spaceWillBeDeleted(id)
             try? await Task.sleep(for: .seconds(1))
             do {
                 try await WKWebsiteDataStore.remove(forIdentifier: id)
@@ -1245,6 +1254,7 @@ final class AppState {
             }
         }
         if url != nil, space(spaceID)?.tab(tabID)?.isArtifact == true { refreshMissingArtifacts(spaceID: spaceID) }
+        extensions.tabChanged(tabID, spaceID: spaceID)
     }
 
     /// Called by TerminalSession about once a second; only writes when something changed.
@@ -1336,6 +1346,7 @@ final class AppState {
             lastOtherPaneByGroup[group.id] = selected.id
         }
         plugins.frontDidChange()
+        extensions.selectionChanged(in: space.id)
     }
 
     private func loadTab(_ tab: BrowserTab, in space: Space) {
@@ -1834,6 +1845,7 @@ final class AppState {
     func clearSiteData(spaceID: UUID) async {
         let store = WKWebsiteDataStore(forIdentifier: spaceID)
         await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+        extensions.clearData(in: spaceID) // the extensions' own storage in this Space
     }
 
     /// Settings → Data: empties a Space's agent log.

@@ -22,6 +22,9 @@ struct SettingsView: View {
             PluginSettings()
                 .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
                 .tag(AppState.SettingsTab.plugins)
+            ExtensionSettings()
+                .tabItem { Label("Extensions", systemImage: "puzzlepiece") }
+                .tag(AppState.SettingsTab.extensions)
             DataSettings()
                 .tabItem { Label("Data & Privacy", systemImage: "hand.raised") }
                 .tag(AppState.SettingsTab.data)

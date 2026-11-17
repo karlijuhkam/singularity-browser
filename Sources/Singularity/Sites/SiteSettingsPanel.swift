@@ -83,6 +83,8 @@ struct SiteSettingsPanel: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                ExtensionSiteSection(spaceID: spaceID, site: site, needsReload: $needsReload)
+
                 if needsReload {
                     Divider()
                     HStack {

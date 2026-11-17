@@ -41,6 +41,12 @@ final class DownloadCenter {
         return destination
     }
 
+    /// Where a download is being saved (nil for one this list doesn't know).
+    func destination(of download: WKDownload) -> URL? {
+        guard let id = id(of: download) else { return nil }
+        return items.first { $0.id == id }?.destination
+    }
+
     func finished(_ download: WKDownload) {
         guard let id = id(of: download) else { return }
         readProgress(id, download)

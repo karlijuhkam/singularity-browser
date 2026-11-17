@@ -21,6 +21,8 @@ struct SidebarView: View {
                     // a click on it must not open the palette.
                     HStack(spacing: 2) {
                         AddressRow()
+                        // Browser extensions' buttons (and "Add to Singularity" on a store page).
+                        ExtensionToolbar()
                         SiteSettingsButton()
                         // For a tab that shows an app (an artifact folder with a Worker); the two
                         // buttons are never there together: one is for web pages, one for artifacts.

@@ -372,7 +372,8 @@ extension WebTabController: WKNavigationDelegate {
         if navigationAction.targetFrame?.isMainFrame ?? false { mainFrameHost = url.host() }
 
         // Links like mailto:, tel:, zoommtg: are handed to the system (Mail, FaceTime, …).
-        let webSchemes: Set<String> = ["http", "https", "about", "data", "blob", "file", "javascript"]
+        // `webkit-extension` is a browser extension's own pages (its options page, a tab it opens).
+        let webSchemes: Set<String> = ["http", "https", "about", "data", "blob", "file", "javascript", "webkit-extension"]
         if let scheme = url.scheme?.lowercased(), !webSchemes.contains(scheme) {
             NSWorkspace.shared.open(url)
             return .cancel
@@ -696,6 +697,11 @@ extension WebTabController: WKDownloadDelegate {
     func downloadDidFinish(_ download: WKDownload) {
         Self.downloading[ObjectIdentifier(download)] = nil
         state?.downloads.finished(download)
+        // A browser extension (a .crx, or Firefox Add-ons' .xpi): offer it for installing. The
+        // file stays in Downloads; nothing is installed without the owner's Install.
+        if let state, let file = state.downloads.destination(of: download), ExtensionRules.isExtensionFile(file) {
+            state.extensions.add(file: file, fromSpace: spaceID)
+        }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
