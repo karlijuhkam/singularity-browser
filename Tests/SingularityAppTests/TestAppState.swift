@@ -20,8 +20,11 @@ enum TestAppState {
     /// Apps' Workers run with the repository's Bun and host scripts (a test run has no app
     /// bundle), and their keys live in `keys` (memory), never in the keychain.
     static func make(root: URL, plugins: PluginManager? = nil, keys: AppKeyStore = MemoryAppKeyStore()) -> AppState {
-        AppState(paths: Paths(root: root), discardFolder: removeInside(root), pluginManager: plugins,
-                 appRuntime: (repositoryBun, repositoryHostFolder), appKeyStore: keys)
+        let state = AppState(paths: Paths(root: root), discardFolder: removeInside(root), pluginManager: plugins,
+                             appRuntime: (repositoryBun, repositoryHostFolder), appKeyStore: keys)
+        // Never reach Chrome Web Store from a test.
+        state.extensions.automaticUpdates = false
+        return state
     }
 
     /// The repository's root, found from this file's location.

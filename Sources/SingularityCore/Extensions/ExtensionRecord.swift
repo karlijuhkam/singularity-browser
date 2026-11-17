@@ -194,6 +194,26 @@ public enum ExtensionRules {
         return "\(scheme)://\(host)/*"
     }
 
+    /// Whether version `a` is newer than `b` (Chrome's form: up to four dot-separated numbers;
+    /// anything else compares as text and only counts when different).
+    public static func isNewer(_ a: String, than b: String) -> Bool {
+        let parse: (String) -> [Int]? = { text in
+            let parts = text.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+            return parts.contains(nil) || parts.isEmpty ? nil : parts.compactMap { $0 }
+        }
+        guard let x = parse(a), let y = parse(b) else { return a != b && !a.isEmpty }
+        for i in 0..<max(x.count, y.count) {
+            let l = i < x.count ? x[i] : 0, r = i < y.count ? y[i] : 0
+            if l != r { return l > r }
+        }
+        return false
+    }
+
+    /// Whether a new version asks for anything the approved one didn't (then the owner is asked).
+    public static func widens(_ record: ExtensionRecord, permissions: Set<String>, patterns: Set<String>) -> Bool {
+        !permissions.isSubset(of: record.permissions) || !patterns.isSubset(of: record.patterns)
+    }
+
     /// The download names that are extensions to offer for installing.
     public static func isExtensionFile(_ url: URL) -> Bool {
         ["crx", "xpi"].contains(url.pathExtension.lowercased())

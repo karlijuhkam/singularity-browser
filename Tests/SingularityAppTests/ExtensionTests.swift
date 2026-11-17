@@ -316,6 +316,21 @@ extension AppTests {
         #expect(rig.state.extensions.pending == nil)
     }
 
+    /// Opt-in (`SG_REAL_STORE=1`, needs the network): Dark Reader from Chrome Web Store, through
+    /// the same download, signature check and unpacking as the store button; up to the sheet.
+    @Test(.timeLimit(.minutes(1))) func realStoreDownload() async throws {
+        guard ProcessInfo.processInfo.environment["SG_REAL_STORE"] == "1" else { return }
+        let rig = try Rig(installed: false)
+        defer { rig.tearDown() }
+        rig.state.extensions.addFromStore("eimadpbcbfnmbkopoojfekhnkhdbieeh", fromSpace: rig.work)
+        try await waitUntil("the sheet", limit: .seconds(50)) { rig.state.extensions.pending != nil || rig.state.extensions.installMessage != nil }
+        #expect(rig.state.extensions.installMessage == nil)
+        let pending = try #require(rig.state.extensions.pending)
+        #expect(pending.extensionID == "eimadpbcbfnmbkopoojfekhnkhdbieeh")
+        #expect(pending.webExtension.displayName == "Dark Reader")
+        rig.state.extensions.cancel(pending)
+    }
+
     /// Deleting a Space lets go of its extension controller and takes the Space off the record.
     @Test(.timeLimit(.minutes(1))) func deletingASpaceForgetsIt() async throws {
         let rig = try Rig()

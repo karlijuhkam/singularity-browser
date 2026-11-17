@@ -26,6 +26,8 @@ Things that came up while building but were not in the v1 brief.
 
 Nothing here gets built without an explicit decision from the owner.
 
+- **Extensions, round 2.** Round 1 (2026-11-17, `docs/superpowers/specs/2026-11-17-extensions-design.md`) left out: extensions' items in the page's right-click menu (`WKWebExtensionContext.menuItems(for:)`, needs a `WKWebView` subclass for `willOpenMenu`), their keyboard shortcuts (`commands`), new-tab-page overrides, and shims for Chrome-only APIs (what 1Password's Chrome extension needs; the Nov 2026 spike said shims weren't enough). An options or extension page tab restored at launch may open before its extension is loaded and show an error until reopened.
+
 - **Setup export and import (the browser's setup in the owner's own git repository).** Raised 2026-11-13: the owner changes laptops often and wants Spaces, pinned tabs, folders, projects, settings and plugins back in minutes, also on two Macs side by side; open tabs stay per machine. Parked by the owner 2026-11-13 as a future idea. Draft design, not approved, with open questions for the owner: `docs/superpowers/specs/2026-11-13-setup-export-design.md` (export and import by menu into a folder, the owner runs git). It is sync, so approving it is a scope change.
 - **The app running git on the setup folder.** The step after the item above: commit, pull and push from inside Singularity with the owner's installed `git` and keys, and a per-Space choice on a conflict. Needs the app to remember the last synced state so removals travel by themselves. Not designed.
 - **Sessions that follow the owner (open tabs across machines), as a web service.** Raised 2026-11-13; the owner wants this kept out of the git setup. Open tabs change every minute, so it needs a service and real merge rules, and it reverses "no sync, accounts". Not designed.
@@ -50,4 +52,3 @@ Nothing here gets built without an explicit decision from the owner.
 
 Do not build. Kept so the question isn't reopened without new facts.
 
-- **Web-extension compatibility.** Decision: native plugins instead. Spikes in Nov 2026. Safari: the 1Password Safari extension wasn't usable in a WKWebView app; PlugInKit found 0 plugins, so there is no native messaging. Chrome: the 1Password Chrome extension under WKWebExtension lacked APIs (e.g. `chrome.notifications`), and shims weren't enough. So Singularity plugins (`docs/plugins/AUTHORING.md`) replace extensions.

@@ -97,6 +97,7 @@ final class ExtensionCenter: NSObject {
             for id in records.keys where statuses[id] == .ready { await loadExtension(id) }
             for spaceID in controllers.keys { syncContexts(spaceID) }
             markReady()
+            scheduleUpdateChecks()
         }
     }
 
@@ -491,6 +492,60 @@ final class ExtensionCenter: NSObject {
         }
     }
 
+    // MARK: - Automatic updates (owner decision, 2026-11-17)
+
+    /// Store extensions are checked a minute after launch and then once a day. A newer version that
+    /// asks for nothing more than the approved one is installed by itself (its signature checked
+    /// like any store download; Spaces and data stay); one that asks for more opens the approval
+    /// sheet. Off for tests (`automaticUpdates`); file-added extensions are never checked.
+    @ObservationIgnored var automaticUpdates = true
+    @ObservationIgnored private var updateLoop: Task<Void, Never>?
+    static let updateInterval: Duration = .seconds(24 * 60 * 60)
+
+    private func scheduleUpdateChecks() {
+        guard automaticUpdates, updateLoop == nil else { return }
+        updateLoop = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(60))
+            while !Task.isCancelled {
+                guard let self, self.automaticUpdates else { return }
+                await self.checkStoreUpdates()
+                try? await Task.sleep(for: Self.updateInterval)
+            }
+        }
+    }
+
+    func checkStoreUpdates() async {
+        let installDirectory = paths.extensionInstallDirectory
+        for record in records.values.sorted(by: { $0.id < $1.id }) where record.source == .store && statuses[record.id] == .ready {
+            let id = record.id
+            guard !downloading.contains(id), pending?.extensionID != id else { continue }
+            downloading.insert(id)
+            defer { downloading.remove(id) }
+            do {
+                let data = try await ExtensionInstaller.downloadFromStore(id: id)
+                let staged = try await Task.detached { try ExtensionInstaller.stage(crx: data, id: id, installDirectory: installDirectory) }.value
+                guard let version = Self.manifestVersion(staged.root), ExtensionRules.isNewer(version, than: record.version),
+                      let current = records[id] else {
+                    try? FileManager.default.removeItem(at: staged.stage)
+                    continue
+                }
+                let webExtension = try await WKWebExtension(resourceBaseURL: staged.root)
+                let update = PendingExtension(extensionID: id, staged: staged, webExtension: webExtension, source: .store,
+                                              replaces: current, fromSpace: nil)
+                if ExtensionRules.widens(current, permissions: Set(webExtension.requestedPermissions.map(\.rawValue)),
+                                         patterns: Set(webExtension.requestedPermissionMatchPatterns.map(\.string))) {
+                    // It asks for more: the owner decides (one sheet at a time; else next time).
+                    if pending == nil { pending = update } else { try? FileManager.default.removeItem(at: staged.stage) }
+                } else {
+                    await approve(update, spaces: current.enabledSpaces)
+                    extensionLog.notice("updated \(id, privacy: .public) to \(version, privacy: .public) by itself")
+                }
+            } catch {
+                extensionLog.error("update check of \(id, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     private static func manifestVersion(_ root: URL) -> String? {
         guard let data = try? Data(contentsOf: root.appending(path: "manifest.json")),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
@@ -524,7 +579,7 @@ final class ExtensionCenter: NSObject {
     /// The owner pressed Install: the staged folder becomes `extensions/<id>/`, the record is
     /// written with what the manifest asks for, and the extension starts in the chosen Spaces.
     func approve(_ pending: PendingExtension, spaces: Set<UUID>) async {
-        self.pending = nil
+        if self.pending?.id == pending.id { self.pending = nil }
         let id = pending.extensionID
         guard ExtensionRules.isValidID(id) else { return }
         let target = folder(of: id)
@@ -559,6 +614,7 @@ final class ExtensionCenter: NSObject {
         }
         try? fm.removeItem(at: pending.staged.stage)
         for spaceID in controllers.keys { syncContexts(spaceID) }
+        if pending.source == .store { scheduleUpdateChecks() }
         extensionLog.notice("installed extension \(id, privacy: .public)")
     }
 

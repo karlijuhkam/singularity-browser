@@ -197,3 +197,36 @@ the approval sheet → on Install, an atomic move into `extensions/<id>/` and a 
 File layout inside `Sources/Singularity/Extensions/` and `Sources/SingularityCore/Extensions/`;
 icon sizes; the exact wording of the sheet's permission lines; how the address row lays out the
 buttons at narrow sidebar widths.
+
+## As built (2026-11-17)
+
+This section overrides the design above where they differ.
+
+- **Automatic updates are in** (owner decision during the build, replacing the non-goal): store
+  extensions are checked a minute after launch and then every 24 hours; a newer version (by Chrome's
+  dotted version numbers, `ExtensionRules.isNewer`) that asks for no permission or match pattern the
+  approved one didn't (`ExtensionRules.widens`) is installed by itself, through the same download,
+  CRX3 signature check and fingerprinting, keeping its Spaces, context ids and data; one that asks
+  for more opens the approval sheet (one at a time; otherwise it waits for the next check). Files
+  added by hand are never checked. "Check for Update" in Settings still always shows the sheet.
+- **Store button:** done as in the spike. The address row's own button is a `plus.app` icon on a
+  detail page (a seal when it is installed; a click then checks for an update).
+- **Extension pages** (`webkit-extension://`, an options page or a tab an extension opens) are
+  loaded in a web view made with the extension context's own `webViewConfiguration`
+  (`ExtensionCenter.pageConfiguration`); in an ordinary page's web view WebKit doesn't serve them.
+  `WebTabController` lets the scheme through (it used to hand unknown schemes to macOS).
+- **Restored pages wait** up to 2 s for the approved extensions to load at launch
+  (`WebViewRegistry.loadWhenExtensionsAreReady`), so content scripts are there from the first load.
+- **Not built** (in `IDEAS.md` as "Extensions, round 2"): context-menu items, keyboard commands,
+  new-tab overrides. An extension page tab restored before its extension is loaded shows an error
+  until reopened.
+- **Popups** hang from the clicked button (an AppKit button in the address row); one an extension
+  opens by itself hangs below the address row. Three buttons at most, the rest in a menu.
+- **Tests:** Core (`ChromeWebStoreTests`, `CRXFileTests` with a throwaway RSA key and, opt-in
+  `SG_REAL_CRX=<file>:<id>`, a real store file; `ExtensionRecordTests`), app (`ExtensionTests`: the
+  fixture extension's content script reaches its background and its rule blocks, only in its Space;
+  the Space and site switches; a changed file pauses it; a zip through the sheet to Install, its
+  options page, Remove; links refused; the store button relabelled and a script's click ignored;
+  deleting a Space; opt-in `SG_REAL_STORE=1`: Dark Reader downloaded and staged up to the sheet).
+  Not tried by hand in the running app yet: the toolbar, popups, the sheet's look, real Dark Reader
+  and uBlock Origin Lite on real sites, an automatic update.

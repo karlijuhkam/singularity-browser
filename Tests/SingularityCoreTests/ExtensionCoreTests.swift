@@ -199,6 +199,22 @@ enum CRXFixture {
         #expect(!ExtensionRules.isExtensionFile(URL(fileURLWithPath: "/d/a.zip")))
     }
 
+    @Test func versionsAndWidening() {
+        #expect(ExtensionRules.isNewer("4.9.136", than: "4.9.135"))
+        #expect(ExtensionRules.isNewer("2026.1117.1", than: "2026.1116.1650"))
+        #expect(ExtensionRules.isNewer("1.10", than: "1.9"))
+        #expect(!ExtensionRules.isNewer("1.0", than: "1.0.0"))
+        #expect(!ExtensionRules.isNewer("1.0", than: "1.1"))
+        #expect(ExtensionRules.isNewer("1.0b", than: "1.0a"))
+        #expect(!ExtensionRules.isNewer("", than: "1.0a"))
+        let record = ExtensionRecord(id: "local-0123abcd", name: "X", version: "1", source: .store, fingerprint: "f",
+                                     permissions: ["storage", "tabs"], patterns: ["<all_urls>"], enabledSpaces: [])
+        #expect(!ExtensionRules.widens(record, permissions: ["storage"], patterns: ["<all_urls>"]))
+        #expect(!ExtensionRules.widens(record, permissions: [], patterns: []))
+        #expect(ExtensionRules.widens(record, permissions: ["storage", "cookies"], patterns: ["<all_urls>"]))
+        #expect(ExtensionRules.widens(record, permissions: ["storage"], patterns: ["https://example.com/*"]))
+    }
+
     @Test func siteSettingsKeepDisabledExtensions() throws {
         var settings = SiteSettings()
         settings.disabledExtensions = ["local-0123abcd"]
