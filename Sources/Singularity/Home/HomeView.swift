@@ -24,5 +24,8 @@ struct HomeView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // In a split, a click here focuses the pane (the click monitor only sees hosted views),
+        // as on a plugin's native "isn't running" page.
+        .simultaneousGesture(TapGesture().onEnded { if let tabID { state.focusPane(tabID) } })
     }
 }
