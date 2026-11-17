@@ -575,13 +575,17 @@ final class PluginManager {
     }
 
     /// Hands `text` to the plugin's running background as an `ask`. The Space is named only when it
-    /// is switched on for the plugin (`AskRules.spaceRef`), else `space` is null. False, and nothing
+    /// is switched on for the plugin (`AskRules.spaceRef`) and its Space switches are shown, else
+    /// `space` is null. False, and nothing
     /// sent, when the plugin isn't approved with `ask` or isn't running, or the text is blank or too
     /// long. The text is the owner's own words to their plugin: never logged here.
     func sendAsk(_ text: String, to id: String, space: Space) -> Bool {
         guard let plugin = plugin(id), plugin.status == .approved, plugin.validManifest?.permissions.ask == true,
               let supervisor = supervisors[id], supervisor.state == .running else { return false }
-        let ref = AskRules.spaceRef(space, enabledSpaces: plugin.approval?.enabledSpaces ?? [])
+        // A plugin whose Space switches aren't shown (a panel with only `ask`) can't have a Space
+        // switched on that the owner could see or switch off: it is told no Space at all.
+        let switchesShown = plugin.validManifest?.showsSpaceSwitches == true
+        let ref = switchesShown ? AskRules.spaceRef(space, enabledSpaces: plugin.approval?.enabledSpaces ?? []) : nil
         guard let message = AskRules.wireMessage(text: text, space: ref) else { return false }
         supervisor.send(message)
         return true

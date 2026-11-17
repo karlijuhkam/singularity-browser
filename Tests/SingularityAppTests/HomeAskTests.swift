@@ -12,7 +12,7 @@ private struct AskWorkspace {
     var paths: Paths { Paths(root: root) }
     var plugin: URL { paths.pluginsDirectory.appending(path: Self.id, directoryHint: .isDirectory) }
 
-    init(ask: Bool) throws {
+    init(ask: Bool, frontTab: Bool) throws {
         root = URL(filePath: "/private/tmp/sg-ak-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
         let plugin = Paths(root: root).pluginsDirectory.appending(path: Self.id, directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: plugin, withIntermediateDirectories: true)
@@ -21,7 +21,7 @@ private struct AskWorkspace {
             {"id": "askfix", "name": "Ask Fixture", "version": "1.0.0", "description": "A test plugin.",
              "author": "Tests", "background": "background.ts",
              "panel": {"page": "panel.html", "title": "Fixture Helper"},
-             "permissions": {\(ask ? #""ask": true"# : "")}}
+             "permissions": {\([ask ? #""ask": true"# : nil, frontTab ? #""frontTab": true"# : nil].compactMap { $0 }.joined(separator: ", "))}}
             """)
         try write("panel.html", "<!doctype html><html><head><title>x</title></head><body></body></html>")
         try write("background.ts", """
@@ -64,9 +64,10 @@ struct HomeAskTests {
     }
 
     /// One Space, the fixture approved and running (on for the Space when `on`), the home selected.
-    private func makeRig(ask: Bool = true, on: Bool = true) async throws -> Rig {
+    /// `frontTab` (as the Assistant has) makes its Space switches show.
+    private func makeRig(ask: Bool = true, frontTab: Bool = true, on: Bool = true) async throws -> Rig {
         MainRunLoopGuard.start
-        let ws = try AskWorkspace(ask: ask)
+        let ws = try AskWorkspace(ask: ask, frontTab: frontTab)
         try ws.approve()
         let manager = PluginManager(paths: ws.paths, runtime: TestAppState.repositoryBun,
                                     host: TestAppState.repositoryHostFolder.appending(path: "host.ts"),
@@ -133,6 +134,17 @@ struct HomeAskTests {
         #expect(received == [.object(["text": .string("hello"), "space": .null])])
         let text = try json(.array(received))
         #expect(!text.contains(space.slug) && !text.contains(space.name))
+    }
+
+    /// A panel with only `ask` shows no Space switches, so even a Space stored as on for it is
+    /// never named: the owner couldn't see or switch it off.
+    @Test(.timeLimit(.minutes(1))) func askWithoutSpaceSwitchesHasNullSpace() async throws {
+        let rig = try await makeRig(frontTab: false, on: true)
+        defer { tearDown(rig) }
+        #expect(rig.manager.plugin(AskWorkspace.id)?.approval?.enabledSpaces.contains(rig.spaceID) == true)
+        #expect(rig.state.askAssistant("hello"))
+        let received = try await asks(rig, count: 1)
+        #expect(received == [.object(["text": .string("hello"), "space": .null])])
     }
 
     @Test(.timeLimit(.minutes(1))) func askOpensPanelAndKeepsHome() async throws {

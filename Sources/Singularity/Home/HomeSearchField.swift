@@ -1,3 +1,4 @@
+import AppKit
 import SingularityCore
 import SwiftUI
 
@@ -58,7 +59,15 @@ struct HomeSearchField: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 17))
                     .focused($fieldFocused)
-                    .onSubmit { run(items) }
+                    // ⌘Return can arrive here instead of (or as well as) the key handler below:
+                    // then it asks too, never runs the first row. A second ask finds the field empty.
+                    .onSubmit {
+                        if offer != nil, NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+                            ask()
+                        } else {
+                            run(items)
+                        }
+                    }
                     .onKeyPress(.downArrow) {
                         selectedIndex = min(selectedIndex + 1, max(items.count - 1, 0))
                         return .handled
