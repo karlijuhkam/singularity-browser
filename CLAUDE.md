@@ -59,7 +59,7 @@ Sources/
                      between the sidebar and a plugin's panel, not over the window), PaletteRanking (the "Search"
                      row goes after the concrete matches, typed words as text or initials, and above the loose
                      fuzzy ones; first, so Return searches, when nothing really matches)
-    Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath, TerminalLinkPath (a Cmd-clicked relative path: the program's folder, not the app's `/`),
+    Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath, TerminalLinkPath (a Cmd-clicked path: a relative one from the program's folder, not the app's `/`; a full stop or other closing punctuation after it dropped when the path without it is a file),
                      HerdrTree (`HerdrFacts`: the lines of `hc events --json` folded into every herdr terminal; a tab's
                      child rows, marks, names, the close question's text),
                      HerdrCore (optional engine: finding hc, names, arguments, reading `hc get`),
