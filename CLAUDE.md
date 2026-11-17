@@ -55,7 +55,8 @@ Sources/
     Notes/           NoteFiles (a note's title and file name, what stays inside the notes folder, pictures in
                      assets/, the list for the palette, today's journal name, Markdown files from elsewhere, and
                      when a save must not overwrite the file)
-    Palette/         FuzzyMatcher, URLInput (URL vs search text)
+    Palette/         FuzzyMatcher, URLInput (URL vs search text), PaletteLayout (the palette is centred over the page,
+                     between the sidebar and a plugin's panel, not over the window)
     Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath, TerminalLinkPath (a Cmd-clicked relative path: the program's folder, not the app's `/`),
                      HerdrTree (`HerdrFacts`: the lines of `hc events --json` folded into every herdr terminal; a tab's
                      child rows, marks, names, the close question's text),
@@ -113,7 +114,8 @@ Sources/
     Orb/             OrbShader (the site's orb shader in Metal, compiled at run time), OrbView (MTKView; PNG fallback;
                      OrbAnimation: when it moves)
     Web/             WebViewRegistry (one WKWebView per tab), WebTabController (KVO + delegates)
-    Palette/         Command palette overlay (Cmd+T / Cmd+K)
+    Palette/         Command palette overlay (Cmd+T / Cmd+K); an opaque surface, never a material (it took the page's
+                     colour); `SG_PALETTE_SNAPSHOT=<folder> swift test --filter PaletteSnapshotTests` writes light/dark pictures
     Terminal/        HerdrWatcher (the one `hc events --json` process and the picture it keeps), HerdrChildSession (an
                      attach-only view onto a child terminal),
                      TerminalRegistry, TerminalSession (SwiftTerm view + login shell + title polling), TerminalHandle (the

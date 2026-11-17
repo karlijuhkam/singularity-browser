@@ -28,8 +28,11 @@ struct MainView: View {
                 // row selected. Without it, choosing "New Terminal" in the palette would hand the
                 // typed text and the selected row over to the project picker (SwiftUI keeps a
                 // view's @State while the view stays in place).
-                CommandPaletteView(mode: mode)
-                    .id(mode)
+                // Centred over the page: beside the sidebar and a plugin's panel, not the window.
+                GeometryReader { window in
+                    CommandPaletteView(mode: mode, frame: paletteFrame(windowWidth: window.size.width))
+                }
+                .id(mode)
             }
         }
         // Tells AppState which NSWindow the browser window is (little windows bring it forward).
@@ -75,6 +78,24 @@ extension MainView {
         }
     }
 
+    /// The width the plugin's panel is drawn at in a window this wide; nil while none is drawn.
+    private func shownPanelWidth(windowWidth: CGFloat) -> Double? {
+        guard state.shownPanelPlugin != nil else { return nil }
+        let sidebar = state.settings.sidebarHidden ? 8 : Double(state.sidebarWidth)
+        return PluginPanelLayout.shownWidth(state.pluginPanelWidth, windowWidth: Double(windowWidth), sidebarWidth: sidebar)
+    }
+
+    /// Where the palette goes: over the page, between the sidebar (when it is beside the page, not
+    /// hidden or slid out over it) and the panel. The welcome flow has neither.
+    fileprivate func paletteFrame(windowWidth: CGFloat) -> PaletteLayout.Frame {
+        guard !state.welcomeCoversWindow else {
+            return PaletteLayout.frame(windowWidth: Double(windowWidth), pageLeading: 0, pageTrailing: 0)
+        }
+        let leading = state.settings.sidebarHidden ? 8 : Double(state.sidebarWidth)
+        let trailing = 8 + (shownPanelWidth(windowWidth: windowWidth) ?? 0)
+        return PaletteLayout.frame(windowWidth: Double(windowWidth), pageLeading: leading, pageTrailing: trailing)
+    }
+
     @ViewBuilder
     private func browser(windowWidth: CGFloat) -> some View {
         let width = CGFloat(state.sidebarWidth)
@@ -89,9 +110,7 @@ extension MainView {
                     // Hidden: the page has the whole window, with the same 8 pt margin on the left.
                     .padding(.leading, hidden ? 8 : width)
                 // Too narrow a window draws no panel; it stays open and ⌃⌘J still closes it.
-                if let pluginID = state.shownPanelPlugin,
-                   let panelWidth = PluginPanelLayout.shownWidth(state.pluginPanelWidth, windowWidth: Double(windowWidth),
-                                                                 sidebarWidth: hidden ? 8 : Double(width)) {
+                if let pluginID = state.shownPanelPlugin, let panelWidth = shownPanelWidth(windowWidth: windowWidth) {
                     PluginPanel(pluginID: pluginID, width: panelWidth)
                 }
             }

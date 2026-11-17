@@ -5,6 +5,8 @@ import SwiftUI
 struct CommandPaletteView: View {
     @Environment(AppState.self) private var state
     let mode: PaletteMode
+    /// Where it sits in the window (`PaletteLayout`: centred over the page).
+    let frame: PaletteLayout.Frame
 
     @State private var query = ""
     @State private var selectedIndex = 0
@@ -13,7 +15,7 @@ struct CommandPaletteView: View {
     var body: some View {
         let items = PaletteResults.items(for: query, mode: mode, state: state)
 
-        ZStack(alignment: .top) {
+        ZStack(alignment: .topLeading) {
             // Dim the window; clicking outside the palette closes it.
             Color.black.opacity(0.15)
                 .contentShape(Rectangle())
@@ -49,11 +51,20 @@ struct CommandPaletteView: View {
                     results(items)
                 }
             }
-            .frame(width: 640)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.08)))
-            .shadow(color: .black.opacity(0.25), radius: 30, y: 10)
+            .frame(width: frame.width)
+            // An opaque surface, not a material: a material takes its colour from what is behind
+            // it, so over a dark terminal in light mode the rows turned a muddy grey and the grey
+            // subtitles all but vanished. White in light mode, near-black in dark.
+            // The shadow belongs to the surface only: on the whole view it is also drawn under
+            // the rows' text and the selected row, a grey haze inside the palette.
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+                    .shadow(color: .black.opacity(0.3), radius: 30, y: 10)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.12)))
             .padding(.top, 90)
+            .padding(.leading, frame.x)
         }
         .onAppear {
             fieldFocused = true
@@ -125,23 +136,35 @@ private struct PaletteRow: View {
                 .frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.title)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
                     .lineLimit(1)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
             }
             Spacer(minLength: 8)
-            Text(item.hint)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            // What Return does, only on the row it would do it to: the same words on every row
+            // were noise.
+            if isSelected {
+                Text(item.hint)
+                    .font(.system(size: 11))
+                    .foregroundStyle(secondary)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(isSelected ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        // Selected like Spotlight: the accent colour, white text. A faint tint of it over the
+        // palette's surface was hard to see and made the grey text on it harder to read.
+        .background(isSelected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    /// Subtitles, the hint and symbols: grey, or a softer white on the selected row.
+    private var secondary: AnyShapeStyle {
+        isSelected ? AnyShapeStyle(Color.white.opacity(0.8)) : AnyShapeStyle(.secondary)
     }
 
     @ViewBuilder
@@ -151,10 +174,10 @@ private struct PaletteRow: View {
             if let slug = state.selectedSpace?.slug, let image = state.favicons.image(slug: slug, host: host) {
                 Image(nsImage: image).resizable()
             } else {
-                Image(systemName: "globe").foregroundStyle(.secondary)
+                Image(systemName: "globe").foregroundStyle(secondary)
             }
         case .symbol(let name):
-            Image(systemName: name).foregroundStyle(.secondary)
+            Image(systemName: name).foregroundStyle(secondary)
         }
     }
 }
