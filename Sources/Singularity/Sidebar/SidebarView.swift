@@ -261,6 +261,15 @@ private struct TabList: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        // A right-click on the list's empty space (or a section title). Tab and folder rows have
+        // their own `.contextMenu`, which wins over this one. Not `contextMenu(forSelectionType:)`:
+        // on empty space it asked AppKit for the row view of row -1, which threw and crashed the
+        // test `aRightClickOnEmptySpaceOffersNewTabTerminalAndNote`.
+        .contextMenu {
+            Button("New Tab") { state.showPalette(.newTab) }
+            Button("New Terminal") { state.openTerminal() }
+            Button("New Note") { state.newNote() }
+        }
         // No `onMove` on any of these ForEach: a drag SwiftUI takes for its own reorder can't
         // leave its section (it refuses every other place). Each move, also within a section,
         // is a drop handled by `onInsert`, and `ListDragOperations` (in every row) lets those drops

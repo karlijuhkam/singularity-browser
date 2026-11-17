@@ -233,6 +233,51 @@ extension AppTests {
 
     /// The click itself (SwiftUI's tap on the folder's name) can't be sent here: a test window
     /// never becomes key, and the outline view takes no click in a window that isn't.
+    /// The menu a right-click at `point` (in the outline view's coordinates) would show, as AppKit
+    /// finds it: the view under the pointer, then up its superviews, the first that has a menu.
+    /// Its item titles, after the menu's delegate filled it in (SwiftUI's are filled when opened).
+    func menuTitles(_ f: Fixture, at point: NSPoint) throws -> [String] {
+        let inWindow = f.outline.convert(point, to: nil)
+        let event = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: inWindow, modifierFlags: [],
+                                                    timestamp: ProcessInfo.processInfo.systemUptime,
+                                                    windowNumber: f.window.windowNumber, context: nil,
+                                                    eventNumber: 0, clickCount: 1, pressure: 1))
+        let frameView = try #require(f.window.contentView?.superview)
+        var view = frameView.hitTest(frameView.convert(inWindow, from: nil))
+        while let current = view {
+            if let menu = current.menu(for: event) {
+                menu.delegate?.menuNeedsUpdate?(menu)
+                return menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+            }
+            view = current.superview
+        }
+        return []
+    }
+
+    @Test func aRightClickOnEmptySpaceOffersNewTabTerminalAndNote() async throws {
+        let f = try await make()
+        defer { finish(f) }
+        let lastRow = f.outline.rect(ofRow: f.outline.numberOfRows - 1)
+        let below = NSPoint(x: lastRow.midX, y: lastRow.maxY + 40)
+        #expect(f.outline.bounds.contains(below))
+        #expect(f.outline.row(at: below) == -1)
+        #expect(try menuTitles(f, at: below) == ["New Tab", "New Terminal", "New Note"])
+        // A section's title (row 5, "Tabs") is no tab either.
+        let title = f.outline.rect(ofRow: 5)
+        #expect(try menuTitles(f, at: NSPoint(x: title.midX, y: title.midY)) == ["New Tab", "New Terminal", "New Note"])
+
+        // A tab's row keeps its own menu, without these three.
+        let tabRow = f.outline.rect(ofRow: 6)
+        let titles = try menuTitles(f, at: NSPoint(x: tabRow.midX, y: tabRow.midY))
+        #expect(titles.contains("Move to Folder"))
+        #expect(!titles.contains("New Note"))
+        // And so does a folder's.
+        let folderRow = f.outline.rect(ofRow: 3)
+        let folderTitles = try menuTitles(f, at: NSPoint(x: folderRow.midX, y: folderRow.midY))
+        #expect(folderTitles.contains("Rename…"))
+        #expect(!folderTitles.contains("New Note"))
+    }
+
     @Test func aFoldersRowIsNotSelectableAndItsToggleKeepsTheTab() async throws {
         let f = try await make()
         defer { finish(f) }
