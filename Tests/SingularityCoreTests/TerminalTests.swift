@@ -206,3 +206,37 @@ import Testing
         #expect(ProcessInspector.foregroundProcessGroup(ofTerminalOf: 0x7FFF_FFF0) == nil)
     }
 }
+
+/// Cmd-clicking a relative path in a terminal (e.g. one Claude Code printed). Our shells send no
+/// OSC 7, so SwiftTerm would look for the file in the app's own folder (`/`) and block the link.
+@Suite struct TerminalLinkPathTests {
+    let dir = "/Users/k/project"
+
+    @Test func aRelativePathIsJoinedToTheDirectory() {
+        #expect(TerminalLinkPath.absolute("leads/wp/2026-11.csv", in: dir) == "/Users/k/project/leads/wp/2026-11.csv")
+        #expect(TerminalLinkPath.absolute("./a.txt", in: dir) == "/Users/k/project/./a.txt")
+        #expect(TerminalLinkPath.absolute("../b.txt", in: dir) == "/Users/k/project/../b.txt")
+        #expect(TerminalLinkPath.absolute("README.md", in: dir) == "/Users/k/project/README.md")
+    }
+
+    @Test func aLocationSuffixStaysForSwiftTermToHandle() {
+        #expect(TerminalLinkPath.absolute("main.swift:12", in: dir) == "/Users/k/project/main.swift:12")
+        #expect(TerminalLinkPath.absolute("src/main.swift:12:4", in: dir) == "/Users/k/project/src/main.swift:12:4")
+    }
+
+    @Test func absolutePathsHomePathsAndURLsAreLeftAlone() {
+        #expect(TerminalLinkPath.absolute("/etc/hosts", in: dir) == nil)
+        #expect(TerminalLinkPath.absolute("~/notes.md", in: dir) == nil)
+        #expect(TerminalLinkPath.absolute("https://example.com/a", in: dir) == nil)
+        #expect(TerminalLinkPath.absolute("file:///tmp/a", in: dir) == nil)
+        #expect(TerminalLinkPath.absolute("mailto:a@b.ee", in: dir) == nil)
+        #expect(TerminalLinkPath.absolute("tel:5551234", in: dir) == nil)
+    }
+
+    @Test func noDirectoryOrNoLinkChangesNothing() {
+        #expect(TerminalLinkPath.absolute("a.txt", in: nil) == nil)
+        #expect(TerminalLinkPath.absolute("a.txt", in: "") == nil)
+        #expect(TerminalLinkPath.absolute("a.txt", in: "relative/dir") == nil)
+        #expect(TerminalLinkPath.absolute("", in: dir) == nil)
+    }
+}

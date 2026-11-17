@@ -38,6 +38,9 @@ final class TerminalSession {
     @ObservationIgnored private var programTitle: String?
     @ObservationIgnored private var programTitleGroup: pid_t?
     @ObservationIgnored private var lastDirectory: String?
+    /// The shell has told SwiftTerm its directory (OSC 7): SwiftTerm then resolves relative paths
+    /// in the output itself, and keeps a path from another host from opening (`linkDirectory`).
+    @ObservationIgnored private var shellReportsDirectory = false
     /// The Space's slug, exported to the shell as SINGULARITY_SPACE.
     private let spaceSlug: String
     /// The app's hook socket, exported as SINGULARITY_HOOK_SOCKET (with the tab's id as
@@ -88,6 +91,7 @@ final class TerminalSession {
             guard let self, !self.isClosing else { return }
             self.state?.inbox.wentToTerminal(self.tabID)
         }
+        view.linkDirectory = { [weak self] in self?.linkDirectory() }
         SingularityTerminalView.watchKeys()
         start(in: workingDirectory)
     }
@@ -413,6 +417,20 @@ final class TerminalSession {
         )
     }
 
+    /// The folder a relative path the owner Cmd-clicked is in (`TerminalLinkPath`): the working
+    /// directory of the program in front (Claude Code prints paths relative to its own), else the
+    /// shell's. Nil (SwiftTerm's own rule) when the shell reports its directory with OSC 7.
+    private func linkDirectory() -> String? {
+        guard !shellReportsDirectory, isRunning, let process = view.process else { return nil }
+        let shellPID = herdrShellPID ?? process.shellPid
+        // The group's id is its leader's pid; a leader that has exited has no directory to read.
+        if let group = foregroundGroup(), group != shellPID,
+           let directory = ProcessInspector.currentDirectory(pid: group) {
+            return directory
+        }
+        return ProcessInspector.currentDirectory(pid: shellPID) ?? lastDirectory
+    }
+
     /// The terminal's foreground process group, read now (not the 1 s poll's value): the shell's
     /// own group at its prompt, or the program it runs. Nil when the shell isn't running. Two reads
     /// that differ mean another program has the keyboard (`TerminalHandle`).
@@ -458,6 +476,7 @@ extension TerminalSession: @MainActor LocalProcessTerminalViewDelegate {
 
     /// The shell reported its directory (OSC 7). We read the directory ourselves, so just refresh.
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        shellReportsDirectory = !(directory ?? "").isEmpty
         refresh()
     }
 
@@ -499,6 +518,9 @@ final class SingularityTerminalView: LocalProcessTerminalView {
     var onBell: (() -> Void)?
     /// The owner clicked or typed in the terminal.
     var onUserInput: (() -> Void)?
+    /// The folder relative paths in the output are in, asked when one is Cmd-clicked. Nil, or a
+    /// nil answer: SwiftTerm's own rule (OSC 7, else the app's folder).
+    var linkDirectory: (() -> String?)?
     /// True while a bell is on its way to the main actor. A lock, because SwiftTerm rings the bell
     /// from its I/O thread.
     private nonisolated let bellPending = OSAllocatedUnfairLock(initialState: false)
@@ -516,6 +538,19 @@ final class SingularityTerminalView: LocalProcessTerminalView {
             guard let self else { return }
             self.bellPending.withLock { $0 = false }
             self.onBell?()
+        }
+    }
+
+    /// A Cmd-clicked link. SwiftTerm resolves a relative path against the folder the shell reported
+    /// with OSC 7, and without one against the app's own folder (`/`), where the file isn't, so it
+    /// said "Link blocked". A detected relative path is made absolute first (`TerminalLinkPath`);
+    /// `openDefault` then runs SwiftTerm's usual checks on it and opens it with the file's app.
+    /// OSC 8 links (`isExplicit`) keep SwiftTerm's rule: their target must be a URL.
+    override func requestOpenLink(source: TerminalView, request: TerminalLinkRequest) {
+        if !request.isExplicit, let path = TerminalLinkPath.absolute(request.link, in: linkDirectory?()) {
+            request.openDefault(path)
+        } else {
+            super.requestOpenLink(source: source, request: request)
         }
     }
 
