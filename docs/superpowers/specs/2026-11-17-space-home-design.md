@@ -1,6 +1,7 @@
 # Space home: a new tab opens as the Space's home
 
-Date: 2026-11-17. Status: design, waiting for the owner's approval. Decisions marked **owner** were
+Date: 2026-11-17. Status: built 2026-11-17 on the branch `space-home`; the "As built" section at the end
+overrides the design where they differ. Decisions marked **owner** were
 made by the owner in the brainstorm; everything else is the designer's call and is open to change.
 
 ## Why
@@ -234,3 +235,60 @@ Times are relative ("12 min", "5 min ago") and tick once a minute while the home
 - How the palette's result logic is split out so the home row and the palette share it.
 - Test layout (Core tests for `HomeRules`; app tests in off-screen windows that never become key,
   with fake terminals and a fixture plugin for `ask`, never `claude`).
+
+## As built
+
+Plan: `docs/superpowers/plans/2026-11-17-space-home.md`. Where this differs from the design above,
+this section is right.
+
+- **Core** (`SingularityCore/Home/`): `HomeRules` (`reusableHome`, `tabToReplaceHome`,
+  `terminalOrder`, `isNew`, `recent`, and `Space.replaceHome`, which keeps the home's row, pin,
+  folder and split pane), `HomeRecentFile`, and `AskRules` (`target`, `spaceRef`, `wireMessage`,
+  `maxLength` 20 000). `TabKind.home` (no payload), `BrowserTab.home()`, `isHome`, in
+  `isHiddenFromAgents`.
+- **App** (`Sources/Singularity/Home/`): `HomeView`, `HomeSearchField`, `HomeSections`
+  (`HomeOverview`), `HomeRecentLoader`; in `AppState`: `openHome`, `homeNavigate`, `replacingHome`,
+  `homeNewTerminal`, `closePalette`, `homeLeftAt`, `homeFilesRevision`, `askTarget`, `askAssistant`.
+  `InboxCenter.boardRevision` (moves only when a tab's board row really changes) and
+  `NoteHost.onFileChange` keep the sections current.
+- **The row shares the palette's results** through a new `PaletteMode.home(tabID:)`; the home tab
+  itself is left out of its results, and the tab-less home of an empty Space uses `.newTab`. The
+  field takes the keyboard only when its home is the selected tab (or the empty Space's home), not
+  when it is a pane beside another focused pane, and again when the palette closes.
+- **The replace rule** is `replacingHome` around the action. It also applies to the ⌘K palette's
+  New Tab / Open Location over a selected home (there an address makes a new tab that replaces the
+  home, rather than reusing the home's id). Menu and sidebar commands given while a home is
+  selected (New Terminal, ⌥⌘T, New Note) do not replace it; only the row's choices do.
+- **⌘L** with a tab selected opens the palette as before; with a home selected, choosing an address
+  turns the home into that page (`navigateSelectedTab`). A click on the address row with no tab
+  selected still opens the palette.
+- **"(new)" mark:** `homeLeftAt` is stamped in `loadSelectedTab` (which every selection change goes
+  through) when a Space's home leaves the screen, not in the view's `onDisappear`.
+- **Show** on an approval opens the inbox panel but does not scroll to that card.
+- **Ask:**
+  - The Space is named only when it is in the plugin's `enabledSpaces` **and** the plugin's Space
+    switches show (`showsSpaceSwitches`). A panel plugin with `ask` alone shows no switches, so it is
+    never told the Space. Whether `ask` should make the switches show is left to the owner.
+  - `PluginManager.askTarget(toggle:)` and `sendAsk(_:to:space:)`, called by `AppState.askAssistant`.
+    It returns false and sends nothing when the plugin isn't approved with `ask`, isn't running, or
+    the text is blank or too long. The field is cleared only after a send that went through; the
+    panel opens only then.
+  - ⌘Return asks through `onKeyPress`; `onSubmit` also asks, never the first row, while ⌘ is down.
+  - `host.ts` hands an ask to `onAsk` only after the plugin's own code loaded; without the
+    permission `onAsk` throws. The app logs no ask text.
+- **The Assistant 0.4.0:** `"ask": true`. Ready (status `ready`, no billing note up or held
+  message) → sent as a message; otherwise a draft. Drafts travel as `draft` posts and in the state
+  (`drafts`, counted in its 200 KB budget), and the page confirms with `draftTaken`, so an ask that
+  arrives before the panel page exists still reaches the input. Drafts live in memory: a restart of
+  the background before the page takes them loses them. `front` for a home: "Kind: a new tab
+  (home)", chip "New tab".
+- **Tests:** `HomeRulesTests`, `AskRulesTests` (Core); `HomeTests`, `HomeAskTests` (app; fake
+  terminals, a fixture plugin under the real Bun host, a render in a window that is never key);
+  the Assistant's Bun tests and `PluginPageTests.theAssistantsPageTakesDraftsIntoItsInput`.
+
+### Not tried
+
+By hand in the running app: ⌘T putting the keyboard in the row, ⌘Return in a real `TextField`, the
+orb on the home (it didn't show in the off-screen picture), the sections with real agents, Ask with
+the real Assistant, and the visual pass with the owner. The opt-in `RealAssistantTests` and
+`RealAssistantPageTests` were not run.
