@@ -44,7 +44,7 @@ extension AppTests {
         let state = TestAppState.make(root: root)
         state.mutateSpace(state.selectedSpaceID!) { $0.selectedTabID = open.id } // selected, but not loaded
 
-        let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 270, height: 520),
+        let window = NeverKeyWindow(contentRect: NSRect(x: -5000, y: -5000, width: 270, height: 520),
                               styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SidebarView().environment(state).frame(width: 270, height: 520))
@@ -81,7 +81,10 @@ extension AppTests {
     /// false it only asks whether the drop would happen: a drop *on* a row goes through SwiftUI's
     /// `onDrop`, which AppKit lets read the drag's data only during a real drag.
     @discardableResult
-    func drag(_ f: Fixture, fromRow: Int, toRow: Int, childIndex: Int, perform: Bool = true) async throws -> Bool {
+    /// With `settle`, the List gets a moment after the drag began (and may add rows, as it does
+    /// for an empty Pinned section) before `toRow` is read, as in a real drag.
+    func drag(_ f: Fixture, fromRow: Int, toRow: @autoclosure () -> Int, childIndex: Int, perform: Bool = true,
+              settle: Bool = false) async throws -> Bool {
         let dataSource = try #require(f.outline.dataSource)
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("sg-test-drag-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
@@ -96,8 +99,9 @@ extension AppTests {
         let draggedItem = f.outline.item(atRow: fromRow) as Any
         dataSource.outlineView?(f.outline, draggingSession: session, willBeginAt: .zero, forItems: [draggedItem])
         defer { dataSource.outlineView?(f.outline, draggingSession: session, endedAt: .zero, operation: []) }
+        if settle { try await Task.sleep(for: .milliseconds(100)) }
         let info = StubDrag(pasteboard: pasteboard, source: f.outline, window: f.window, mask: localSourceMask(f.outline))
-        let item = f.outline.item(atRow: toRow)
+        let item = f.outline.item(atRow: toRow())
         let proposed = dataSource.outlineView?(f.outline, validateDrop: info, proposedItem: item, proposedChildIndex: childIndex) ?? []
         guard !proposed.intersection(info.draggingSourceOperationMask).isEmpty else { return false }
         guard perform else { return true }
@@ -163,6 +167,62 @@ extension AppTests {
         #expect(f.outline.numberOfRows == 7)
     }
 
+    @Test func whileTheListAddsPinnedTheDropStillLands() async throws {
+        let f = try await make()
+        defer { finish(f) }
+        #expect(try await drag(f, fromRow: 1, toRow: 5, childIndex: 2)) // nothing pinned now
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(f.outline.numberOfRows == 7)
+        // The drag of an open tab begins; the List adds "Pinned" and its row before the drop.
+        // Rows then: 0 "Pinned", 1 its drop row, 2 "Folders", 3 F, 4 its tab, 5 "Tabs", 6…8.
+        var rowsDuringDrag = 0
+        // Before it: 0 "Folders", 1 F, 2 its tab, 3 "Tabs", 4 Open, 5 Open 2, 6 Pinned.
+        #expect(try await drag(f, fromRow: 4, toRow: { rowsDuringDrag = f.outline.numberOfRows; return 3 }(),
+                               childIndex: 1, settle: true))
+        #expect(rowsDuringDrag == 9)
+        #expect(f.space.tab(f.open)?.section == .folder(f.folder))
+        #expect(f.space.sidebarItems(in: .folder(f.folder)).last == .tab(f.open))
+    }
+
+    @Test func aSplitsRowMovesWithinItsSection() async throws {
+        let f = try await make()
+        defer { finish(f) }
+        let open2 = f.space.sidebarItems(in: .open)[1].tabIDs[0]
+        let third = BrowserTab.web(URL(string: "https://third.example/")!, title: "Third")
+        f.state.mutateSpace(f.state.selectedSpaceID!) {
+            _ = $0.split(open2, beside: f.open, edge: .right)
+            $0.append(third)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        // Rows: … 5 "Tabs", 6 the split, 7 Third.
+        #expect(f.outline.numberOfRows == 8)
+        #expect(try await drag(f, fromRow: 6, toRow: 5, childIndex: 2))
+        #expect(f.space.sidebarItems(in: .open).map(\.tabIDs.count) == [1, 2])
+        #expect(f.space.sidebarItems(in: .open).first == .tab(third.id))
+        // To another section nothing moves: a split's tabs stay together.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(try await drag(f, fromRow: 7, toRow: 3, childIndex: 0))
+        #expect(f.space.splitGroup(containing: f.open) != nil)
+        #expect(f.space.tab(f.open)?.section == .open)
+    }
+
+    @Test func aDropInAFolderCountsItsTabsNotItsFolders() async throws {
+        let f = try await make()
+        defer { finish(f) }
+        let second = BrowserTab.web(URL(string: "https://second.example/")!, title: "Second")
+        f.state.mutateSpace(f.state.selectedSpaceID!) {
+            $0.append(second)
+            $0.moveTab(second.id, to: .folder(f.folder))
+        }
+        _ = f.state.createFolder(named: "Inner", inside: f.folder)
+        try await Task.sleep(for: .milliseconds(300))
+        // Rows: 3 F, 4 Inner, 5 its first tab, 6 Second, 7 "Tabs", 8 Open, 9 Open 2.
+        #expect(f.outline.numberOfRows == 10)
+        // Open dropped after F's first tab: F's third child in the outline, its second tab row.
+        #expect(try await drag(f, fromRow: 8, toRow: 3, childIndex: 2))
+        #expect(f.space.sidebarItems(in: .folder(f.folder)) == [.tab(f.inFolder), .tab(f.open), .tab(second.id)])
+    }
+
     @Test func reorderingWithinASectionStillWorks() async throws {
         let f = try await make()
         defer { finish(f) }
@@ -171,29 +231,43 @@ extension AppTests {
         #expect(f.space.sidebarItems(in: .open).count == 2)
     }
 
-    @Test func clickingAFolderTogglesItAndKeepsTheTab() async throws {
+    /// The click itself (SwiftUI's tap on the folder's name) can't be sent here: a test window
+    /// never becomes key, and the outline view takes no click in a window that isn't.
+    @Test func aFoldersRowIsNotSelectableAndItsToggleKeepsTheTab() async throws {
         let f = try await make()
         defer { finish(f) }
+        #expect(f.outline.selectedRow == 6)
         let delegate = try #require(f.outline.delegate)
-        // A click asks the delegate whether the row may be selected: never the folder's.
+        // The outline view won't select the folder's row; its tab's row and the others still can be.
         #expect(delegate.outlineView?(f.outline, shouldSelectItem: f.outline.item(atRow: 3) as Any) == false)
-        // Its tab, inside it, and the other tabs still can be.
         #expect(delegate.outlineView?(f.outline, shouldSelectItem: f.outline.item(atRow: 4) as Any) == true)
         #expect(delegate.outlineView?(f.outline, shouldSelectItem: f.outline.item(atRow: 1) as Any) == true)
 
-        // Even if the folder's row became the selection, no tab that isn't one gets selected.
+        // What the click does: the folder folds and unfolds, the tab and its row stay selected.
+        f.state.toggleFolder(f.folder)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(f.space.folders.first?.isExpanded == false)
+        #expect(f.space.selectedTabID == f.open)
+        #expect(f.outline.numberOfRows == 7)
+        #expect(f.outline.selectedRowIndexes == IndexSet(integer: 5)) // the open tab, one row up now
+        f.state.toggleFolder(f.folder)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(f.space.folders.first?.isExpanded == true)
+        #expect(f.outline.selectedRowIndexes == IndexSet(integer: 6))
+
+        // Even if the folder's row became the selection some other way, no tab that isn't one
+        // gets selected (that showed an empty page).
         f.outline.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
         try await Task.sleep(for: .milliseconds(200))
         #expect(f.space.selectedTabID == f.open)
-
-        // The click itself folds and unfolds it.
-        f.state.toggleFolder(f.folder)
-        #expect(f.space.folders.first?.isExpanded == false)
-        f.state.toggleFolder(f.folder)
-        #expect(f.space.folders.first?.isExpanded == true)
-        #expect(f.space.selectedTabID == f.open)
     }
 }
+}
+
+/// A window that can't take the keyboard.
+final class NeverKeyWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }
 
 /// The parts of a drag that the outline view's data source reads.

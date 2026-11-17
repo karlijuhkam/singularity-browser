@@ -210,8 +210,9 @@ private struct TabList: View {
 
     var body: some View {
         // Selecting a row in the List selects the tab. Only a tab's id selects: the List also
-        // tags a folder's row with its id (a ForEach over `Folder`s, whose ids are UUIDs too),
-        // and "selecting" that showed an empty page.
+        // tags a folder's row with the folder's id by itself (a ForEach over `Folder`s, whose ids
+        // are UUIDs too), and "selecting" that showed an empty page. (Folder rows are not
+        // selectable now, see FolderGroup; this keeps any other id out.)
         let selection = Binding<UUID?>(
             get: { space.selectedTabID },
             set: { id in if let id, state.selectedSpace?.tab(id) != nil { state.selectTab(id) } }
@@ -296,7 +297,7 @@ private struct EmptySectionDropRow: View {
             .background(ListDragOperations())
             .selectionDisabled()
             .onDrop(of: TabDrop.types, isTargeted: $isTargeted) { providers in
-                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section) }
+                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section, atRow: .max) }
             }
     }
 }
@@ -435,11 +436,12 @@ private struct FolderGroup: View {
                 .contentShape(Rectangle())
                 .background(dropHighlight(isDropTargeted))
                 .background(ListDragOperations())
-                // A folder is not a tab: its row can't be selected, and a click folds or unfolds it.
+                // A folder is not a tab: its row can't be selected (a selected folder row would
+                // stay highlighted next to the tab's), and a click folds or unfolds it.
                 .selectionDisabled()
                 .onTapGesture { state.toggleFolder(folder.id) }
                 .onDrop(of: TabDrop.types, isTargeted: $isDropTargeted) { providers in
-                    TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id)) }
+                    TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id), atRow: .max) }
                 }
                 .contextMenu {
                     Button("New Terminal") { state.openTerminal(inFolder: folder.id) }
