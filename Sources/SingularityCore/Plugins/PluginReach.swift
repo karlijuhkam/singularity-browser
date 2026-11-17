@@ -147,6 +147,8 @@ public enum PluginReach {
             ref.url = String(path.prefix(urlLimit))
         case .terminal:
             break
+        case .home:
+            ref.kind = "home"   // no title, no address
         case .plugin, .note:
             return .hidden(.nothing) // unreachable: resolved above
         }

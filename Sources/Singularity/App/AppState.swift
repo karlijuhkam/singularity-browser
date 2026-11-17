@@ -1356,6 +1356,8 @@ final class AppState {
             // The editor is made here (it reads its file by itself). nil for a bare debug binary,
             // which has no editor beside it: `TabContentView` then says so.
             _ = notes.host(for: tab, in: space)
+        case .home:
+            break // nothing to load: the home is a native view
         case .artifact(let path):
             guard web.existingController(tab.id) == nil else { return }
             // The page can only load once the Space's server runs.
@@ -1542,7 +1544,7 @@ final class AppState {
         case .artifact(let path):
             guard let host = await ensureArtifactHost(space), let request = host.request(for: path) else { return nil }
             return web.existingController(tabID) ?? web.artifactController(for: tab, in: space, host: host, request: request)
-        case .terminal, .plugin, .note:
+        case .terminal, .plugin, .note, .home:
             return nil
         }
     }

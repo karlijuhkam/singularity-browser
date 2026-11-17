@@ -283,7 +283,7 @@ final class AgentToolbox {
             case .web(let url): entry["kind"] = "web"; entry["url"] = url.absoluteString
             case .terminal(let directory): entry["kind"] = "terminal"; entry["directory"] = directory
             case .artifact(let path): entry["kind"] = "artifact"; entry["path"] = path
-            case .plugin, .note: break // filtered out above
+            case .plugin, .note, .home: break // filtered out above
             }
             switch tab.section {
             case .pinned: entry["section"] = "pinned"
@@ -633,7 +633,7 @@ final class AgentToolbox {
     private func currentAddresses(of tab: BrowserTab) -> [URL] {
         switch tab.kind {
         case .web, .artifact: return [state?.web.existingController(tab.id)?.webView.url, tab.url].compactMap { $0 }
-        case .terminal, .plugin, .note: return []
+        case .terminal, .plugin, .note, .home: return []
         }
     }
 
