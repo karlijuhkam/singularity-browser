@@ -19,13 +19,16 @@ public enum TerminalLinkPath {
 
     /// The path the view hands SwiftTerm for a detected link, or nil to leave the link as it is.
     ///
-    /// Besides making a relative path absolute (`absolute(_:in:)`), it drops punctuation that ends
-    /// the sentence around a path: SwiftTerm's detection takes "see /a/notes.md." whole, finds no
-    /// file "notes.md." and says "Link blocked". Characters are dropped from the end one at a time
-    /// (`trailingPunctuation`), and only while the path with them names no file (`exists`; a `:line`
-    /// or `:line:column` suffix counts as SwiftTerm counts it), so a file whose name really ends in
-    /// one keeps it. When no shorter path names a file either, the link is left as it was (made
-    /// absolute, if relative), and SwiftTerm reports it as before.
+    /// Besides making a relative path absolute (`absolute(_:in:)`), it drops what ends the sentence
+    /// around a path: SwiftTerm's detection takes "see /a/notes.md." whole, finds no file
+    /// "notes.md." and says "Link blocked". It also takes a following word that ends in "." or "/"
+    /// ("/a/notes.md today."), so the link is also tried cut before each space, the longest first.
+    /// Punctuation (`trailingPunctuation`) is dropped from the end one character at a time, and
+    /// only while the path with it names no file (`exists`; a `:line` or `:line:column` suffix
+    /// counts as SwiftTerm counts it), so a file whose name really ends in one keeps it. A shortened
+    /// path whose last part is "." or ".." is never taken ("/a/dir/..." must not open /a). When no
+    /// shorter path names a file either, the link is left as it was (made absolute, if relative),
+    /// and SwiftTerm reports it as before.
     public static func target(
         _ link: String,
         in directory: String?,
@@ -33,28 +36,43 @@ public enum TerminalLinkPath {
         exists: (String) -> Bool
     ) -> String? {
         guard !link.isEmpty, !hasURLScheme(link) else { return nil }
-        let path: String
-        if link.hasPrefix("/") {
-            path = link
-        } else if link == "~" || link.hasPrefix("~/") {
-            guard home.hasPrefix("/") else { return nil }
-            path = (home as NSString).appendingPathComponent(String(link.dropFirst()))
-        } else if link.hasPrefix("~") {
-            return nil // ~user: SwiftTerm expands it
-        } else {
-            guard let absolute = absolute(link, in: directory) else { return nil }
-            path = absolute
+        guard let path = resolve(link, in: directory, home: home) else { return nil }
+        // The whole link, then the link cut before each space, longest first.
+        var texts = [link]
+        var rest = Substring(link)
+        while let space = rest.lastIndex(of: " ") {
+            rest = rest[..<space]
+            if !rest.isEmpty { texts.append(String(rest)) }
         }
-        var candidate = path
-        while true {
-            if namesFile(candidate, exists: exists) {
-                return candidate == link ? nil : candidate
+        for text in texts {
+            guard let start = resolve(text, in: directory, home: home) else { continue }
+            var candidate = start
+            while true {
+                let shortened = candidate != path
+                let last = (candidate as NSString).lastPathComponent
+                let isDotFolder = candidate.hasSuffix("/.") || candidate.hasSuffix("/..")
+                    || ((last == "." || last == "..") && !candidate.hasSuffix("/"))
+                if !(shortened && isDotFolder), namesFile(candidate, exists: exists) {
+                    return candidate == link ? nil : candidate
+                }
+                guard let ch = candidate.last, trailingPunctuation.contains(ch),
+                      candidate.count > 1 else { break }
+                candidate.removeLast()
             }
-            guard let last = candidate.last, trailingPunctuation.contains(last),
-                  candidate.count > 1 else { break }
-            candidate.removeLast()
         }
         return path == link ? nil : path
+    }
+
+    /// `link` as an absolute path: as it is, `~/` expanded with `home`, or joined to `directory`.
+    /// Nil for `~user` (SwiftTerm expands it) or a relative path with no absolute directory.
+    static func resolve(_ link: String, in directory: String?, home: String) -> String? {
+        if link.hasPrefix("/") { return link }
+        if link == "~" || link.hasPrefix("~/") {
+            guard home.hasPrefix("/") else { return nil }
+            return (home as NSString).appendingPathComponent(String(link.dropFirst()))
+        }
+        if link.hasPrefix("~") { return nil }
+        return absolute(link, in: directory)
     }
 
     /// What may end a sentence or close a bracket or quote around a path in prose.

@@ -250,6 +250,22 @@ import Testing
         #expect(target("~other/a.txt.") == nil)
     }
 
+    @Test func aWordSwiftTermTookAfterThePathIsDropped() {
+        #expect(target("/Users/k/dev/notes/plat-326-ui-direction-draft.md today.")
+            == "/Users/k/dev/notes/plat-326-ui-direction-draft.md")
+        #expect(target("/Users/k/todo.txt. Done.") == "/Users/k/todo.txt")
+        #expect(target("README.md. e.g.") == "/Users/k/project/README.md")
+        #expect(target("/nowhere/a.md today.") == nil)
+    }
+
+    @Test func anEllipsisNeverOpensTheParentFolder() {
+        let dirs: Set<String> = ["/Users/k/dev", "/Users/k/dev/", "/Users/k", "/Users/k/dev/..", "/Users/k/dev/."]
+        let t = { (link: String) in TerminalLinkPath.target(link, in: "/Users/k", home: "/Users/k", exists: { dirs.contains($0) }) }
+        #expect(t("/Users/k/dev/...") == "/Users/k/dev/")
+        #expect(t("dev/...") == "/Users/k/dev/")
+        #expect(t("/Users/k/dev..") == "/Users/k/dev")
+    }
+
     @Test func aFileWhoseNameEndsInPunctuationKeepsIt() {
         #expect(target("odd.") == "/Users/k/project/odd.")
     }
