@@ -39,8 +39,11 @@ enum PaletteResults {
         // "Split with…": only things that can go into a pane (other tabs, a new terminal, a URL).
         var splitTarget: UUID?
         if case .splitWith(_, let beside) = mode { splitTarget = beside }
+        // The home's own row doesn't offer the home itself (Return on "home" would do nothing).
+        var leftOut = splitTarget
+        if case .home(let homeID) = mode { leftOut = homeID }
 
-        let tabs = tabItems(space).filter { $0.id != "tab-\(splitTarget?.uuidString ?? "")" }
+        let tabs = tabItems(space).filter { $0.id != "tab-\(leftOut?.uuidString ?? "")" }
         let openURLs = Set(space.tabs.compactMap(\.url))
         let history = state.history(for: space.id)
             .filter { !openURLs.contains($0.url) }

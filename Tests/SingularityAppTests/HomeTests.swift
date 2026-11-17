@@ -336,7 +336,20 @@ extension AppTests {
         #expect(f.state.inbox.boardRevision == before + 1)
     }
 
+    @Test func homeRowLeavesTheHomeOut() throws {
+        let f = try make()
+        defer { finish(f) }
+        f.state.openHome()
+        let homeID = try #require(f.space.selectedTabID)
+        for query in ["home", "ho", "e"] {
+            let items = HomeSearch.items(for: query, tabID: homeID, state: f.state)
+            #expect(!items.contains { $0.id == "tab-\(homeID)" }, "\(query)")
+        }
+        #expect(HomeSearch.items(for: "home", tabID: homeID, state: f.state).first?.id == "search")
+    }
+
     @Test func recentListsNotesArtifactsAndApps() throws {
+        MainRunLoopGuard.start
         let dir = FileManager.default.temporaryDirectory.appending(path: "sg-home-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: dir) }
         let notes = dir.appending(path: "notes"), artifacts = dir.appending(path: "artifacts")

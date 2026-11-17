@@ -64,12 +64,10 @@ struct HomeSearchField: View {
                 .fill(Color(nsColor: .controlBackgroundColor))
         }
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.primary.opacity(0.12)))
-        .onAppear {
-            // The palette reads the Space's notes when it opens; the home does when it appears.
-            state.refreshPaletteNotes()
-            if takesFocus { focusSoon() }
-        }
+        .onAppear { if takesFocus { focusSoon() } }
         .onChange(of: takesFocus) { if takesFocus { focusSoon() } }
+        // The palette (⌘K, the project picker) closed over the home: the row has the keyboard again.
+        .onChange(of: state.palette == nil) { if state.palette == nil, takesFocus { focusSoon() } }
         .onChange(of: query) { selectedIndex = 0 }
     }
 
