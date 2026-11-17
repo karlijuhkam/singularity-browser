@@ -17,13 +17,18 @@ enum StoreButtonScript {
     static let world = WKContentWorld.world(name: "singularity-store")
     nonisolated static let handlerName = "singularityStore"
 
+    /// The store is a single-page app: it moves from a category page to a detail page with
+    /// `pushState`, so the script runs on every store page and reads the id from the address each
+    /// time (when a button is relabelled and again at the click), never once at load.
     nonisolated static let source = """
     (() => {
       if (location.origin !== '\(ChromeWebStore.origin)') return;
-      const match = location.pathname.match(/^\\/detail\\/(?:[^\\/]+\\/)?([a-p]{32})(?:\\/)?$/);
-      if (!match) return;
-      const id = match[1];
+      const currentID = () => {
+        const match = location.pathname.match(/^\\/detail\\/(?:[^\\/]+\\/)?([a-p]{32})(?:\\/)?$/);
+        return match ? match[1] : null;
+      };
       const fix = () => {
+        if (!currentID()) return;
         for (const button of document.querySelectorAll('button')) {
           if (button.dataset.singularityStore) {
             if (button.disabled) { button.disabled = false; button.removeAttribute('disabled'); }
@@ -31,7 +36,7 @@ enum StoreButtonScript {
           }
           const label = button.querySelector('[jsname="V67aGc"]') || button;
           if (!button.disabled || !/Chrome/.test(label.textContent || '')) continue;
-          button.dataset.singularityStore = id;
+          button.dataset.singularityStore = '1';
           label.textContent = 'Add to Singularity';
           button.disabled = false;
           button.removeAttribute('disabled');
@@ -44,8 +49,9 @@ enum StoreButtonScript {
         event.preventDefault();
         event.stopImmediatePropagation();
         // Only the owner's own click: a page script's synthetic click does nothing.
-        if (!event.isTrusted) return;
-        window.webkit.messageHandlers.\(handlerName).postMessage({ id: button.dataset.singularityStore });
+        const id = currentID();
+        if (!event.isTrusted || !id) return;
+        window.webkit.messageHandlers.\(handlerName).postMessage({ id });
       }, true);
       fix();
     })();
@@ -60,7 +66,8 @@ enum StoreButtonScript {
     }
 
     /// The id to install, or nil when the message must be ignored: it must come from the store's
-    /// main frame, over https, from a detail page whose own address names the same id.
+    /// main frame, over https, while the web view's current address (after any `pushState`) is the
+    /// detail page of that same id.
     static func acceptedID(body: Any, isMainFrame: Bool, securityOrigin: WKSecurityOrigin, frameURL: URL?) -> String? {
         guard isMainFrame, securityOrigin.protocol == "https", securityOrigin.host == ChromeWebStore.host,
               securityOrigin.port == 0 || securityOrigin.port == 443,
@@ -81,7 +88,7 @@ enum StoreButtonScript {
             MainActor.assumeIsolated {
                 guard let id = StoreButtonScript.acceptedID(body: message.body, isMainFrame: message.frameInfo.isMainFrame,
                                                             securityOrigin: message.frameInfo.securityOrigin,
-                                                            frameURL: message.frameInfo.request.url) else { return }
+                                                            frameURL: message.webView?.url) else { return }
                 onAdd(id, spaceID)
             }
         }

@@ -87,14 +87,14 @@ struct ExtensionApprovalSheet: View {
     }
 
     private var siteLines: [String] {
-        let patterns = ext.requestedPermissionMatchPatterns.map(\.string)
+        let patterns = ext.allRequestedMatchPatterns.map(\.string)
         return Array(Set(patterns.map(ExtensionWording.sites))).sorted()
     }
 
     @ViewBuilder
     private var permissions: some View {
         let names = ext.requestedPermissions.map(\.rawValue).map(ExtensionWording.permission).sorted()
-        let patterns = ext.requestedPermissionMatchPatterns.map(\.string)
+        let patterns = ext.allRequestedMatchPatterns.map(\.string)
         VStack(alignment: .leading, spacing: 6) {
             Text("It will be able to").font(.headline)
             if ExtensionWording.reachesEverySite(patterns) {

@@ -18,7 +18,6 @@ extension AppTests {
         {"manifest_version":3,"name":"SG Fixture","version":"1.0",
          "background":{"service_worker":"bg.js"},
          "content_scripts":[{"matches":["http://127.0.0.1/*"],"js":["cs.js"],"run_at":"document_end"}],
-         "host_permissions":["http://127.0.0.1/*"],
          "permissions":["storage","declarativeNetRequest"],
          "declarative_net_request":{"rule_resources":[{"id":"r","enabled":true,"path":"rules.json"}]},
          "options_page":"options.html",
@@ -314,6 +313,28 @@ extension AppTests {
         try await Task.sleep(for: .milliseconds(500))
         #expect(rig.state.extensions.downloading.isEmpty)
         #expect(rig.state.extensions.pending == nil)
+    }
+
+    /// The store moves between pages with `pushState`: a button that appears on a detail page
+    /// reached that way is relabelled too, and on a page that isn't a detail page nothing changes.
+    @Test(.timeLimit(.minutes(1))) func storeButtonAfterPushState() async throws {
+        let rig = try Rig(installed: false)
+        defer { rig.tearDown() }
+        let page = try await rig.page(rig.workTab, rig.work)
+        let id = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
+        page.webView.loadHTMLString("<!doctype html><title>store</title><div id=box></div>",
+                                    baseURL: URL(string: "https://chromewebstore.google.com/category/extensions"))
+        try await waitUntil("the category page", limit: .seconds(10)) { page.webView.title == "store" }
+        let addButton = "document.getElementById('box').innerHTML = '<button id=add disabled><span jsname=\"V67aGc\">Add to Chrome</span></button>'"
+        _ = try? await page.webView.evaluateJavaScript(addButton)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect((try? await page.webView.evaluateJavaScript("document.getElementById('add').disabled") as? Bool) == true)
+
+        _ = try? await page.webView.evaluateJavaScript("history.pushState({}, '', '/detail/dark-reader/\(id)'); document.getElementById('box').innerHTML = ''")
+        _ = try? await page.webView.evaluateJavaScript(addButton)
+        _ = await Self.eventually("the relabelled button after pushState") {
+            (try? await page.webView.evaluateJavaScript("document.getElementById('add').innerText + '|' + document.getElementById('add').disabled") as? String) == "Add to Singularity|false"
+        }
     }
 
     /// Opt-in (`SG_REAL_STORE=1`, needs the network): Dark Reader from Chrome Web Store, through

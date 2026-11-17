@@ -533,7 +533,7 @@ final class ExtensionCenter: NSObject {
                 let update = PendingExtension(extensionID: id, staged: staged, webExtension: webExtension, source: .store,
                                               replaces: current, fromSpace: nil)
                 if ExtensionRules.widens(current, permissions: Set(webExtension.requestedPermissions.map(\.rawValue)),
-                                         patterns: Set(webExtension.requestedPermissionMatchPatterns.map(\.string))) {
+                                         patterns: Set(webExtension.allRequestedMatchPatterns.map(\.string))) {
                     // It asks for more: the owner decides (one sheet at a time; else next time).
                     if pending == nil { pending = update } else { try? FileManager.default.removeItem(at: staged.stage) }
                 } else {
@@ -603,7 +603,7 @@ final class ExtensionCenter: NSObject {
             record.source = pending.source
             record.fingerprint = fingerprint
             record.permissions = Set(loaded.requestedPermissions.map(\.rawValue))
-            record.patterns = Set(loaded.requestedPermissionMatchPatterns.map(\.string))
+            record.patterns = Set(loaded.allRequestedMatchPatterns.map(\.string))
             record.enabledSpaces = spaces
             records[id] = record
             statuses[id] = .ready
