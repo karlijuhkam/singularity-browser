@@ -94,7 +94,11 @@ enum PaletteResults {
         case .search(let url):
             let search = PaletteItem(id: "search", title: trimmed, subtitle: "Search \(state.settings.searchEngineName)", hint: "Search",
                                      icon: .symbol("magnifyingglass"), action: .openURL(url))
-            return matches + [search]
+            // After the matches that really contain the text, above the ones the fuzzy matcher
+            // found by scattered letters; first (Return searches) when nothing really matches.
+            return PaletteRanking.placingSearch(search, among: Array(matches)) {
+                PaletteRanking.isConcrete(trimmed, in: [$0.title, $0.subtitle])
+            }
         case nil:
             return matches
         }

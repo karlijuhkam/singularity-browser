@@ -56,7 +56,9 @@ Sources/
                      assets/, the list for the palette, today's journal name, Markdown files from elsewhere, and
                      when a save must not overwrite the file)
     Palette/         FuzzyMatcher, URLInput (URL vs search text), PaletteLayout (the palette is centred over the page,
-                     between the sidebar and a plugin's panel, not over the window)
+                     between the sidebar and a plugin's panel, not over the window), PaletteRanking (the "Search"
+                     row goes after the concrete matches, typed words as text or initials, and above the loose
+                     fuzzy ones; first, so Return searches, when nothing really matches)
     Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath, TerminalLinkPath (a Cmd-clicked relative path: the program's folder, not the app's `/`),
                      HerdrTree (`HerdrFacts`: the lines of `hc events --json` folded into every herdr terminal; a tab's
                      child rows, marks, names, the close question's text),
