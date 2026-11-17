@@ -126,6 +126,12 @@ final class AppState {
     @ObservationIgnored private var activeTerminalBySpace: [UUID: UUID] = [:]
     /// Per Space: the tab selected before the current one (⌘\ splits the current tab with it).
     @ObservationIgnored private var previousTabBySpace: [UUID: UUID] = [:]
+    /// Per Space: when its home was last on screen and then left (the home's "new" marks compare
+    /// against it). In memory only: lost on quit, never written to disk.
+    private(set) var homeLeftAt: [UUID: Date] = [:]
+    /// The Space whose home is on screen now (its home tab, or the empty Space's tab-less home);
+    /// nil when none is. `loadSelectedTab` keeps it, and stamps `homeLeftAt` when it changes.
+    @ObservationIgnored private var homeOnScreenSpaceID: UUID?
     /// Per split (`SplitGroup.id`): the pane the owner focused last that is not a plugin tab. A
     /// plugin tab in a split reaches this pane as "the tab in front" (`pluginFront`).
     @ObservationIgnored private var lastOtherPaneByGroup: [UUID: UUID] = [:]
@@ -779,6 +785,37 @@ final class AppState {
         loadSelectedTab()
     }
 
+    // MARK: - The Space's home (the rules are in Core: HomeRules.swift)
+
+    /// New Tab (⌘T, the sidebar's New Tab): the selected Space's home. Its existing home tab is
+    /// selected if it has one (one home per Space, so ⌘T twice makes one); otherwise a new home
+    /// tab lands where New Tab puts a tab (at the end of Tabs) and is selected.
+    func openHome() {
+        closeWelcome()
+        guard let spaceID = selectedSpaceID, let space = space(spaceID) else { return }
+        if let homeID = HomeRules.reusableHome(in: space) {
+            selectTab(homeID)
+            return
+        }
+        let tab = BrowserTab.home()
+        if let current = space.selectedTabID { previousTabBySpace[spaceID] = current }
+        mutateSpace(spaceID) {
+            $0.append(tab)
+            $0.selectedTabID = tab.id
+        }
+        loadSelectedTab()
+    }
+
+    /// Notes when a home leaves the screen (`homeLeftAt`). Called from `loadSelectedTab`, which
+    /// every change of the selected tab or Space passes through.
+    private func noteHomeOnScreen(_ space: Space) {
+        let shows = space.selectedTab == nil || space.visibleTabIDs.contains { space.tab($0)?.isHome == true }
+        let now: UUID? = shows ? space.id : nil
+        guard now != homeOnScreenSpaceID else { return }
+        if let left = homeOnScreenSpaceID { homeLeftAt[left] = Date() }
+        homeOnScreenSpaceID = now
+    }
+
     // MARK: - Little windows
 
     /// A link from another app: it opens in its own little window (see `LittleWindows`).
@@ -1335,6 +1372,7 @@ final class AppState {
         if let selected = space.selectedTab, !selected.isPlugin, let group = space.splitGroup(containing: selected.id) {
             lastOtherPaneByGroup[group.id] = selected.id
         }
+        noteHomeOnScreen(space)
         plugins.frontDidChange()
     }
 

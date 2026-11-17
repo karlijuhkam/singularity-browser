@@ -161,6 +161,8 @@ enum PaletteResults {
                 .symbol("puzzlepiece.extension")
             } else if tab.isNote {
                 .symbol("note.text")
+            } else if tab.isHome {
+                .symbol("house")
             } else if tab.isArtifact {
                 .symbol("doc.richtext")
             } else {
@@ -253,7 +255,7 @@ enum PaletteResults {
                     state.togglePin(tab.id)
                 })
             }
-            if !tab.isTerminal && !tab.isPlugin && !tab.isNote {
+            if !tab.isTerminal && !tab.isPlugin && !tab.isNote && !tab.isHome {
                 items.append(command("reload", "Reload Page", "arrow.clockwise") {
                     state.web.existingController(tab.id)?.reload()
                 })

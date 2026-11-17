@@ -74,6 +74,9 @@ struct TabIcon: View {
         } else if tab.isNote {
             Image(systemName: "note.text")
                 .foregroundStyle(.secondary)
+        } else if tab.isHome {
+            Image(systemName: "house")
+                .foregroundStyle(.secondary)
         } else if tab.isArtifact {
             let isMissing = state.missingArtifactTabs.contains(tab.id)
             Image(systemName: isMissing ? "questionmark.square.dashed" : "doc.richtext")
