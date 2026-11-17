@@ -106,7 +106,9 @@ final class PaneDragHandleView: NSView, NSDraggingSource {
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        context == .withinApplication ? .move : []
+        // Copy too: the sidebar's drop targets (SwiftUI) propose copy, and AppKit drops only when
+        // source and target share an operation. The panes' own drop layers answer move.
+        context == .withinApplication ? [.move, .copy] : []
     }
 
     /// A small rounded label with the tab's title, shown under the cursor while dragging.

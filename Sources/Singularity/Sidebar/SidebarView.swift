@@ -209,23 +209,30 @@ private struct TabList: View {
     @State private var isDraggingTab = false
 
     var body: some View {
-        // Selecting a row in the List selects the tab.
+        // Selecting a row in the List selects the tab. Only a tab's id selects: the List also
+        // tags a folder's row with its id (a ForEach over `Folder`s, whose ids are UUIDs too),
+        // and "selecting" that showed an empty page.
         let selection = Binding<UUID?>(
             get: { space.selectedTabID },
-            set: { id in if let id { state.selectTab(id) } }
+            set: { id in if let id, state.selectedSpace?.tab(id) != nil { state.selectTab(id) } }
         )
 
         List(selection: selection) {
             let pinned = space.sidebarItems(in: .pinned)
-            if !pinned.isEmpty {
+            // With nothing pinned, the section is there only while a tab is dragged, to drop it on.
+            // (It must be a row of the List: AppKit hands a drop to the List under the pointer, so
+            // an overlay on top of it never gets one.)
+            if !pinned.isEmpty || isDraggingTab {
                 Section {
                     ForEach(pinned) { item in
                         SidebarItemRow(item: item, space: space)
                     }
-                    .onMove { state.moveSidebarItems(in: .pinned, fromOffsets: $0, toOffset: $1) }
                     .onInsert(of: TabDrop.types) { row, providers in drop(providers, in: .pinned, atRow: row) }
+                    if pinned.isEmpty {
+                        EmptySectionDropRow(section: .pinned)
+                    }
                 } header: {
-                    SectionDropHeader(title: "Pinned", section: .pinned)
+                    Text("Pinned")
                 }
             }
 
@@ -239,59 +246,44 @@ private struct TabList: View {
             }
 
             Section {
-                ForEach(space.sidebarItems(in: .open)) { item in
+                let open = space.sidebarItems(in: .open)
+                ForEach(open) { item in
                     SidebarItemRow(item: item, space: space)
                 }
-                .onMove { state.moveSidebarItems(in: .open, fromOffsets: $0, toOffset: $1) }
                 .onInsert(of: TabDrop.types) { row, providers in drop(providers, in: .open, atRow: row) }
+                if open.isEmpty, isDraggingTab {
+                    EmptySectionDropRow(section: .open)
+                }
             } header: {
-                SectionDropHeader(title: "Tabs", section: .open)
+                Text("Tabs")
             }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        // With nothing pinned there is no Pinned section to drop on, so one appears for the drag.
-        .overlay(alignment: .top) {
-            if isDraggingTab, space.sidebarItems(in: .pinned).isEmpty {
-                PinDropZone()
-            }
-        }
+        // No `onMove` on any of these ForEach: a drag SwiftUI takes for its own reorder can't
+        // leave its section (it refuses every other place). Each move, also within a section,
+        // is a drop handled by `onInsert`, and `ListDragOperations` (in every row) lets those drops
+        // happen at all.
         .onReceive(NotificationCenter.default.publisher(for: TabDragSession.didBegin)) { _ in isDraggingTab = true }
         .onReceive(NotificationCenter.default.publisher(for: TabDragSession.didEnd)) { _ in isDraggingTab = false }
     }
 
-    /// A tab dropped between two rows of a section (`onMove` only covers drags within one section).
+    /// A tab dropped between two rows of a section, from this section or another.
     private func drop(_ providers: [NSItemProvider], in section: SidebarSection, atRow row: Int) {
         TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section, atRow: row) }
     }
 }
 
-/// A section title that also takes a dropped tab (it goes to the end of the section). Needed
-/// when the section has no rows to drop between.
-private struct SectionDropHeader: View {
+/// The only row of an empty Pinned or Tabs section while a tab is dragged: the place to drop it.
+/// (A section's title takes no drop, and neither does an empty section: the List refuses both.)
+private struct EmptySectionDropRow: View {
     @Environment(AppState.self) private var state
-    let title: String
     let section: SidebarSection
     @State private var isTargeted = false
 
     var body: some View {
-        Text(title)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(dropHighlight(isTargeted))
-            .onDrop(of: TabDrop.types, isTargeted: $isTargeted) { providers in
-                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section) }
-            }
-    }
-}
-
-/// Shown at the top of the tab list while a tab is dragged and nothing is pinned yet.
-private struct PinDropZone: View {
-    @Environment(AppState.self) private var state
-    @State private var isTargeted = false
-
-    var body: some View {
-        Label("Drop here to pin", systemImage: "pin")
+        Label(section == .pinned ? "Drop here to pin" : "Drop here",
+              systemImage: section == .pinned ? "pin" : "arrow.down.to.line")
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, minHeight: 26)
@@ -301,9 +293,10 @@ private struct PinDropZone: View {
                     .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
                                   style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
             )
-            .padding(.horizontal, 8)
+            .background(ListDragOperations())
+            .selectionDisabled()
             .onDrop(of: TabDrop.types, isTargeted: $isTargeted) { providers in
-                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .pinned) }
+                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section) }
             }
     }
 }
@@ -345,6 +338,9 @@ private struct SidebarItemRow: View {
                     }
                 }
             }
+            .background(ListDragOperations())
+            // Dragging the row moves the whole split within the sidebar.
+            .itemProvider { tabIDs.first.map(TabDrag.splitRowProvider(for:)) }
         }
     }
 }
@@ -385,7 +381,7 @@ private struct SplitRow: View {
                     .contentShape(Rectangle())
                     .onTapGesture { state.selectTab(id) }
                     .contextMenu { TabContextMenu(tab: tab, space: space) }
-                    // No drag source here: dragging the row reorders the whole split in the
+                    // No drag source on a chip: dragging the row moves the whole split in the
                     // sidebar. Panes are rearranged by dragging their header on the page.
                     // No room for a project tag on a chip, so the tooltip names it.
                     .help(tab.displayTitle + (space.projectName(of: tab).map { " (\($0))" } ?? ""))
@@ -415,7 +411,6 @@ private struct FolderGroup: View {
             ForEach(space.sidebarItems(in: .folder(folder.id))) { item in
                 SidebarItemRow(item: item, space: space)
             }
-            .onMove { state.moveSidebarItems(in: .folder(folder.id), fromOffsets: $0, toOffset: $1) }
             .onInsert(of: TabDrop.types) { row, providers in
                 TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id), atRow: row) }
             }
@@ -439,6 +434,10 @@ private struct FolderGroup: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .background(dropHighlight(isDropTargeted))
+                .background(ListDragOperations())
+                // A folder is not a tab: its row can't be selected, and a click folds or unfolds it.
+                .selectionDisabled()
+                .onTapGesture { state.toggleFolder(folder.id) }
                 .onDrop(of: TabDrop.types, isTargeted: $isDropTargeted) { providers in
                     TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id)) }
                 }

@@ -49,6 +49,7 @@ struct TabWithChildrenRow: View {
                 HerdrChildList(tab: tab, children: children, isTabSelected: isSelected)
             }
         }
+        .background(ListDragOperations())
         // At the List row's root, where the List looks for it: the tab can still be dragged onto
         // the page (a split) or into another section.
         .itemProvider { TabDrag.provider(for: tab.id) }

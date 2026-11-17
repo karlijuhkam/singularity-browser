@@ -1006,16 +1006,11 @@ final class AppState {
         mutateSpace(spaceID) { $0.moveTab(tabID, to: section) }
     }
 
-    /// A tab dropped between two rows of a section (possibly coming from another section).
+    /// A tab dropped between two rows of a section (possibly coming from another section), or a
+    /// split's row dragged by one of its tabs (within its section).
     func moveTab(_ tabID: UUID, to section: SidebarSection, atRow row: Int) {
         guard let spaceID = selectedSpaceID else { return }
         mutateSpace(spaceID) { $0.moveTab(tabID, to: section, atRow: row) }
-    }
-
-    /// Reorders sidebar rows (a split's row moves all its tabs).
-    func moveSidebarItems(in section: SidebarSection, fromOffsets offsets: IndexSet, toOffset destination: Int) {
-        guard let spaceID = selectedSpaceID else { return }
-        mutateSpace(spaceID) { $0.moveSidebarItems(in: section, fromOffsets: offsets, toOffset: destination) }
     }
 
     // MARK: - Folders
@@ -1047,6 +1042,12 @@ final class AppState {
                 space.folders[index].name = name
             }
         }
+    }
+
+    /// A click on a folder's row in the sidebar: folds it, or unfolds it.
+    func toggleFolder(_ folderID: UUID) {
+        guard let folder = selectedSpace?.folders.first(where: { $0.id == folderID }) else { return }
+        setFolderExpanded(folderID, !folder.isExpanded)
     }
 
     func setFolderExpanded(_ folderID: UUID, _ expanded: Bool) {

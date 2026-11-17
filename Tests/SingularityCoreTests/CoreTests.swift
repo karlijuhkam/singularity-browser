@@ -129,6 +129,31 @@ import Testing
         #expect(rows(.open) == [ids[2], ids[4], ids[3]])
     }
 
+    @Test func droppingASplitsRowMovesTheWholeSplitWithinItsSection() {
+        let folder = Folder(name: "Docs")
+        var space = Space(name: "Work", slug: "work", colorHex: "#5E81F4", folders: [folder])
+        let tabs = (0..<4).map { BrowserTab.web(URL(string: "https://example.com/\($0)")!) }
+        tabs.forEach { space.append($0) }
+        let ids = tabs.map(\.id)
+        let didSplit = space.split(ids[2], beside: ids[1], edge: .right)
+        #expect(didSplit)
+        // Rows: 0, the split (1 and 2), 3.
+        #expect(space.sidebarItems(in: .open).count == 3)
+        func first(_ item: SidebarItem) -> UUID { item.tabIDs[0] }
+
+        // The split's row (dragged by one of its tabs) to the end, then to the top.
+        space.moveTab(ids[2], to: .open, atRow: 3)
+        #expect(space.sidebarItems(in: .open).map(first) == [ids[0], ids[3], ids[1]])
+        space.moveTab(ids[1], to: .open, atRow: 0)
+        #expect(space.sidebarItems(in: .open).map(first) == [ids[1], ids[0], ids[3]])
+        #expect(space.splitGroup(containing: ids[1]) != nil)
+        // Another section: nothing moves (a split's tabs can't be moved one by one).
+        space.moveTab(ids[1], to: .folder(folder.id), atRow: 0)
+        space.moveTab(ids[1], to: .pinned, atRow: 0)
+        #expect(space.sidebarItems(in: .open).map(first) == [ids[1], ids[0], ids[3]])
+        #expect(space.sidebarItems(in: .pinned).isEmpty)
+    }
+
     @Test func moveBetweenSections() {
         var (space, folder) = makeSpace()
         let a = space.tabs(in: .open)[0].id

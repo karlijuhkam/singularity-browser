@@ -45,7 +45,8 @@ struct TabRow: View {
         .onHover { isHovering = $0 }
         .help(helpText)
         .contextMenu { TabContextMenu(tab: tab, space: space) }
-        // Lets the row be dragged onto the page to build a split.
+        .background(ListDragOperations())
+        // Lets the row be dragged onto the page to build a split, and to another place in the sidebar.
         .itemProvider { TabDrag.provider(for: tab.id) }
     }
 }
@@ -99,6 +100,17 @@ enum TabDrag {
     static func provider(for tabID: UUID) -> NSItemProvider {
         // SwiftUI asks for this when the drag starts: time to put the panes' drop layers up.
         TabDragSession.begin()
+        return payload(tabID)
+    }
+
+    /// A split's row dragged within the sidebar: it carries one of the split's tabs, and a drop
+    /// in the sidebar moves the split's row (`Space.moveTab(_:to:atRow:)`). The panes' drop
+    /// layers stay down, so the row can't be dropped on the page (that would pull one tab out).
+    static func splitRowProvider(for tabID: UUID) -> NSItemProvider {
+        payload(tabID)
+    }
+
+    private static func payload(_ tabID: UUID) -> NSItemProvider {
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: UTType.singularityTab.identifier, visibility: .ownProcess) { completion in
             completion(Data(tabID.uuidString.utf8), nil)
@@ -106,6 +118,39 @@ enum TabDrag {
         }
         return provider
     }
+}
+
+/// Makes drops in the sidebar possible at all. AppKit drops only when the drag's source and the
+/// place under the pointer agree on an operation. The List's outline view, as the source of a row
+/// drag, offers only *move* inside the app, while SwiftUI's drop targets in it (`onInsert`,
+/// `onDrop`) propose *copy*: so every drop in the sidebar was refused. Placed in a row, this view
+/// finds the outline view it sits in and lets it offer copy as well. (SwiftUI doesn't replace
+/// NSTableView's `draggingSession(_:sourceOperationMaskFor:)`, which answers with this mask; a
+/// drag out of the app is not changed.)
+struct ListDragOperations: NSViewRepresentable {
+    func makeNSView(context: Context) -> ListDragOperationsView { ListDragOperationsView() }
+    func updateNSView(_ view: ListDragOperationsView, context: Context) { view.widen() }
+}
+
+final class ListDragOperationsView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        widen()
+    }
+
+    func widen() {
+        var view = superview
+        while let current = view {
+            if let table = current as? NSTableView {
+                table.setDraggingSourceOperationMask([.move, .copy], forLocal: true)
+                return
+            }
+            view = current.superview
+        }
+    }
+
+    // Takes no clicks: the row under it does.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// Reading the dragged tab back out of a drop in the sidebar.
