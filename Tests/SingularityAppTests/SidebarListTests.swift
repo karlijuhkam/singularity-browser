@@ -118,7 +118,11 @@ extension AppTests {
         #expect(try await drag(f, fromRow: 1, toRow: 5, childIndex: 2))
         #expect(f.space.tab(f.pinned)?.section == .open)
         #expect(f.space.sidebarItems(in: .open).last == .tab(f.pinned))
-        try await Task.sleep(for: .milliseconds(300)) // the list catches up: Pinned is gone
+        // The list catches up: Pinned is gone. (Waited for, not a fixed pause: a busy Mac, e.g.
+        // during a release's build, once needed more than 300 ms.)
+        for _ in 0..<30 where f.outline.numberOfRows != 7 {
+            try await Task.sleep(for: .milliseconds(100))
+        }
 
         // Rows now: 0 "Folders", 1 folder F, 2 its tab, 3 "Tabs", 4…6 the open tabs.
         // An open tab into the folder, as its first row.
