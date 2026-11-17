@@ -423,6 +423,138 @@ extension AppTests {
         #expect(drawn)
     }
 
+    // MARK: - The row takes the keyboard
+
+    /// What the window's content area shows (`MainView`'s private `ContentArea`, without splits):
+    /// the selected tab, or the empty Space's home.
+    private struct SelectedTabArea: View {
+        @Environment(AppState.self) private var state
+        var body: some View {
+            if let tab = state.selectedSpace?.selectedTab {
+                TabContentView(tab: tab)
+            } else {
+                HomeView(tabID: nil)
+            }
+        }
+    }
+
+    /// An off-screen window showing the selected tab. Ordered in, never made key or active.
+    private func showContent(_ f: Fixture) -> (NSWindow, NSView) {
+        let size = NSSize(width: 900, height: 700)
+        let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: size.width, height: size.height),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: SelectedTabArea().environment(f.state)
+            .frame(width: size.width, height: size.height))
+        window.contentView = host
+        window.orderFront(nil)
+        return (window, host)
+    }
+
+    /// The home row's text field, found by its placeholder.
+    private func homeField(in view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField, field.placeholderString == "Search or enter an address" { return field }
+        for sub in view.subviews { if let found = homeField(in: sub) { return found } }
+        return nil
+    }
+
+    /// The window's keyboard is in the home's row: the field itself, or its field editor.
+    private func rowHasKeyboard(_ window: NSWindow, _ host: NSView) -> Bool {
+        guard let field = homeField(in: host) else { return false }
+        if window.firstResponder === field { return true }
+        if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor, editor.delegate === field { return true }
+        return false
+    }
+
+    @Test func rowTakesTheKeyboardOnOpenReuseAndReselect() async throws {
+        let f = try make()
+        defer { finish(f) }
+        let (window, host) = showContent(f)
+        defer { window.orderOut(nil); window.close() }
+
+        // ⌘T: a new home.
+        f.state.openHome()
+        let homeID = try #require(f.space.selectedTabID)
+        try await waitUntil("the row to take the keyboard after openHome") { rowHasKeyboard(window, host) }
+        #expect(!window.isKeyWindow)
+
+        // Away on the page, ⌘T again: the same home, and the row has the keyboard again.
+        f.state.selectTab(f.pageID)
+        try await waitUntil("the home to leave") { homeField(in: host) == nil }
+        #expect(!rowHasKeyboard(window, host))
+        f.state.openHome()
+        #expect(f.space.selectedTabID == homeID)
+        try await waitUntil("the row to take the keyboard when the home is reused") { rowHasKeyboard(window, host) }
+
+        // Away again, then back by selecting the home tab (the sidebar, ⌘1…9).
+        f.state.selectTab(f.pageID)
+        try await waitUntil("the home to leave") { homeField(in: host) == nil }
+        f.state.selectTab(homeID)
+        try await waitUntil("the row to take the keyboard when the home tab is selected") { rowHasKeyboard(window, host) }
+        #expect(!window.isKeyWindow)
+    }
+
+    /// Not a check: with SG_HOME_SNAPSHOT=<file.png> it writes a picture of a filled home (two
+    /// projects, three terminals working / waiting / idle, one waiting inbox entry, a note and an
+    /// artifact) in light appearance to that file and in dark to `<file>-dark.png`. The window is
+    /// far off screen and never made key. The orb is a Metal view, which `cacheDisplay` doesn't draw.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SG_HOME_SNAPSHOT"] != nil))
+    func snapshot() async throws {
+        let target = URL(fileURLWithPath: ProcessInfo.processInfo.environment["SG_HOME_SNAPSHOT"]!)
+        let f = try make()
+        defer { finish(f) }
+        f.state.setProjects([Project(name: "api-server", path: "~/Developer/api"), Project(name: "web", path: "~/Developer/web")],
+                            spaceID: f.spaceID)
+        var ids: [UUID] = []
+        f.state.mutateSpace(f.spaceID) { space in
+            for (index, title) in ["claude · api", "codex · web", "zsh"].enumerated() {
+                let project = space.projects[min(index, space.projects.count - 1)].id
+                let id = space.addTerminal(directory: "~/Developer", projectID: project, inFolder: nil, select: false)
+                space.updateTab(id) { $0.title = title }
+                ids.append(id)
+            }
+        }
+        // Working, waiting (the inbox entry), idle.
+        f.state.inbox.terminalSignal(.status([StatusRecord(id: "main", state: .working, kind: nil, app: "codex",
+                                                           message: "Running the tests")]),
+                                     tabID: ids[1], spaceID: f.spaceID, foregroundProgram: "codex")
+        f.state.inbox.terminalSignal(.notification(title: "Claude Code", body: "Which database should the migration use?"),
+                                     tabID: ids[0], spaceID: f.spaceID, foregroundProgram: "claude")
+        f.state.inbox.terminalSignal(.programExited, tabID: ids[2], spaceID: f.spaceID, foregroundProgram: nil)
+        #expect(!HomeOverview.waiting(state: f.state, space: f.space).isEmpty)
+
+        let fm = FileManager.default
+        let notes = f.state.paths.notesDirectory("work"), artifacts = f.state.paths.artifactsDirectory("work")
+        try fm.createDirectory(at: notes, withIntermediateDirectories: true)
+        try fm.createDirectory(at: artifacts, withIntermediateDirectories: true)
+        try Data("# Release checklist\n".utf8).write(to: notes.appending(path: "Release checklist.md"))
+        try Data("<h1>Dashboard</h1>".utf8).write(to: artifacts.appending(path: "dashboard.html"))
+        f.state.openHome()
+        let homeID = try #require(f.space.selectedTabID)
+
+        let dark = target.deletingLastPathComponent().appending(path: target.deletingPathExtension().lastPathComponent + "-dark.png")
+        for (appearance, file) in [(NSAppearance.Name.aqua, target), (.darkAqua, dark)] {
+            let size = NSSize(width: 900, height: 820)
+            let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: size.width, height: size.height),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: appearance)
+            let host = NSHostingView(rootView: HomeView(tabID: homeID).environment(f.state)
+                .frame(width: size.width, height: size.height))
+            window.contentView = host
+            window.orderFront(nil) // never made key or active
+            try await Task.sleep(for: .milliseconds(800)) // the Recent list loads off the main actor
+            let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            #expect(!window.isKeyWindow)
+            window.orderOut(nil)
+            window.close()
+            let png = try #require(rep.representation(using: .png, properties: [:]))
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try png.write(to: file)
+        }
+    }
+
     private func text(_ result: CallTool.Result) -> String {
         result.content.compactMap { content -> String? in
             if case .text(let text, _, _) = content { return text }
