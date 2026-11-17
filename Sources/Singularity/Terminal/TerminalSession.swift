@@ -545,9 +545,14 @@ final class SingularityTerminalView: LocalProcessTerminalView {
     /// with OSC 7, and without one against the app's own folder (`/`), where the file isn't, so it
     /// said "Link blocked". A detected relative path is made absolute first (`TerminalLinkPath`);
     /// `openDefault` then runs SwiftTerm's usual checks on it and opens it with the file's app.
+    /// Punctuation that ends the sentence around a path ("…/notes.md.") is dropped when the path
+    /// without it names a file (`TerminalLinkPath.target`).
     /// OSC 8 links (`isExplicit`) keep SwiftTerm's rule: their target must be a URL.
     override func requestOpenLink(source: TerminalView, request: TerminalLinkRequest) {
-        if !request.isExplicit, let path = TerminalLinkPath.absolute(request.link, in: linkDirectory?()) {
+        if !request.isExplicit,
+           let path = TerminalLinkPath.target(
+               request.link, in: linkDirectory?(), home: NSHomeDirectory(),
+               exists: { FileManager.default.fileExists(atPath: $0) }) {
             request.openDefault(path)
         } else {
             super.requestOpenLink(source: source, request: request)
