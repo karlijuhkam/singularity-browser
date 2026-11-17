@@ -135,7 +135,7 @@ Every entry of `page.sites` must also appear, as the same text, in `permissions.
 | `terminals` | `true`. Through the browser server the plugin's program already has (so it needs `browser`), the program may list the terminals of the Spaces where the user switched on that plugin's **Terminals** switch, read what a terminal shows, and send text to one or answer a question an agent in it is waiting on, **only after the user approved the exact text on a card, every time**. | "See the terminals of Spaces you switch on for it, read their screens, and send text to one after you approved the exact text" |
 | `openTerminals` | `["program"]`, at most 4 names. The background may open a new terminal tab that runs that program with arguments it chooses (`singularity.terminal.open`). | "Opens terminal tabs that run /opt/homebrew/bin/program with arguments it chooses. That program is not sandboxed: it uses the internet and acts as you" |
 | `notifications` | `true`. The background may show macOS notifications headed with the plugin's name (`singularity.notify`). | "Shows notifications under its name" |
-| `ask` | `true`. The background receives what the user types into a new tab's Ask row and sends to this plugin (`singularity.onAsk`). Needs a `panel`. | "Receives what you type into a new tab's Ask row" |
+| `ask` | `true`. The background receives what the user types into a new tab's Ask row and sends to this plugin (`singularity.onAsk`). Needs a `panel`. The Space is named only when the plugin's Space switches show (it has a page script, `frontTab` or `browser`) and that Space is switched on; a panel plugin with only `ask` always gets `null`. | "Receives what you type into a new tab's Ask row" |
 | `network` | Must be `[]` in round 1. | About the background program only (a page-only plugin gets no such line): "Its background program never uses the internet" without commands or programs; with them: "Its background program never uses the internet; the programs it runs can" |
 
 Details:
@@ -329,7 +329,7 @@ singularity.onAsk(({ text, space }) => {
 ```
 
 - `text` is the user's own words, 1 to 20 000 characters, sent as typed.
-- `space` is `{ slug, name }` when the Space the user asked from is switched on for this plugin, and `null` in any other Space: the plugin learns nothing about a Space that isn't open to it.
+- `space` is `{ slug, name }` when the Space the user asked from is switched on for this plugin, and `null` in any other Space: the plugin learns nothing about a Space that isn't open to it. The Space is named only when the plugin's Space switches show (it has a page script, `frontTab` or `browser`) and that Space is switched on; a panel plugin with only `ask` always gets `null`.
 - Which plugin gets it: the panel plugin ⌃⌘J would open, when it has `ask`; otherwise the first approved plugin with `ask`. With none, the home has no Ask row.
 - One-way: nothing goes back to the home. Registering again replaces the handler; an ask that arrives while there is none is dropped, so register it at top level. Without the permission `onAsk` throws `needs the ask permission`.
 
