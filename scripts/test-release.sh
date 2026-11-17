@@ -145,13 +145,13 @@ printf '%s\n' 'Fix <b>bold</b> & more' '' 'ends ]]> here' > "$NOTES"
 URL="https://github.com/karlijuhkam/singularity-browser/releases/download/v0.2.0/Singularity-0.2.0.zip"
 XML="$TMP/appcast.xml"
 if "$ROOT/scripts/appcast.sh" --version 0.2.0 --build 2 --url "$URL" --length 123 \
-     --signature 'c2lnbmF0dXJl+/=' --min-system 14.0 --notes-file "$NOTES" --out "$XML"; then
+     --signature 'c2lnbmF0dXJl+/=' --min-system 15.4 --notes-file "$NOTES" --out "$XML"; then
   ok "appcast: written"
   CAST="$(cat "$XML")"
   expect     "appcast: well-formed XML"        xmllint --noout "$XML"
   expect     "appcast: build"                  contains "$CAST" 'sparkle:version>2<'
   expect     "appcast: short version"          contains "$CAST" 'shortVersionString>0.2.0<'
-  expect     "appcast: minimum macOS"          contains "$CAST" 'minimumSystemVersion>14.0<'
+  expect     "appcast: minimum macOS"          contains "$CAST" 'minimumSystemVersion>15.4<'
   expect     "appcast: title"                  contains "$CAST" '<title>Singularity 0.2.0</title>'
   expect     "appcast: enclosure URL"          contains "$CAST" "url=\"$URL\""
   expect     "appcast: length"                 contains "$CAST" 'length="123"'

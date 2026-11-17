@@ -11,6 +11,9 @@ import Foundation
 ///     ├─ plugins-data/<id>/         a plugin's own data folder
 ///     ├─ plugins-state.json         plugin approvals and per-Space switches
 ///     ├─ .cache/plugin-install/     staging folders while plugins' npm packages install
+///     ├─ extensions/<id>/           one unpacked browser extension per folder (WebKit loads it)
+///     ├─ extensions-state.json      extension approvals and per-Space switches
+///     ├─ .cache/extension-install/  staging folders while an extension is unpacked and approved
 ///     └─ spaces/<slug>/
 ///        ├─ space.json              the Space, its folders and tabs
 ///        ├─ history.jsonl           one visited page per line
@@ -49,6 +52,14 @@ public struct Paths: Sendable {
     public var pluginsDirectory: URL { root.appending(path: "plugins", directoryHint: .isDirectory) }
     /// Plugin approvals and per-Space switches.
     public var pluginStateFile: URL { root.appending(path: "plugins-state.json") }
+    /// Installed browser extensions, one unpacked folder per extension id.
+    public var extensionsDirectory: URL { root.appending(path: "extensions", directoryHint: .isDirectory) }
+    /// Extension approvals and per-Space switches.
+    public var extensionStateFile: URL { root.appending(path: "extensions-state.json") }
+    /// Where an extension is unpacked while the owner looks at it (one folder per install).
+    public var extensionInstallDirectory: URL {
+        root.appending(path: ".cache/extension-install", directoryHint: .isDirectory)
+    }
 
     /// Where `bun install` runs at plugin approval: one private `install-<uuid>` folder per install
     /// (with its own package cache), deleted afterwards. Not inside any plugin's data folder.

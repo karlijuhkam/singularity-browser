@@ -25,7 +25,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Karli Juhkam</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>14.0</string>
+	<string>15.4</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>NSHighResolutionCapable</key>

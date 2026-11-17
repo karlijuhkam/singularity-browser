@@ -7,7 +7,7 @@
 #   scripts/appcast.sh --version 0.2.0 --build 2 \
 #     --url https://github.com/<owner>/<repo>/releases/download/v0.2.0/Singularity-0.2.0.zip \
 #     --length <zip size in bytes> --signature <edSignature from sign_update> \
-#     --min-system 14.0 --notes-file <text file> --out <appcast.xml>
+#     --min-system 15.4 --notes-file <text file> --out <appcast.xml>
 #
 # The notes file is plain text: every non-empty line becomes one point of the list Sparkle shows.
 # The text is HTML-escaped, so a "<" or "]]>" in a commit subject stays text.

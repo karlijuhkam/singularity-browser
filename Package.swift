@@ -7,7 +7,7 @@ import PackageDescription
 
 let package = Package(
     name: "Singularity",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("15.4")],
     products: [
         .executable(name: "Singularity", targets: ["Singularity"]),
         // The stdio command agents start; it relays to the running app over a Unix socket.

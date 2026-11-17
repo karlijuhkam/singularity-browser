@@ -20,13 +20,16 @@ public struct SiteSettings: Codable, Hashable, Sendable {
     public var agentsCanInspect: Bool
     /// Plugins whose page script is not injected on this site. Only narrows what a plugin may do.
     public var disabledPlugins: Set<String>
+    /// Browser extensions switched off on this site (denied its pages). Only narrows.
+    public var disabledExtensions: Set<String>
 
     public init(camera: MediaPermission = .ask, microphone: MediaPermission = .ask, agentsCanInspect: Bool = false,
-                disabledPlugins: Set<String> = []) {
+                disabledPlugins: Set<String> = [], disabledExtensions: Set<String> = []) {
         self.camera = camera
         self.microphone = microphone
         self.agentsCanInspect = agentsCanInspect
         self.disabledPlugins = disabledPlugins
+        self.disabledExtensions = disabledExtensions
     }
 
     /// Nothing chosen: such entries are not stored.
@@ -39,6 +42,7 @@ public struct SiteSettings: Codable, Hashable, Sendable {
         microphone = (try? container.decodeIfPresent(MediaPermission.self, forKey: .microphone)) ?? .ask
         agentsCanInspect = (try? container.decodeIfPresent(Bool.self, forKey: .agentsCanInspect)) ?? false
         disabledPlugins = Set((try? container.decodeIfPresent([String].self, forKey: .disabledPlugins)) ?? [])
+        disabledExtensions = Set((try? container.decodeIfPresent([String].self, forKey: .disabledExtensions)) ?? [])
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -47,10 +51,11 @@ public struct SiteSettings: Codable, Hashable, Sendable {
         try container.encode(microphone, forKey: .microphone)
         try container.encode(agentsCanInspect, forKey: .agentsCanInspect)
         try container.encode(disabledPlugins.sorted(), forKey: .disabledPlugins) // sorted: stable files
+        if !disabledExtensions.isEmpty { try container.encode(disabledExtensions.sorted(), forKey: .disabledExtensions) }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case camera, microphone, agentsCanInspect, disabledPlugins
+        case camera, microphone, agentsCanInspect, disabledPlugins, disabledExtensions
     }
 }
 
