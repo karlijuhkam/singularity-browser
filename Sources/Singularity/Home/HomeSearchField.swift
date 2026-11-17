@@ -14,11 +14,28 @@ enum HomeSearch {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         return PaletteResults.items(for: query, mode: mode(tabID: tabID), state: state)
     }
+
+    /// What the row offers after the results: "Ask <Title>" (the plugin with `ask`, see
+    /// `AppState.askTarget`), or a line saying the text is too long to hand over. nil for an
+    /// empty field or when no plugin may receive asks.
+    enum AskOffer: Equatable {
+        case ask(title: String)
+        case tooLong
+    }
+
+    static let askTooLongText = "Too long to send (max 20 000 characters)."
+    static let askItemID = "home.ask"
+
+    static func askOffer(for query: String, state: AppState) -> AskOffer? {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let id = state.askTarget else { return nil }
+        if query.count > AskRules.maxLength { return .tooLong }
+        return .ask(title: "Ask \(state.pluginTitle(id))")
+    }
 }
 
 /// The home's one row: a text field with the palette's results under it, keyboard driven like
-/// `CommandPaletteView` (↑/↓, Return picks the selected row). Esc does nothing: there is nowhere
-/// to dismiss to.
+/// `CommandPaletteView` (↑/↓, Return picks the selected row), and "Ask <Title>" last (⌘Return
+/// picks it directly). Esc does nothing: there is nowhere to dismiss to.
 struct HomeSearchField: View {
     @Environment(AppState.self) private var state
     let tabID: UUID?
@@ -31,7 +48,8 @@ struct HomeSearchField: View {
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        let items = HomeSearch.items(for: query, tabID: tabID, state: state)
+        let offer = HomeSearch.askOffer(for: query, state: state)
+        let items = rows(offer)
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
@@ -50,13 +68,28 @@ struct HomeSearchField: View {
                         return .handled
                     }
                     .onKeyPress(.escape) { .handled }
+                    // ⌘Return: Ask, whatever row is selected.
+                    .onKeyPress(keys: [.return], phases: .down) { press in
+                        guard press.modifiers.contains(.command) else { return .ignored }
+                        if offer == nil { return .ignored }
+                        ask()
+                        return .handled
+                    }
             }
             .padding(.horizontal, 16)
             .frame(height: 48)
 
-            if !items.isEmpty {
+            if !items.isEmpty || offer == .tooLong {
                 Divider()
-                results(items)
+                if !items.isEmpty { results(items) }
+            }
+            if offer == .tooLong {
+                Text(HomeSearch.askTooLongText)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
             }
         }
         .background {
@@ -98,9 +131,29 @@ struct HomeSearchField: View {
         }
     }
 
+    /// The palette's results, then the Ask row when there is one.
+    private func rows(_ offer: HomeSearch.AskOffer?) -> [PaletteItem] {
+        var items = HomeSearch.items(for: query, tabID: tabID, state: state)
+        if case .ask(let title) = offer {
+            items.append(PaletteItem(id: HomeSearch.askItemID, title: title, subtitle: "", hint: "⌘↩",
+                                     icon: .symbol("sparkles"), action: .run({})))
+        }
+        return items
+    }
+
+    /// Hands the text to the plugin and clears the field; on a refusal (not running, too long) the
+    /// text stays where it is.
+    private func ask() {
+        if state.askAssistant(query) { query = "" }
+    }
+
     private func run(_ items: [PaletteItem]) {
         guard !items.isEmpty else { return }
         let item = items[min(selectedIndex, items.count - 1)]
+        if item.id == HomeSearch.askItemID {
+            ask()
+            return
+        }
         query = ""
         PaletteResults.perform(item, mode: HomeSearch.mode(tabID: tabID), state: state)
     }

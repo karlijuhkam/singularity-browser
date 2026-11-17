@@ -1327,6 +1327,27 @@ final class AppState {
         updateSettings { $0.pluginPanel = id }
     }
 
+    // MARK: - The home's Ask row
+
+    /// The plugin the home's "Ask <Title>" row would hand text to: the one ⌃⌘J opens when it has
+    /// `ask`, else the first approved plugin with `ask`; nil means no Ask row.
+    var askTarget: String? {
+        plugins.askTarget(toggle: pluginPanelTarget)
+    }
+
+    /// "Ask <Title>": hands `text` to `askTarget`'s background, with the selected Space named only
+    /// where it is switched on for that plugin, then shows its panel (its page leaves a tab for the
+    /// panel, as Move to Side Panel does). The selected tab (the home) stays selected. False, with
+    /// nothing sent and the panel untouched, when there is no target, it isn't running, or the text
+    /// is blank or longer than `AskRules.maxLength`. The text is never logged.
+    @discardableResult
+    func askAssistant(_ text: String) -> Bool {
+        guard !welcomeCoversWindow, let space = selectedSpace, let id = askTarget,
+              plugins.sendAsk(text, to: id, space: space) else { return false }
+        movePluginPageToPanel(id)
+        return true
+    }
+
     /// Closing a plugin's tab only hides its page: the page and the plugin's background go on.
     private func removePluginTabs(_ id: String) {
         for space in spaces {
