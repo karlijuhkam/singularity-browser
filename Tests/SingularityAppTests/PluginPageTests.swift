@@ -432,6 +432,40 @@ extension AppTests {
         #expect(hellos == 2)
     }
 
+    /// An ask from the home that couldn't be sent arrives as a draft (in the `hello` answer, then
+    /// pushed): the input takes each one after what is there, once, and the page tells the
+    /// background which it took.
+    @Test(.enabled(if: hasBun, "Vendor/bun/bun is missing (run scripts/fetch-bun.sh)"))
+    func theAssistantsPageTakesDraftsIntoItsInput() async throws {
+        let plugin = try AssistantCopy()
+        defer { plugin.remove() }
+        guard case .object(var fields) = Self.readyState else { return }
+        fields["status"] = .string("starting")
+        fields["drafts"] = .array([.object(["id": .number(1), "text": .string("from home")])])
+        let hello = JSONValue.object(fields)
+        var received: [JSONValue] = []
+        let (host, window) = makeHost(pluginID: "assistant", folder: plugin.folder, manifest: plugin.manifest) { payload in
+            received.append(payload)
+            return hello
+        }
+        defer { close(host, window) }
+        func input() async -> String {
+            let result = try? await host.webView.evaluateJavaScript("document.querySelector('textarea')?.value ?? ''")
+            return result as? String ?? ""
+        }
+        await wait("the draft in the input") { await input() == "from home" }
+        #expect(await input() == "from home")
+        await wait("draftTaken") { received.contains(.object(["type": .string("draftTaken"), "id": .number(1)])) }
+        #expect(received.contains(.object(["type": .string("draftTaken"), "id": .number(1)])))
+
+        // A pushed draft is appended; one already taken (id 1 again) is not added twice.
+        host.post(.object(["type": .string("draft"), "id": .number(2), "text": .string("and more")]))
+        host.post(.object(["type": .string("draft"), "id": .number(1), "text": .string("from home")]))
+        await wait("the second draft") { await input() == "from home\n\nand more" }
+        #expect(await input() == "from home\n\nand more")
+        await wait("draftTaken 2") { received.contains(.object(["type": .string("draftTaken"), "id": .number(2)])) }
+    }
+
     /// What the Assistant's background answers `hello` with once Claude is ready (see view.ts, ViewState).
     private static let readyState: JSONValue = .object([
         "messages": .array([]), "status": .string("ready"), "model": .null, "models": .array([]),

@@ -957,3 +957,15 @@ test("draftTaken keeps drafts that came after the one taken; a bad id is refused
   expect(state.drafts.map((d: { text: string }) => d.text)).toEqual(["b"]);
   expect((await send({ type: "draftTaken", id: "x" })).error).toBeString();
 });
+
+test("drafts count against the state's size budget: the messages make room", async () => {
+  const long = "x".repeat(60_000);
+  const messages = Array.from({ length: 6 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", text: long }));
+  const { ask, send } = await make({}, messages);
+  const before = await send({ type: "hello" });
+  for (let i = 0; i < 4; i++) await ask("é".repeat(20_000));
+  const after = await send({ type: "hello" });
+  expect(after.drafts.length).toBe(4);
+  expect(after.messages.length).toBeLessThan(before.messages.length);
+  expect(Buffer.byteLength(JSON.stringify(after))).toBeLessThan(256 * 1024);
+});

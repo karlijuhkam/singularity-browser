@@ -206,7 +206,8 @@ export function createAssistant(deps: Dependencies) {
 
   function state(): ViewState {
     return {
-      messages: fitMessages(messages),
+      // The drafts go out whole, so the messages get what is left of the budget.
+      messages: fitMessages(messages, Math.max(STATE_BUDGET_BYTES - Buffer.byteLength(JSON.stringify(drafts)), 1024)),
       status,
       model: chosenModel ?? providerModel,
       models,
