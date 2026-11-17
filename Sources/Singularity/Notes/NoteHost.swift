@@ -42,6 +42,8 @@ final class NoteHost: NSObject {
 
     /// The file was renamed: the new path inside the note's folder.
     var onRename: ((String) -> Void)?
+    /// The file was written or renamed (the Space's home reads its Recent list again).
+    var onFileChange: (() -> Void)?
     /// The owner ⌘-clicked a link (or pressed Open on it).
     var onOpenLink: ((URL) -> Void)?
     /// Whether another tab already shows the note at this path (a rename must not land on it).
@@ -126,6 +128,7 @@ final class NoteHost: NSObject {
         // `.atomic`: written to a temporary file first, then moved into place.
         try Data(markdown.utf8).write(to: file, options: .atomic)
         known = markdown
+        onFileChange?()
         return ["ok": true]
     }
 
@@ -148,6 +151,7 @@ final class NoteHost: NSObject {
         location.path = newPath
         place.location = location
         onRename?(newPath)
+        onFileChange?()
         return ["title": newTitle]
     }
 

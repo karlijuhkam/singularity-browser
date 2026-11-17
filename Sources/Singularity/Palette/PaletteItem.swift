@@ -105,27 +105,43 @@ enum PaletteResults {
     }
 
     /// The user chose `item` (Return or a click): closes the palette, then does it.
+    ///
+    /// Chosen from a home (the home's own row, or the palette over a selected home), anything
+    /// that makes and selects a new tab takes the home's place (`AppState.replacingHome`); an
+    /// address or search from the home's row turns the home itself into that page.
     static func perform(_ item: PaletteItem, mode: PaletteMode, state: AppState) {
+        // Taken before anything else, so a home waits for at most one picker choice.
+        let pickerHome = state.takeHomeAwaitingPicker()
         state.palette = nil
         // The user chose something: the welcome flow must not stay over it. (`showPalette` closed
         // the flow already; this keeps it true for the URL actions, which `openInNewTab` no longer does.)
         state.closeWelcome()
-        switch item.action {
-        case .openURL(let url):
-            switch mode {
-            case .newTab: state.openInNewTab(url)
-            case .navigateCurrent: state.navigateSelectedTab(to: url)
-            case .splitWith(let edge, let beside): state.openInSplit(url, edge: edge, beside: beside)
-            case .newTerminalIn: break // this mode has no URL rows
+        let selectedHome = state.selectedSpace?.selectedTab.flatMap { $0.isHome ? $0.id : nil }
+        let homeID: UUID? = switch mode {
+        case .home(let id): id
+        case .newTerminalIn: pickerHome
+        case .newTab, .navigateCurrent: selectedHome
+        case .splitWith: nil // a pane beside the home is not the home's replacement
+        }
+        state.replacingHome(homeID) {
+            switch item.action {
+            case .openURL(let url):
+                switch mode {
+                case .newTab: state.openInNewTab(url)
+                case .navigateCurrent: state.navigateSelectedTab(to: url)
+                case .home(let id): state.homeNavigate(id, to: url)
+                case .splitWith(let edge, let beside): state.openInSplit(url, edge: edge, beside: beside)
+                case .newTerminalIn: break // this mode has no URL rows
+                }
+            case .selectTab(let id):
+                if case .splitWith(let edge, let beside) = mode {
+                    state.splitTab(id, beside: beside, edge: edge)
+                } else {
+                    state.selectTab(id)
+                }
+            case .run(let action):
+                action()
             }
-        case .selectTab(let id):
-            if case .splitWith(let edge, let beside) = mode {
-                state.splitTab(id, beside: beside, edge: edge)
-            } else {
-                state.selectTab(id)
-            }
-        case .run(let action):
-            action()
         }
     }
 

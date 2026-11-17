@@ -20,6 +20,10 @@ final class InboxCenter {
     /// `terminals` tool. Fed by every signal, whether or not the owner looks at the tab. Not
     /// observed: no view draws it, and status records arrive often.
     @ObservationIgnored private(set) var board = TerminalBoard()
+    /// Moves on only when a tab's row on `board` really changed (state, reason, message or since),
+    /// so the Space's home can redraw its Terminals section without the whole board being
+    /// observed.
+    private(set) var boardRevision = 0
     /// Whether the inbox panel is on screen. Change it through `showPanel` / `closePanel`.
     var isPanelShown = false
 
@@ -118,7 +122,9 @@ final class InboxCenter {
     /// program went away.
     func terminalSignal(_ signal: TerminalSignal, tabID: UUID, spaceID: UUID, foregroundProgram: String?) {
         // The board first: it keeps the state whatever the looked-at rules below decide.
+        let rowBefore = board.row(tabID)
         board.apply(signal, tabID: tabID, foregroundProgram: foregroundProgram, now: now())
+        if board.row(tabID) != rowBefore { boardRevision &+= 1 }
         let tab = facts(tabID: tabID, spaceID: spaceID, foregroundProgram: foregroundProgram)
         var statusApp: String?
         if case .status(let records) = signal { statusApp = InboxRules.summarise(records)?.app }
@@ -157,6 +163,7 @@ final class InboxCenter {
 
     /// The tab is gone: everything for it goes, approvals too.
     func tabClosed(_ tabID: UUID) {
+        if board.row(tabID) != nil { boardRevision &+= 1 }
         board.remove(tabID)
         var updated = inbox
         let gone = updated.tabClosed(tabID)

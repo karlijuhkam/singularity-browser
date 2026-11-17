@@ -132,6 +132,12 @@ final class AppState {
     /// The Space whose home is on screen now (its home tab, or the empty Space's tab-less home);
     /// nil when none is. `loadSelectedTab` keeps it, and stamps `homeLeftAt` when it changes.
     @ObservationIgnored private var homeOnScreenSpaceID: UUID?
+    /// A home whose action opened the "New terminal in" picker: the picker's choice takes its
+    /// place (`PaletteResults.perform`); cancelling the picker forgets it. In memory only.
+    @ObservationIgnored private var homeAwaitingPicker: UUID?
+    /// Moves on whenever a Space's notes or artifact files may have changed, so a shown home reads
+    /// its Recent list again. In memory only.
+    private(set) var homeFilesRevision = 0
     /// Per split (`SplitGroup.id`): the pane the owner focused last that is not a plugin tab. A
     /// plugin tab in a split reaches this pane as "the tab in front" (`pluginFront`).
     @ObservationIgnored private var lastOtherPaneByGroup: [UUID: UUID] = [:]
@@ -806,6 +812,65 @@ final class AppState {
         loadSelectedTab()
     }
 
+    /// The home's row chose an address or a search: the home tab itself (same id, same row, same
+    /// pane) becomes that web page and loads it. Does nothing when `homeID` is no longer a home.
+    func homeNavigate(_ homeID: UUID, to url: URL) {
+        guard let spaceID = spaces.first(where: { $0.tab(homeID)?.isHome == true })?.id else { return }
+        closeWelcome()
+        let page = BrowserTab.web(url)
+        mutateSpace(spaceID) {
+            $0.updateTab(homeID) { tab in
+                tab.kind = page.kind
+                tab.title = page.title // "Home" must not travel with the address
+            }
+            $0.selectedTabID = homeID
+        }
+        if spaceID == selectedSpaceID { loadSelectedTab() }
+    }
+
+    /// Runs `action`, started from the home `homeID` (nil: no home, just run it). When it made a
+    /// new tab and selected it in the home's Space, that tab takes the home's place
+    /// (`HomeRules.tabToReplaceHome`, `Space.replaceHome`). When it opened the project picker
+    /// instead, the picker's choice will (`homeAwaitingPicker`); going to an existing tab, or
+    /// cancelling, leaves the home as it was.
+    func replacingHome(_ homeID: UUID?, _ action: () -> Void) {
+        guard let homeID, let spaceID = spaces.first(where: { $0.tab(homeID)?.isHome == true })?.id,
+              let before = space(spaceID).map({ Set($0.tabs.map(\.id)) }) else {
+            action()
+            return
+        }
+        action()
+        if case .newTerminalIn = palette, selectedSpaceID == spaceID {
+            homeAwaitingPicker = homeID
+            return
+        }
+        guard let after = space(spaceID), after.tab(homeID)?.isHome == true,
+              let newTabID = HomeRules.tabToReplaceHome(before: before, after: after) else { return }
+        mutateSpace(spaceID) { $0.replaceHome(homeID, with: newTabID) }
+        if spaceID == selectedSpaceID { loadSelectedTab() }
+    }
+
+    /// The home the picker's choice replaces, if the picker was opened from one. Taken once.
+    func takeHomeAwaitingPicker() -> UUID? {
+        defer { homeAwaitingPicker = nil }
+        return homeAwaitingPicker
+    }
+
+    /// A project's "+ terminal" (and its launcher menu) on the home: a new terminal in that
+    /// project, by the picker's own path, taking the home's place. `homeID` nil: the empty
+    /// Space's home, which has no tab to replace.
+    func homeNewTerminal(homeID: UUID?, projectID: UUID?, launcherID: UUID?) {
+        let folderID = homeID.flatMap { selectedSpace?.tab($0)?.folderID }
+        replacingHome(homeID) {
+            startTerminal(choice: projectID, inFolder: folderID, adoptForFolder: false, launcherID: launcherID)
+        }
+    }
+
+    /// A note or an artifact file changed: a shown home reads its Recent list again.
+    func homeFilesDidChange() {
+        homeFilesRevision &+= 1
+    }
+
     /// Notes when a home leaves the screen (`homeLeftAt`). Called from `loadSelectedTab`, which
     /// every change of the selected tab or Space passes through.
     private func noteHomeOnScreen(_ space: Space) {
@@ -870,8 +935,13 @@ final class AppState {
         mutateSpace(spaceID) { $0.insert(BrowserTab.web(url), after: sourceTabID) }
     }
 
-    /// Loads a URL in the selected web tab, or in a new tab if no web tab is selected.
+    /// Loads a URL in the selected web tab, or in a new tab if no web tab is selected. A selected
+    /// home becomes that page itself (`homeNavigate`), so no home is left behind.
     func navigateSelectedTab(to url: URL) {
+        if let home = selectedSpace?.selectedTab, home.isHome {
+            homeNavigate(home.id, to: url)
+            return
+        }
         guard let space = selectedSpace, let tab = space.selectedTab, case .web = tab.kind else {
             openInNewTab(url)
             return
@@ -1115,7 +1185,15 @@ final class AppState {
     func showPalette(_ mode: PaletteMode) {
         closeWelcome()
         refreshPaletteNotes()
+        homeAwaitingPicker = nil // a new palette is no home's picker (until `replacingHome` says so)
         palette = mode
+    }
+
+    /// The palette closed without a choice (Esc, a click outside it): a home that waited for the
+    /// picker stays as it was.
+    func closePalette() {
+        palette = nil
+        homeAwaitingPicker = nil
     }
 
     /// The selected tab's full address, for web tabs only: what the address row's copy button and
@@ -1642,6 +1720,7 @@ final class AppState {
             }
         }
         knownArtifactPages[spaceID] = known
+        homeFilesDidChange()
 
         for tab in space.tabs {
             guard let path = tab.artifactPath, reloadAll || pagesToReload.contains(path) else { continue }
@@ -1904,6 +1983,9 @@ enum PaletteMode: Hashable {
     /// (nil = Tabs); with `adoptForFolder` the chosen project also becomes that folder's.
     /// `launcherID`: the launcher button that asked; its command is typed into the new terminal.
     case newTerminalIn(folderID: UUID?, adoptForFolder: Bool, launcherID: UUID? = nil)
+    /// The home's own row (`HomeSearchField`): an address or search turns the home tab `tabID`
+    /// itself into that page; anything that makes a new tab takes the home's place.
+    case home(tabID: UUID)
 }
 
 struct SpaceEditorRequest: Identifiable {
