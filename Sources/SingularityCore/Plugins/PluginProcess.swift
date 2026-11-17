@@ -379,6 +379,9 @@ public final class PluginProcess: @unchecked Sendable {
         case .pageMessage, .commandResult, .panelMessage, .programStarted, .programFailed, .programOutput, .programExit,
              .frontChanged:
             log("error", "ignored a message the app sends, not the plugin: \(String(decoding: data.prefix(200), as: UTF8.self))")
+        case .ask:
+            // Also only the app's to send; its text is never written to the log.
+            log("error", "ignored an ask message: only the app sends those")
         }
     }
 
@@ -534,7 +537,7 @@ public final class PluginProcess: @unchecked Sendable {
     /// API can refuse `front()` locally (the app refuses again; this only gives a clear error).
     static func permissionFlags(_ permissions: PluginManifest.Permissions) -> String {
         #"{"frontTab":\#(permissions.frontTab),"browser":\#(permissions.browser),"terminals":\#(permissions.terminals),"#
-            + #""openTerminals":\#(!permissions.openTerminals.isEmpty),"notifications":\#(permissions.notifications)}"#
+            + #""openTerminals":\#(!permissions.openTerminals.isEmpty),"notifications":\#(permissions.notifications),"ask":\#(permissions.ask)}"#
     }
 
     /// Exactly what Bun gets; nothing is inherited from the app (whose environment may hold tokens,

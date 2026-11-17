@@ -58,6 +58,10 @@ public enum PluginWire: Codable, Equatable, Sendable {
     case programExit(programID: Int, status: Int32?, signal: String?)
     /// The tab in front changed: a `FrontTab` as JSON, or null when there is none to show.
     case frontChanged(payload: JSONValue)
+    /// What the owner typed into a new tab's Ask row (`permissions.ask`): `space` is
+    /// `{"slug","name"}` when that Space is switched on for the plugin, else null. One-way: the
+    /// plugin sends no reply. Built by `AskRules.wireMessage`.
+    case ask(text: String, space: JSONValue)
 
     // Plugin to app
     case reply(requestID: Int, payload: JSONValue)
@@ -91,6 +95,7 @@ public enum PluginWire: Codable, Equatable, Sendable {
     private enum Key: String, CodingKey {
         case kind, requestID, tabID, frameHost, payload, callID, result, command, arguments, level, message, name
         case programID, program, environment, data, signal, status, reason, bytes
+        case text, space
     }
 
     public init(from decoder: Decoder) throws {
@@ -150,6 +155,9 @@ public enum PluginWire: Codable, Equatable, Sendable {
             self = .panelPost(payload: try c.decodeIfPresent(JSONValue.self, forKey: .payload) ?? .null)
         case "frontChanged":
             self = .frontChanged(payload: try c.decodeIfPresent(JSONValue.self, forKey: .payload) ?? .null)
+        case "ask":
+            self = .ask(text: try c.decode(String.self, forKey: .text),
+                        space: try c.decodeIfPresent(JSONValue.self, forKey: .space) ?? .null)
         case "frontRequest":
             self = .frontRequest(requestID: try c.decode(Int.self, forKey: .requestID))
         case "browserServerRequest":
@@ -237,6 +245,11 @@ public enum PluginWire: Codable, Equatable, Sendable {
         case let .frontChanged(payload):
             try c.encode("frontChanged", forKey: .kind)
             try c.encode(payload, forKey: .payload)
+        case let .ask(text, space):
+            // `space` is always present (null when the plugin may not know the Space).
+            try c.encode("ask", forKey: .kind)
+            try c.encode(text, forKey: .text)
+            try c.encode(space, forKey: .space)
         case let .frontRequest(requestID):
             try c.encode("frontRequest", forKey: .kind)
             try c.encode(requestID, forKey: .requestID)

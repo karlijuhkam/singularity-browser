@@ -25,6 +25,7 @@ extension PluginError {
         case .invalidProgramEnv(let name): return "it asks to set “\(name)” for its program, which plugins may not"
         case .invalidPanelTitle: return "its panel needs a title of 1 to 40 characters"
         case .panelNeedsBackground: return "its panel needs a background program"
+        case .askNeedsPanel: return "it asks to receive questions but has no panel"
         case .networkNotAvailable: return "it asks for internet access, which plugins can't have yet"
         case .missingLockfile: return "it uses packages but has no bun.lock"
         case .pageSiteNotPermitted(let site): return "its page script runs on \(site) without permission"

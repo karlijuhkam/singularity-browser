@@ -26,6 +26,8 @@ public enum PluginError: Error, Equatable, Sendable {
     case invalidPanelTitle
     /// A `panel` without a `background`: the page would never get a program to talk to.
     case panelNeedsBackground
+    /// `ask` without a `panel`: the asked text is shown and answered in the plugin's panel.
+    case askNeedsPanel
     case missingLockfile
     case pageSiteNotPermitted(String)
     /// A symlink inside a plugin folder (it could point outside the plugin); the path is relative.

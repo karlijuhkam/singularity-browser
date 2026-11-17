@@ -287,6 +287,7 @@ extension PluginManifest.Permissions {
         if terminals && !approved.terminals { return true }
         if openTerminals.contains(where: { !approved.openTerminals.contains($0) }) { return true }
         if notifications && !approved.notifications { return true }
+        if ask && !approved.ask { return true }
         return false
     }
 }

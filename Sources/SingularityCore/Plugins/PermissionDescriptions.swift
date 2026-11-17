@@ -51,6 +51,7 @@ public enum PermissionDescriptions {
                        + "That program is not sandboxed: it uses the internet and acts as you")
         }
         if permissions.notifications { out.append("Shows notifications under its name") }
+        if permissions.ask { out.append("Receives what you type into a new tab's Ask row") }
         if let packages, !packages.packages.isEmpty {
             let n = packages.packages.count
             var line = "Installs \(n) \(n == 1 ? "package" : "packages") from the npm registry"
