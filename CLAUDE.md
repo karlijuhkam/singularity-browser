@@ -56,7 +56,7 @@ Sources/
                      assets/, the list for the palette, today's journal name, Markdown files from elsewhere, and
                      when a save must not overwrite the file)
     Palette/         FuzzyMatcher, URLInput (URL vs search text)
-    Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath,
+    Terminal/        ProcessInspector (foreground program, argv[0], cwd), TerminalTitle, HomePath, TerminalLinkPath (a Cmd-clicked relative path: the program's folder, not the app's `/`),
                      HerdrTree (`HerdrFacts`: the lines of `hc events --json` folded into every herdr terminal; a tab's
                      child rows, marks, names, the close question's text),
                      HerdrCore (optional engine: finding hc, names, arguments, reading `hc get`),
