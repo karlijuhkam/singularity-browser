@@ -27,9 +27,11 @@ sidebar rows.
   Space. **Not part of this design**; it goes to `IDEAS.md` as a follow-up.
 - **owner:** the content below (rows, sections) was shown as a sketch and accepted.
 - **owner:** built natively in the app (approach 1 below).
+- **owner:** the orb is on the home too.
 
 ```
 ┌ Home — Work ─────────────────────────────────────────────┐
+│                          ( orb )                         │
 │  [ address, search or question…                       ]  │
 │    ↳ Open · Search Google · Ask Assistant                │
 │                                                          │
@@ -122,8 +124,8 @@ Anti-goals (would be a failure even if it works):
   selects that tab and leaves the home where it is.
 - Closing works as for any tab (⌘W).
 - In a split: a home tab may be a pane. "Split with…" keeps using the palette as today.
-- **Empty Space:** the content area shows the home view (no tab is made) instead of the orb. The orb
-  stays in the welcome flow. Typing in this tab-less home makes a new tab as the palette does now.
+- **Empty Space:** the content area shows the home view (no tab is made), with the orb on top (see
+  The orb). Typing in this tab-less home makes a new tab as the palette does now.
 
 ### Keys and menus
 
@@ -133,6 +135,17 @@ Anti-goals (would be a failure even if it works):
 - The home's row has the keyboard focus whenever the home is shown; Esc does nothing on the home
   (there's nowhere to dismiss to).
 - While the welcome flow covers the window, ⌘T behaves as it does today (closes the flow first).
+
+### The orb
+
+- **owner:** the live orb sits at the top of the home, centred above the row (about 96 pt; the exact
+  size is the builder's, checked with the owner in the visual pass). It is the same `OrbView` as the
+  empty-Space placeholder today, with `stopsWhenIdle: true`, so every existing rule holds: it
+  animates only while someone is looking (`OrbAnimation.shouldAnimate`), stops after 30 s without the
+  pointer over it, holds its last frame, is one still frame under Reduce Motion, and falls back to the
+  PNGs without Metal. Only the shown home has one (a home tab not on screen draws nothing).
+- The empty Space's home has it in the same place, so the empty Space looks as it does now plus the
+  row and sections.
 
 ### The row
 
