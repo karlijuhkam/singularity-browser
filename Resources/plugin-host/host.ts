@@ -31,6 +31,8 @@
 //                   {"kind":"programExit","programID":1,"status":0,"signal":null}
 //                   {"kind":"reply","requestID":3,"payload":…}                   (answer to frontRequest / browserServerRequest)
 //                   {"kind":"frontChanged","payload":…}                          (a FrontTab, or null)
+//                   {"kind":"ask","text":"…","space":{"slug":"work","name":"Work"}}  (needs permissions.ask; space is null
+//                                                                                 where the Space isn't switched on for the plugin)
 //   plugin -> app   {"kind":"reply","requestID":1,"payload":…}
 //                   {"kind":"runCommand","callID":1,"command":"op","arguments":["item","list"]}
 //                   {"kind":"log","level":"info","message":"…"}
@@ -455,7 +457,7 @@ type FrontTab = {
 type BrowserServer = { command: string; args: string[]; env: Record<string, string> };
 
 // What the manifest grants, passed by the app as our third argument (a JSON object).
-let reach = { frontTab: false, browser: false, openTerminals: false, notifications: false };
+let reach = { frontTab: false, browser: false, openTerminals: false, notifications: false, ask: false };
 try {
   reach = { ...reach, ...JSON.parse(process.argv[3] ?? "{}") };
 } catch {
@@ -466,6 +468,10 @@ let nextAppRequestID = 1;
 /** Questions the plugin asked the app (frontRequest, browserServerRequest), by request id. */
 const pendingAppRequests = new Map<number, (payload: unknown) => void>();
 let frontChangeHandler: ((front: FrontTab | null) => void) | null = null;
+
+/** What the owner typed into a new tab's Ask row; `space` is null where the plugin may not know the Space. */
+type Ask = { text: string; space: { slug: string; name: string } | null };
+let askHandler: ((ask: Ask) => void) | null = null;
 
 /** Asks the app for one of the small things a permission allows; resolves with `{ ok, error? }`. */
 function requestApp(name: "openTerminal" | "notify", payload: unknown): Promise<AppAnswer> {
@@ -569,6 +575,18 @@ const singularity = Object.freeze({
     if (!reach.frontTab) throw new Error("needs the frontTab permission");
     if (typeof handler !== "function") throw new TypeError("onFrontChange needs a function");
     frontChangeHandler = handler;
+  },
+
+  /**
+   * Called with what the owner typed into a new tab's Ask row and sent to this plugin (needs
+   * permissions.ask): `{ text, space }`, where `space` is `{ slug, name }` in a Space switched on
+   * for the plugin and null anywhere else. One-way: nothing is sent back. An ask that arrives
+   * while no handler is set is dropped.
+   */
+  onAsk(handler: (ask: Ask) => void): void {
+    if (!reach.ask) throw new Error("needs the ask permission");
+    if (typeof handler !== "function") throw new TypeError("onAsk needs a function");
+    askHandler = handler;
   },
 
   /** Singularity's browser server for an MCP client (needs permissions.browser): `browser.server()`. */
@@ -677,6 +695,21 @@ function handleLine(line: string): void {
         frontChangeHandler?.(message.payload ?? null);
       } catch (error) {
         log("error", ["onFrontChange handler threw: " + describeError(error)]);
+      }
+    });
+  } else if (message.kind === "ask") {
+    // Like frontChanged: wait for the plugin's top-level code, so a handler registered there gets it.
+    void pluginLoaded.then(() => {
+      if (!askHandler || typeof message.text !== "string") return; // no handler: dropped
+      const s = message.space;
+      const space =
+        s && typeof s === "object" && typeof s.slug === "string" && typeof s.name === "string"
+          ? { slug: s.slug, name: s.name }
+          : null;
+      try {
+        askHandler({ text: message.text, space });
+      } catch (error) {
+        log("error", ["onAsk handler threw: " + describeError(error)]);
       }
     });
   } else if (message.kind === "commandResult") {

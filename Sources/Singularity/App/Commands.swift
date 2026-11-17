@@ -26,7 +26,7 @@ struct SingularityCommands: Commands {
 
         // Replaces File → New Window.
         CommandGroup(replacing: .newItem) {
-            Button("New Tab") { inMainWindow { state.showPalette(.newTab) } }
+            Button("New Tab") { inMainWindow { state.openHome() } }
                 .keyboardShortcut("t")
             Button("New Terminal") { inMainWindow { state.openTerminal() } }
                 .keyboardShortcut("t", modifiers: [.command, .option])
@@ -42,7 +42,10 @@ struct SingularityCommands: Commands {
             Button("Command Palette") { inMainWindow { state.showPalette(.newTab) } }
                 .keyboardShortcut("k")
             // Changes the main window's selected tab, so it is off while a little window is in front.
-            Button("Open Location…") { state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent) }
+            // With no tab selected (an empty Space) it opens the home, as New Tab does.
+            Button("Open Location…") {
+                if state.selectedTab == nil { state.openHome() } else { state.showPalette(.navigateCurrent) }
+            }
                 .keyboardShortcut("l")
                 .disabled(littleInFront)
             // The selected web tab's address (the address row's copy button does the same).

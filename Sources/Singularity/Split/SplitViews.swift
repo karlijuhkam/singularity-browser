@@ -1,7 +1,8 @@
 import SingularityCore
 import SwiftUI
 
-/// What one tab shows: its web view, terminal or plugin page, or a placeholder while it starts.
+/// What one tab shows: its web view, terminal, note, plugin page or the Space's home, or a
+/// placeholder while it starts.
 /// Used for a single tab and for every pane of a split.
 struct TabContentView: View {
     @Environment(AppState.self) private var state
@@ -15,6 +16,8 @@ struct TabContentView: View {
         }
         if let pluginID = tab.pluginID {
             PluginPageArea(pluginID: pluginID, fallbackTitle: tab.title, tabID: tab.id, onDrop: onDrop)
+        } else if tab.isHome {
+            HomeView(tabID: tab.id)
         } else if tab.isNote {
             if let host = state.notes.existingHost(tab.id) {
                 // The editor takes the keyboard when its tab is shown, like a terminal.

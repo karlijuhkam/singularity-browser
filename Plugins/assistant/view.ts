@@ -20,9 +20,28 @@ export type ViewState = {
   chip?: string;
   /** The browser's tools couldn't start or connect (the chat still works); absent in an older background. */
   browserProblem?: boolean;
+  /**
+   * Asks from the home that couldn't be sent (not ready, or a note up), oldest first, kept until
+   * the page says it put them into its input (`draftTaken`); absent in an older background.
+   */
+  drafts?: Draft[];
   /** Counts every change; a `delta` carries the number it makes. */
   version: number;
 };
+
+/** One ask waiting in the input as an unsent draft; ids go up within a run of the background. */
+export type Draft = { id: number; text: string };
+
+/** The drafts the page hasn't put into its input yet (ids above the last one it put in). */
+export function newDrafts(drafts: Draft[] | undefined, lastApplied: number): Draft[] {
+  return (drafts ?? []).filter((d) => d.id > lastApplied);
+}
+
+/** The input with a draft added after what is already there (a blank line between). */
+export function appendDraft(input: string, text: string): string {
+  const before = input.trimEnd();
+  return before === "" ? text : before + "\n\n" + text;
+}
 
 export const EMPTY_CHAT = "Ask anything. The Assistant can look at the tab in front when you share it.";
 export const STALE_LINE = "Earlier conversation. The Assistant no longer remembers it.";

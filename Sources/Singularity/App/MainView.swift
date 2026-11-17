@@ -190,19 +190,8 @@ private struct ContentArea: View {
                 TabContentView(tab: tab)
             }
         } else {
-            ZStack {
-                Color(nsColor: .textBackgroundColor)
-                VStack(spacing: 8) {
-                    // Like singularity.rroosa.ee: a white orb in dark mode, a black one in light mode.
-                    // It may stay on screen all day, so it holds still when nobody moves the pointer.
-                    OrbView(size: 96, stopsWhenIdle: true)
-                        .padding(.bottom, 8)
-                    Text(state.selectedSpace?.name ?? "")
-                        .font(.title2.weight(.semibold))
-                    Text("Press ⌘T to open a tab, or ⌥⌘T for a terminal")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            // An empty Space shows its home without a tab (none is made until something opens).
+            HomeView(tabID: nil)
         }
     }
 }

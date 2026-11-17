@@ -3,6 +3,7 @@
 import { expect, test } from "bun:test";
 import {
   applyDelta,
+  appendDraft,
   billingLabel,
   billingNotice,
   canEdit,
@@ -10,6 +11,7 @@ import {
   EMPTY_CHAT,
   firstStaleIndex,
   keyAction,
+  newDrafts,
   STALE_LINE,
   START_RETRY_AFTER_MS,
   statusNotice,
@@ -118,4 +120,15 @@ test("a piece of text after tool lines starts a new answer; tool lines never tak
   expect(next.messages.at(-1)).toEqual({ role: "assistant", text: "Done." });
   expect(next.messages[1].tools?.length).toBe(1);
   expect(applyDelta(next, { text: " More", version: 7 })!.messages.at(-1)!.text).toBe("Done. More");
+});
+
+test("drafts: only pieces not yet put in, appended after what is there", () => {
+  const pieces = [{ id: 1, text: "one" }, { id: 2, text: "two" }];
+  expect(newDrafts(pieces, 0)).toEqual(pieces);
+  expect(newDrafts(pieces, 1)).toEqual([{ id: 2, text: "two" }]);
+  expect(newDrafts(pieces, 2)).toEqual([]);
+  expect(newDrafts(undefined, 0)).toEqual([]);
+  expect(appendDraft("", "one")).toBe("one");
+  expect(appendDraft("typed  \n", "one")).toBe("typed\n\none");
+  expect(appendDraft("   ", "one")).toBe("one");
 });

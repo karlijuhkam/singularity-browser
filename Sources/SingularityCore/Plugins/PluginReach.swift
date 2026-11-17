@@ -11,7 +11,7 @@ public struct FrontTab: Equatable, Sendable, Codable {
     public struct TabRef: Equatable, Sendable, Codable {
         /// Lowercased UUID, as `list_tabs` gives it.
         public var id: String
-        /// "web", "artifact" or "terminal".
+        /// "web", "artifact", "terminal" or "home".
         public var kind: String
         /// Web and artifact tabs only, cut to 300 characters.
         public var title: String?
@@ -147,6 +147,8 @@ public enum PluginReach {
             ref.url = String(path.prefix(urlLimit))
         case .terminal:
             break
+        case .home:
+            ref.kind = "home"   // no title, no address
         case .plugin, .note:
             return .hidden(.nothing) // unreachable: resolved above
         }

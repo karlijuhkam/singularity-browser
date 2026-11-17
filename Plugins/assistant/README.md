@@ -34,6 +34,14 @@ Ways out when something hangs: Stop that brings no end of the answer within 5 se
 `claude` again (the conversation is kept); "Connecting to Claude…" gets Try Again after 15 seconds;
 and a page that couldn't reach the plugin at all has Try Again too.
 
+## Asks from a new tab
+
+A new tab (the Space's home, ⌘T) has an Ask row: what you type there is handed to the Assistant
+(the `ask` permission), and its panel opens. When the Assistant is ready, the text is sent as if you
+had typed it in the panel. While it is starting, still answering, or a note waits for your OK, the
+text is put into the message box instead, after anything already there, and you press Send; it is
+never dropped. The note before your text says only that you are on a new tab (no title or address).
+
 ## The tab in front and the browser's tools
 
 The Assistant can look at your browser, only where you allow it.

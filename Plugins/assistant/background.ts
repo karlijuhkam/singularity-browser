@@ -10,12 +10,21 @@
 //                                        provider again, keeping the session and the messages)
 //   { type: "setModel", id }             { type: "setConfigFolder", path }   (restarts the provider)
 //   { type: "retry" }                    { type: "billingSeen" }
+//   { type: "draftTaken", id }           the page put the drafts up to `id` into its input
 // Pushed to the page (singularity.panel.post):
 //   { type: "delta", text, version }     a piece of the answer
 //   { type: "front", chip }              the tab in front changed (the chip above the input)
 //   { type: "state", ...state }          after every other change the provider causes
+//   { type: "draft", id, text }          an ask that couldn't be sent: the page appends it to its input
 // The state: { messages, status, model, models, billing, billingNoticeSeen, configFolder,
-// providerVersion, sdkVersion, error, chip, browserProblem, version } (see view.ts, ViewState).
+// providerVersion, sdkVersion, error, chip, browserProblem, drafts, version } (see view.ts, ViewState).
+//
+// Asks (singularity.onAsk, what the owner typed into a new tab's Ask row): when the Assistant is
+// ready (no answer on its way, no note waiting for OK) the text is sent exactly as if typed in the
+// panel. Otherwise it becomes a draft: posted to the page and kept in the state until the page
+// says it put it into its input (`draftTaken`), so an ask that arrives before the page is open is
+// never lost. The ask's `space` is not used: where the user is comes from the tab in front, as for
+// every message.
 //
 // Where the user is: at every send the tab in front (singularity.front()) is put, as a note
 // (front.ts, frontBlock), before the user's text in what goes to the provider, but only when the
@@ -34,7 +43,7 @@ import { ConversationFile, markStale, type Message, type ToolLine } from "./conv
 import { chipText, frontBlock, NOTHING_SHARED, type FrontTab, toolLine, FAILED_SUFFIX } from "./front.ts";
 import type { BrowserServer, Provider, ProviderEvent } from "./provider.ts";
 import { claudeSDKVersion, createClaudeProvider, type QueryFunction } from "./provider-claude.ts";
-import type { Status, ViewState } from "./view.ts";
+import type { Draft, Status, ViewState } from "./view.ts";
 
 /** The largest state the page is sent; older messages are left out beyond it (a post may be 256 KB). */
 const STATE_BUDGET_BYTES = 200 * 1024;
@@ -58,6 +67,8 @@ type Dependencies = {
     front?(): Promise<FrontTab | null>;
     onFrontChange?(handler: (front: FrontTab | null) => void): void;
     browser?: { server(): Promise<BrowserServer | null> };
+    /** Absent in a build without the ask permission. */
+    onAsk?(handler: (ask: { text: string; space: { slug: string; name: string } | null }) => unknown): void;
   };
   provider: Provider;
   conversation: ConversationFile;
@@ -133,6 +144,9 @@ export function createAssistant(deps: Dependencies) {
   /** Counts the messages sent to the provider, so a late Stop timer knows its turn is over. */
   let turn = 0;
   let stopTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Asks the page hasn't taken into its input yet, and the id the next one gets. */
+  let drafts: Draft[] = [];
+  let nextDraftID = 1;
 
   /** Saves the conversation now rather than after the file's short delay. */
   const flush = () => void conversation.flush().catch((e: unknown) => log("couldn't save the conversation: " + String(e)));
@@ -192,7 +206,8 @@ export function createAssistant(deps: Dependencies) {
 
   function state(): ViewState {
     return {
-      messages: fitMessages(messages),
+      // The drafts go out whole, so the messages get what is left of the budget.
+      messages: fitMessages(messages, Math.max(STATE_BUDGET_BYTES - Buffer.byteLength(JSON.stringify(drafts)), 1024)),
       status,
       model: chosenModel ?? providerModel,
       models,
@@ -204,6 +219,7 @@ export function createAssistant(deps: Dependencies) {
       error,
       chip: chip(latestFront),
       browserProblem,
+      drafts: drafts.slice(),
       version,
     };
   }
@@ -404,6 +420,44 @@ export function createAssistant(deps: Dependencies) {
     provider.send(deps.singularity.front && hasBrowser ? frontBlock(frontAtSend) + "\n\n" + text : text);
   }
 
+  /** Whether a message can go out now: ready, and no note (billing) waiting for OK. */
+  function canSendNow(): boolean {
+    return status === "ready" && held === null && billingNoticeSeen;
+  }
+
+  /** An ask that can't be sent now: kept as a draft and offered to the page's input. */
+  function addDraft(text: string): void {
+    const draft = { id: nextDraftID++, text };
+    drafts.push(draft);
+    changed();
+    try {
+      panel.post({ type: "draft", ...draft });
+    } catch (e) {
+      log("couldn't send a draft to the page: " + String(e));
+    }
+    // The state carries the drafts too (and the new version, so the page misses no change).
+    postState();
+  }
+
+  /** What the owner typed into a new tab's Ask row (never logged). */
+  async function ask(text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (trimmed === "") return;
+    try {
+      await load();
+    } catch (e) {
+      log("couldn't read the saved state for an ask: " + String(e));
+      return addDraft(trimmed);
+    }
+    if (!canSendNow()) return addDraft(trimmed);
+    // The same path as the page's Send; if it is refused after all (the state changed while the
+    // tab in front was asked for), the text becomes a draft instead.
+    const reply = await handle({ type: "send", text: trimmed });
+    // A refusal is `{ error }` alone; a state also has an `error` field (null), and messages.
+    if (!Array.isArray((reply as { messages?: unknown } | null)?.messages)) return addDraft(trimmed);
+    postState();
+  }
+
   async function handle(payload: unknown): Promise<unknown> {
     if (payload === null || typeof payload !== "object") return { error: "unknown request" };
     const message = payload as Record<string, unknown>;
@@ -502,6 +556,15 @@ export function createAssistant(deps: Dependencies) {
         }
         return state();
 
+      case "draftTaken": {
+        if (typeof message.id !== "number" || !Number.isInteger(message.id)) return { error: "unknown request" };
+        const upTo = message.id;
+        const before = drafts.length;
+        drafts = drafts.filter((d) => d.id > upTo);
+        if (drafts.length !== before) changed();
+        return state();
+      }
+
       case "billingSeen":
         billingNoticeSeen = true;
         store("billingNoticeSeen", true);
@@ -527,6 +590,11 @@ export function createAssistant(deps: Dependencies) {
       log("couldn't send the chip to the page: " + String(e));
     }
   });
+
+  // Asks from the home. The host hands them over only after this file has loaded.
+  deps.singularity.onAsk?.(({ text }) =>
+    ask(typeof text === "string" ? text : "").catch((e: unknown) => log("couldn't take an ask: " + String(e))),
+  );
 
   return { handle };
 }

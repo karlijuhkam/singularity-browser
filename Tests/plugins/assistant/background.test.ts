@@ -119,6 +119,7 @@ async function make(
   const file = new ConversationFile(dir, { delayMs: options.conversationDelayMs ?? 10 });
   if (options.failDeletes) file.delete = async () => Promise.reject(new Error("disk says no"));
   const frontHandlers: ((front: FrontTab | null) => void)[] = [];
+  const askHandlers: ((ask: { text: string; space: { slug: string; name: string } | null }) => unknown)[] = [];
   const frontAPI = options.front
     ? {
         front: async () => {
@@ -143,6 +144,7 @@ async function make(
     singularity: {
       ...frontAPI,
       ...browserAPI,
+      onAsk: (handler: (ask: { text: string; space: { slug: string; name: string } | null }) => unknown) => void askHandlers.push(handler),
       panel: { post: (payload: unknown) => posts.push(payload) },
       storage: {
         get: async (key: string) => {
@@ -168,7 +170,11 @@ async function make(
   const send = (payload: unknown) => assistant.handle(payload) as Promise<any>;
   const lastState = () => posts.filter((p) => p.type === "state").at(-1);
   const changeFront = (front: FrontTab | null) => frontHandlers.forEach((h) => h(front));
-  return { dir, storage, posts, provider, send, lastState, logs, changeFront, file };
+  /** What the host does with an ask: hands it to the handler the plugin registered. */
+  const ask = async (text: string, space: { slug: string; name: string } | null = null) => {
+    for (const handler of askHandlers) await handler({ text, space });
+  };
+  return { dir, storage, posts, provider, send, lastState, logs, changeFront, file, ask };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
@@ -881,4 +887,85 @@ test("New Chat while the browser's server is still being asked for starts the pr
   await newChat;
   await settle();
   expect(made.provider.starts.map((o) => (o.browser as any).command)).toEqual(["/new"]);
+});
+
+// ---- Asks from the home's Ask row ------------------------------------------------------------
+
+test("askWhenReadySendsAMessage: an ask while ready is sent as if typed in the panel", async () => {
+  const front = { current: { space: { slug: "work", name: "Work" }, tab: { id: "H1", kind: "home" } } as FrontTab | null };
+  const { provider, ask, lastState, posts } = await readyAssistant({ front, browser: SERVER });
+  await ask("What's going on?", { slug: "work", name: "Work" });
+  expect(provider.sent.length).toBe(1);
+  expect(provider.sent[0].startsWith(frontBlock(front.current))).toBe(true);
+  expect(provider.sent[0].endsWith("What's going on?")).toBe(true);
+  expect(lastState()).toMatchObject({ status: "answering", messages: [{ role: "user", text: "What's going on?" }] });
+  expect(posts.some((p) => p.type === "draft")).toBe(false);
+});
+
+test("askWhileNotReadyBecomesDraft: never lost, kept until the page takes it", async () => {
+  const { provider, ask, send, posts } = await make();
+  // The panel was never opened: no hello, the provider isn't running.
+  await ask("first");
+  await ask("  second  ");
+  expect(provider.sent).toEqual([]);
+  const drafts = posts.filter((p) => p.type === "draft");
+  expect(drafts.map((d) => d.text)).toEqual(["first", "second"]);
+  expect(drafts[1].id).toBeGreaterThan(drafts[0].id);
+  // The page opens later (the posts above went nowhere): hello carries the drafts.
+  const hello = await send({ type: "hello" });
+  expect(hello.drafts).toEqual([{ id: drafts[0].id, text: "first" }, { id: drafts[1].id, text: "second" }]);
+  expect(hello.messages).toEqual([]);
+  // Once the page has put them into its input, they are gone from the state.
+  const taken = await send({ type: "draftTaken", id: drafts[1].id });
+  expect(taken.drafts).toEqual([]);
+  expect((await send({ type: "hello" })).drafts).toEqual([]);
+  // A blank ask is nothing.
+  await ask("   ");
+  expect(posts.filter((p) => p.type === "draft").length).toBe(2);
+});
+
+test("askWhileAnsweringBecomesDraft", async () => {
+  const { provider, ask, send, posts } = await readyAssistant();
+  await send({ type: "send", text: "one" });
+  await ask("two");
+  expect(provider.sent).toEqual(["one"]);
+  expect(posts.filter((p) => p.type === "draft").map((d) => d.text)).toEqual(["two"]);
+});
+
+test("askWhileANoteIsHeldBecomesDraft: the billing note waits for OK", async () => {
+  const { provider, ask, send, posts, lastState } = await make();
+  await send({ type: "hello" });
+  provider.emit(ready("api"));
+  expect(lastState().billingNoticeSeen).toBe(false);
+  await ask("question");
+  expect(provider.sent).toEqual([]);
+  expect(lastState().messages).toEqual([]);
+  expect(posts.filter((p) => p.type === "draft").map((d) => d.text)).toEqual(["question"]);
+  // Also with a message already held behind the note.
+  await send({ type: "send", text: "held" });
+  await ask("another");
+  expect(posts.filter((p) => p.type === "draft").map((d) => d.text)).toEqual(["question", "another"]);
+  expect(lastState().drafts.map((d: { text: string }) => d.text)).toEqual(["question", "another"]);
+});
+
+test("draftTaken keeps drafts that came after the one taken; a bad id is refused", async () => {
+  const { ask, send, posts } = await make();
+  await ask("a");
+  await ask("b");
+  const [a] = posts.filter((p) => p.type === "draft");
+  const state = await send({ type: "draftTaken", id: a.id });
+  expect(state.drafts.map((d: { text: string }) => d.text)).toEqual(["b"]);
+  expect((await send({ type: "draftTaken", id: "x" })).error).toBeString();
+});
+
+test("drafts count against the state's size budget: the messages make room", async () => {
+  const long = "x".repeat(60_000);
+  const messages = Array.from({ length: 6 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", text: long }));
+  const { ask, send } = await make({}, messages);
+  const before = await send({ type: "hello" });
+  for (let i = 0; i < 4; i++) await ask("é".repeat(20_000));
+  const after = await send({ type: "hello" });
+  expect(after.drafts.length).toBe(4);
+  expect(after.messages.length).toBeLessThan(before.messages.length);
+  expect(Buffer.byteLength(JSON.stringify(after))).toBeLessThan(256 * 1024);
 });

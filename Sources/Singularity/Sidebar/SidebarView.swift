@@ -185,6 +185,7 @@ private struct AddressRow: View {
         if tab.isTerminal { return "terminal" }
         if tab.isPlugin { return "puzzlepiece.extension" }
         if tab.isNote { return "note.text" }
+        if tab.isHome { return "house" }
         return tab.url?.scheme == "https" ? "lock.fill" : "magnifyingglass"
     }
 
@@ -268,7 +269,7 @@ private struct TabList: View {
         // on empty space it asked AppKit for the row view of row -1, which threw and crashed the
         // test `aRightClickOnEmptySpaceOffersNewTabTerminalAndNote`.
         .contextMenu {
-            Button("New Tab") { state.showPalette(.newTab) }
+            Button("New Tab") { state.openHome() }
             Button("New Terminal") { state.openTerminal() }
             Button("New Note") { state.newNote() }
         }
@@ -523,7 +524,7 @@ private struct NewTabButton: View {
 
     var body: some View {
         Button {
-            state.showPalette(.newTab)
+            state.openHome()
         } label: {
             HStack(spacing: 0) {
                 // Centred under the rail's circles (the rail is 48 pt wide).

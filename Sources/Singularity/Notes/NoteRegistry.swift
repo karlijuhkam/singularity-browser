@@ -37,6 +37,7 @@ final class NoteRegistry {
         let tabID = tab.id, spaceID = space.id
         host.onRename = { [weak state] newPath in state?.noteWasRenamed(tabID: tabID, spaceID: spaceID, to: newPath) }
         host.onOpenLink = { [weak state] url in state?.openLinkFromNote(url, tabID: tabID, spaceID: spaceID) }
+        host.onFileChange = { [weak state] in state?.homeFilesDidChange() }
         host.isOpenElsewhere = { [weak self] path in
             self?.hosts.values.contains { $0.tabID != tabID && $0.location.root == location.root && $0.location.path.lowercased() == path.lowercased() } ?? false
         }

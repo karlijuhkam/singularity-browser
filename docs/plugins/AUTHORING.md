@@ -135,6 +135,7 @@ Every entry of `page.sites` must also appear, as the same text, in `permissions.
 | `terminals` | `true`. Through the browser server the plugin's program already has (so it needs `browser`), the program may list the terminals of the Spaces where the user switched on that plugin's **Terminals** switch, read what a terminal shows, and send text to one or answer a question an agent in it is waiting on, **only after the user approved the exact text on a card, every time**. | "See the terminals of Spaces you switch on for it, read their screens, and send text to one after you approved the exact text" |
 | `openTerminals` | `["program"]`, at most 4 names. The background may open a new terminal tab that runs that program with arguments it chooses (`singularity.terminal.open`). | "Opens terminal tabs that run /opt/homebrew/bin/program with arguments it chooses. That program is not sandboxed: it uses the internet and acts as you" |
 | `notifications` | `true`. The background may show macOS notifications headed with the plugin's name (`singularity.notify`). | "Shows notifications under its name" |
+| `ask` | `true`. The background receives what the user types into a new tab's Ask row and sends to this plugin (`singularity.onAsk`). Needs a `panel`. The Space is named only when the plugin's Space switches show (it has a page script, `frontTab` or `browser`) and that Space is switched on; a panel plugin with only `ask` always gets `null`. | "Receives what you type into a new tab's Ask row" |
 | `network` | Must be `[]` in round 1. | About the background program only (a page-only plugin gets no such line): "Its background program never uses the internet" without commands or programs; with them: "Its background program never uses the internet; the programs it runs can" |
 
 Details:
@@ -147,12 +148,13 @@ Details:
 - A name in `programEnv` is upper-case letters, digits and `_`, starting with a letter, at most 64 characters. These are refused, because they change how a program starts or where it looks: `HOME`, `USER`, `LOGNAME`, `PATH`, `TMPDIR`, `LANG`, `SHELL`, `PWD`, and anything starting with `DYLD_`, `LD_` or `SINGULARITY_`.
 - `frontTab` and `browser` are plain `true` or `false` (anything else is refused). `browser` without `programs` is refused ("it asks to use the browser but keeps no program running"): the browser's tools are for a program the plugin runs, not for the plugin itself. Both are widenings (see below), so a plugin that adds one is paused until the user approves it again.
 - `openTerminals` names follow the rules of `commands` and `programs`: bare names, the refused list above, found on the login `PATH` at approval and pinned, checked again at every use. It needs a `background` (that is what asks). `notifications` is a plain `true` or `false`. Adding a name, or `notifications`, is a widening.
+- `ask` is a plain `true` or `false`. Without a `panel` it is refused (`it asks to receive questions but has no panel`): the user reads the answer in the plugin's own page. Adding it is a widening.
 - `terminals` is a plain `true` or `false` too. Without `browser` it is refused (`it asks to see terminals but not to use the browser`): the terminal tools come through the browser server, never through the plugin's own code.
 - Asking for more later (a new site, a new program, a new sub-command, a new `programEnv` name, `frontTab`, `browser`, `terminals`) means the plugin needs approval again, even in development mode. Asking for less does not.
 
 ### Manifest errors
 
-Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "This folder isn't a plugin Singularity can use: <text>." Permission keys are checked while `plugin.json` is read, before the id. Check order: JSON shape and permission keys, id format, id equals folder, site patterns, page sites, network, commands, programs and `programEnv`, panel title, panel without background, files, packages.
+Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "This folder isn't a plugin Singularity can use: <text>." Permission keys are checked while `plugin.json` is read, before the id. Check order: JSON shape and permission keys, id format, id equals folder, site patterns, page sites, network, commands, programs and `programEnv`, panel title, panel without background, `ask` without panel, files, packages.
 
 | Mistake | Exact message |
 |---|---|
@@ -170,6 +172,7 @@ Settings and the approval sheet show "Problem: <text>"; Add Plugin... shows "Thi
 | Refused or malformed name in `programEnv`, or `programEnv` without `programs` | `it asks to set “PATH” for its program, which plugins may not` |
 | `panel.title` empty, longer than 40 characters, or more than one line | `its panel needs a title of 1 to 40 characters` |
 | `panel` without a `background` | `its panel needs a background program` |
+| `ask` without a `panel` | `it asks to receive questions but has no panel` |
 | `background`, `page.script` or `panel.page` missing, absolute, or contains `..` | `the file background.ts is missing` |
 | Symbolic link in the folder | `it contains a symbolic link (path/to/link)` |
 | FIFO, socket or device | `it contains a special file (path)` |
@@ -218,6 +221,8 @@ singularity.browser.server(): Promise<{ command: string; args: string[]; env: Re
 singularity.terminal.open(program: string, args?: string[]): Promise<{ ok: true } | { ok: false; error: string }>
 // Only for a plugin with `notifications`:
 singularity.notify(title: string, body?: string): Promise<{ ok: true } | { ok: false; error: string }>
+// Only for a plugin with `ask` (see Asks from a new tab):
+singularity.onAsk(handler: (ask: { text: string; space: { slug: string; name: string } | null }) => void): void
 ```
 
 **`onPageMessage(handler)`** handles every `singularity.send(payload)` from this plugin's page script and from its own page. What the handler returns (or resolves to) is the answer; it must be JSON. `undefined` becomes `null`. A thrown error becomes `{ error: "<message>" }`. With no handler the answer is `{ error: "no handler" }`. Registering again replaces the handler. Several messages can be in progress at once.
@@ -312,6 +317,21 @@ if (!answer.ok) singularity.log("couldn't open a terminal:", answer.error);
 **`notify(title, body)`** (needs `notifications`) shows a macOS notification. Its title is always `Plugin “<your plugin's name>”`; your title (cut to 80 characters) and body (cut to 300) are shown under it as `title: body`, plain text on one line. At most 20 an hour and not two within 5 seconds (`too many notifications`). It is shown only if the user already allows Singularity's notifications (a plugin never brings up macOS's permission question); `ok: true` means it was handed over, not that it was seen. A click on it brings Singularity forward. Never put secrets in a notification: it shows on the lock screen.
 
 Both resolve with `{ ok: true }` or `{ ok: false, error }` and never reject for a refusal. Without the permission they resolve with `needs the openTerminals permission` / `needs the notifications permission`.
+
+### Asks from a new tab
+
+A new tab (⌘T) opens the Space's home, whose row can hand what the user typed to a plugin ("Ask Assistant"). **`singularity.onAsk(handler)`** (needs `ask`) calls `handler` with `{ text, space }` each time the user sends one to this plugin. Singularity then opens the plugin's panel, so show the ask there: send it on as if it was typed into your page, or, when you can't take it now, put it into your page's input as a draft. Never drop it.
+
+```ts
+singularity.onAsk(({ text, space }) => {
+  singularity.panel.post({ kind: "ask", text, space });
+});
+```
+
+- `text` is the user's own words, 1 to 20 000 characters, sent as typed.
+- `space` is `{ slug, name }` when the Space the user asked from is switched on for this plugin, and `null` in any other Space: the plugin learns nothing about a Space that isn't open to it. The Space is named only when the plugin's Space switches show (it has a page script, `frontTab` or `browser`) and that Space is switched on; a panel plugin with only `ask` always gets `null`.
+- Which plugin gets it: the panel plugin ⌃⌘J would open, when it has `ask`; otherwise the first approved plugin with `ask`. With none, the home has no Ask row.
+- One-way: nothing goes back to the home. Registering again replaces the handler; an ask that arrives while there is none is dropped, so register it at top level. Without the permission `onAsk` throws `needs the ask permission`.
 
 ### The sandbox
 

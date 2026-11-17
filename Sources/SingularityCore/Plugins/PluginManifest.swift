@@ -43,6 +43,10 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         public var openTerminals: [String]
         /// The plugin may show macOS notifications under its own name (`singularity.notify`).
         public var notifications: Bool
+        /// The plugin may receive what the owner types into a new tab's Ask row (`singularity.onAsk`),
+        /// with the Space named only where it is switched on for the plugin. Needs a `panel`.
+        /// Owner decision 2026-11-17.
+        public var ask: Bool
 
         /// Every program name whose path is pinned at approval.
         public var pinnedNames: Set<String> {
@@ -53,7 +57,8 @@ public struct PluginManifest: Codable, Equatable, Sendable {
                     commands: [String: [String]] = [:], network: [String] = [],
                     programs: [String] = [], programEnv: [String] = [],
                     frontTab: Bool = false, browser: Bool = false, terminals: Bool = false,
-                    openTerminals: [String] = [], notifications: Bool = false) {
+                    openTerminals: [String] = [], notifications: Bool = false, ask: Bool = false) {
+            self.ask = ask
             self.openTerminals = openTerminals
             self.notifications = notifications
             self.pageAdditions = pageAdditions
@@ -78,7 +83,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Key.self)
             let known: Set<String> = ["pageAdditions", "fillForms", "commands", "network", "programs", "programEnv", "frontTab", "browser", "terminals",
-                                      "openTerminals", "notifications"]
+                                      "openTerminals", "notifications", "ask"]
             for key in c.allKeys where !known.contains(key.stringValue) {
                 throw PluginError.unknownPermission(key.stringValue)
             }
@@ -96,6 +101,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
             terminals = try field("terminals", false)
             openTerminals = try field("openTerminals", [String]())
             notifications = try field("notifications", false)
+            ask = try field("ask", false)
         }
     }
 
@@ -177,6 +183,7 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         try validatePrograms()
         try validateOpenTerminals()
         try validatePanel()
+        try validateAsk()
 
         for path in [background, page?.script, panel?.page].compactMap({ $0 }) {
             guard Self.isRegularFile(path, inside: folder) else { throw .missingFile(path) }
@@ -236,6 +243,11 @@ public struct PluginManifest: Codable, Equatable, Sendable {
         let title = panel.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !(1...40).contains(title.count) || panel.title.contains(where: \.isNewline) { throw .invalidPanelTitle }
         if background == nil { throw .panelNeedsBackground }
+    }
+
+    /// `ask` hands the text to the plugin's panel, so a plugin without one can't have it.
+    private func validateAsk() throws(PluginError) {
+        if permissions.ask, panel == nil { throw .askNeedsPanel }
     }
 
     /// No `.npmrc`; packages only as exact npm registry versions, pinned by a matching `bun.lock`

@@ -90,6 +90,7 @@ struct CommandPaletteView: View {
         case .navigateCurrent: "Search or enter a URL"
         case .splitWith: "Choose a tab, or enter a URL, to show beside this one"
         case .newTerminalIn: "New terminal in…"
+        case .home: "Search or enter an address"
         }
     }
 
@@ -121,11 +122,12 @@ struct CommandPaletteView: View {
     }
 
     private func close() {
-        state.palette = nil
+        state.closePalette()
     }
 }
 
-private struct PaletteRow: View {
+/// One result row; also the home's row's results (`HomeSearchField`).
+struct PaletteRow: View {
     @Environment(AppState.self) private var state
     let item: PaletteItem
     let isSelected: Bool

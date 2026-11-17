@@ -207,6 +207,86 @@ import Testing
     }
 }
 
+/// Cmd-clicking a path that ends a sentence ("…/draft.md.") in a terminal: SwiftTerm's detection
+/// keeps the full stop, finds no such file and blocks the link.
+@Suite struct TerminalLinkTargetTests {
+    let dir = "/Users/k/project"
+    let home = "/Users/k"
+    let files: Set<String> = [
+        "/Users/k/dev/notes/plat-326-ui-direction-draft.md",
+        "/Users/k/project/README.md",
+        "/Users/k/project/src/main.swift",
+        "/Users/k/project/odd.",
+        "/Users/k/todo.txt",
+        "/Users/k/project/docs",
+    ]
+    func target(_ link: String, in directory: String? = "/Users/k/project") -> String? {
+        TerminalLinkPath.target(link, in: directory, home: home, exists: { files.contains($0) })
+    }
+
+    @Test func aFullStopAfterAnAbsolutePathIsDropped() {
+        #expect(target("/Users/k/dev/notes/plat-326-ui-direction-draft.md.")
+            == "/Users/k/dev/notes/plat-326-ui-direction-draft.md")
+        #expect(target("/Users/k/dev/notes/plat-326-ui-direction-draft.md.", in: nil)
+            == "/Users/k/dev/notes/plat-326-ui-direction-draft.md")
+    }
+
+    @Test func severalClosingCharactersAreDropped() {
+        #expect(target("/Users/k/project/README.md).") == "/Users/k/project/README.md")
+        #expect(target("README.md\u{201D},") == "/Users/k/project/README.md")
+        #expect(target("README.md`:") == "/Users/k/project/README.md")
+        #expect(target("docs.)") == "/Users/k/project/docs")
+    }
+
+    @Test func aLocationSuffixKeepsItsNumbers() {
+        #expect(target("src/main.swift:12.") == "/Users/k/project/src/main.swift:12")
+        #expect(target("src/main.swift:12:4,") == "/Users/k/project/src/main.swift:12:4")
+        #expect(target("/Users/k/project/src/main.swift:12") == nil)
+    }
+
+    @Test func aHomePathIsExpanded() {
+        #expect(target("~/todo.txt.") == "/Users/k/todo.txt")
+        #expect(target("~/todo.txt") == "/Users/k/todo.txt")
+        #expect(target("~other/a.txt.") == nil)
+    }
+
+    @Test func aWordSwiftTermTookAfterThePathIsDropped() {
+        #expect(target("/Users/k/dev/notes/plat-326-ui-direction-draft.md today.")
+            == "/Users/k/dev/notes/plat-326-ui-direction-draft.md")
+        #expect(target("/Users/k/todo.txt. Done.") == "/Users/k/todo.txt")
+        #expect(target("README.md. e.g.") == "/Users/k/project/README.md")
+        #expect(target("/nowhere/a.md today.") == nil)
+    }
+
+    @Test func anEllipsisNeverOpensTheParentFolder() {
+        let dirs: Set<String> = ["/Users/k/dev", "/Users/k/dev/", "/Users/k", "/Users/k/dev/..", "/Users/k/dev/."]
+        let t = { (link: String) in TerminalLinkPath.target(link, in: "/Users/k", home: "/Users/k", exists: { dirs.contains($0) }) }
+        #expect(t("/Users/k/dev/...") == "/Users/k/dev/")
+        #expect(t("dev/...") == "/Users/k/dev/")
+        #expect(t("/Users/k/dev..") == "/Users/k/dev")
+    }
+
+    @Test func aFileWhoseNameEndsInPunctuationKeepsIt() {
+        #expect(target("odd.") == "/Users/k/project/odd.")
+    }
+
+    @Test func anExistingAbsolutePathIsLeftAlone() {
+        #expect(target("/Users/k/project/README.md") == nil)
+    }
+
+    @Test func withNoFileAnywhereTheLinkStaysAsItWas() {
+        #expect(target("/nowhere/a.md.") == nil)
+        #expect(target("missing.md.") == "/Users/k/project/missing.md.")
+        #expect(target("missing.md.", in: nil) == nil)
+        #expect(target(".") == "/Users/k/project/.")
+    }
+
+    @Test func urlsAreLeftAlone() {
+        #expect(target("https://example.com/a.") == nil)
+        #expect(target("mailto:a@b.ee.") == nil)
+    }
+}
+
 /// Cmd-clicking a relative path in a terminal (e.g. one Claude Code printed). Our shells send no
 /// OSC 7, so SwiftTerm would look for the file in the app's own folder (`/`) and block the link.
 @Suite struct TerminalLinkPathTests {
