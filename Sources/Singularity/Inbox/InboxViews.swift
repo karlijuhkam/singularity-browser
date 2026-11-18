@@ -753,3 +753,20 @@ enum InboxChipText {
         return String(format: "%d:%02d left", seconds / 60, seconds % 60)
     }
 }
+
+// MARK: - The sidebar
+
+/// The mark on a sidebar row (tab, split chip, collapsed folder) whose tab the inbox has something
+/// for, or whose agent is working: the same orange "needs you", blue "working" dot and green
+/// "done" as a herdr child terminal's row.
+struct TabAttentionMark: View {
+    let attention: TabAttention
+
+    var body: some View {
+        switch attention {
+        case .needsYou: HerdrMarkView(mark: .needsYou).help("Waiting for you (in the inbox)")
+        case .working: HerdrMarkView(mark: .working).help("An agent is working")
+        case .done: HerdrMarkView(mark: .done).help("Done (in the inbox)")
+        }
+    }
+}

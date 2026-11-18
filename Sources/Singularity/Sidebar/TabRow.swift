@@ -27,6 +27,10 @@ struct TabRow: View {
             if let project = space.projectTag(of: tab) {
                 ProjectTag(name: project)
             }
+            // The inbox has something for this tab: seen without opening the inbox.
+            if let attention = state.inbox.inbox.tabAttention[tab.id] {
+                TabAttentionMark(attention: attention)
+            }
             AgentBadge(tab: tab)
             if isHovering {
                 Button {

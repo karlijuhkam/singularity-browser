@@ -367,20 +367,31 @@ private struct SplitRow: View {
 
     var body: some View {
         let compact = tabIDs.count >= 4
+        let marks = state.inbox.inbox.tabAttention
         let splitIsShown = space.selectedTabID.map(tabIDs.contains) ?? false
         HStack(spacing: 3) {
             ForEach(tabIDs, id: \.self) { id in
                 if let tab = space.tab(id) {
                     let focused = splitIsShown && space.selectedTabID == id
+                    let attention = marks[id]
                     HStack(spacing: 5) {
                         TabIcon(tab: tab, space: space)
                             .frame(width: 14, height: 14)
+                            // No room for the mark beside a compact chip's icon: on its corner.
+                            .overlay(alignment: .topTrailing) {
+                                if compact, let attention {
+                                    TabAttentionMark(attention: attention)
+                                        .scaleEffect(0.8)
+                                        .offset(x: 6, y: -5)
+                                }
+                            }
                         if !compact {
                             Text(tab.displayTitle)
                                 .font(.system(size: 12))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             Spacer(minLength: 0)
+                            if let attention { TabAttentionMark(attention: attention) }
                             AgentBadge(tab: tab)
                         }
                     }
@@ -432,6 +443,11 @@ private struct FolderGroup: View {
                 Label(folder.name, systemImage: folder.isExpanded ? "folder" : "folder.fill")
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                // Folded away, the header says when a tab inside it has something in the inbox.
+                if !folder.isExpanded,
+                   let attention = space.attention(ofFolder: folder.id, marks: state.inbox.inbox.tabAttention) {
+                    TabAttentionMark(attention: attention)
+                }
                 // The folder's own project: terminals opened in here start in it.
                 if let project = space.ownProject(ofFolder: folder.id) {
                     Text(ProjectTag.short(project.displayName))
