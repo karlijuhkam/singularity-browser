@@ -90,10 +90,11 @@ final class LittleWindows {
         return windows.first { $0.id == frontWindowID }
     }
 
-    /// Opens a link in a new little window. Returns nil for anything that is not a web link.
+    /// Opens a link in a new little window. Returns nil for anything that is not a web link or
+    /// an HTML file.
     @discardableResult
     func open(_ url: URL) -> LittleWindow? {
-        guard LittleWindowRules.accepts(url), let state,
+        guard LittleWindowRules.opens(url), let state,
               let homeID = LittleWindowRules.homeSpace(selected: state.selectedSpaceID, spaces: state.spaces.map(\.id)),
               let space = state.space(homeID) else { return nil }
 

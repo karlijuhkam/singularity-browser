@@ -107,6 +107,25 @@ extension AppTests {
         #expect(setup.state.little.windows.count == 2)
     }
 
+    @Test func anHTMLFileOpensWithItsOwnFolder() async throws {
+        let setup = try setUp()
+        defer { setup.tearDown() }
+        let folder = setup.root.appending(path: "report", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "p { color: rgb(1, 2, 3); }".write(to: folder.appending(path: "style.css"), atomically: true, encoding: .utf8)
+        let page = folder.appending(path: "index.html")
+        try #"<html><head><title>report</title><link rel="stylesheet" href="style.css"></head><body><p id="p">hi</p></body></html>"#
+            .write(to: page, atomically: true, encoding: .utf8)
+
+        let little = try #require(setup.state.little.open(page))
+        let webView = little.controller.webView
+        try await waitUntil("the file to load", limit: .seconds(15)) { webView.title == "report" && !little.controller.isLoading }
+        // The stylesheet next to it loaded too.
+        let color = try await webView.evaluateJavaScript("getComputedStyle(document.getElementById('p')).color") as? String
+        #expect(color == "rgb(1, 2, 3)")
+        #expect(little.chrome?.addressText == page.path(percentEncoded: false))
+    }
+
     @Test func openingInTheHomeSpaceMovesTheLivePage() async throws {
         let setup = try setUp()
         defer { setup.tearDown() }
@@ -376,6 +395,10 @@ extension AppTests {
         inbox.deliver = { delivered.append($0.absoluteString) }
         inbox.receive([URL(string: "https://example.com/three")!])
         #expect(delivered == ["https://example.com/one", "http://example.com/two", "https://example.com/three"])
+        // An HTML file from Finder or `open page.html` is kept; other files are not.
+        inbox.receive([URL(fileURLWithPath: "/Users/me/page.html"), URL(fileURLWithPath: "/Users/me/run.sh")])
+        #expect(delivered.last == "file:///Users/me/page.html")
+        #expect(delivered.count == 4)
     }
 
     @Test func theOpenURLEventReachesTheInbox() {

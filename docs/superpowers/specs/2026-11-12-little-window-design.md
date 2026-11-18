@@ -51,7 +51,7 @@ this is built (see "Documents").
   Those behave as today.
 - A setting to skip the little window and open links straight in a tab.
 - Anything in the welcome flow about the default browser.
-- Opening local files (`file:`, `.html` from Finder). Only `http` and `https`.
+- Opening local files (`file:`, `.html` from Finder). Only `http` and `https`. **Changed (owner decision, 2026-11-18):** macOS hands local HTML files to the default browser anyway (it records `public.html` with the default browser), and they were dropped silently; they now open in a little window too. Still not claimed in `Info.plist`.
 - Restoring little windows after quit. They are throwaway.
 - Agents seeing or driving little windows.
 - An editable address field, a site settings button, tabs or splits in a little window.

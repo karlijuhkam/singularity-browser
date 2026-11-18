@@ -5,7 +5,7 @@ import SingularityCore
 ///
 /// A link that *starts* Singularity arrives before the app state exists for the app delegate, so
 /// links wait here until `deliver` is set, then each is handed over once, in order. Only web
-/// links are kept; anything else macOS might send is dropped.
+/// links, HTML files and Markdown files are kept; anything else macOS might send is dropped.
 @MainActor
 final class LinkInbox {
     private var waiting: [URL] = []
@@ -15,8 +15,9 @@ final class LinkInbox {
     }
 
     func receive(_ urls: [URL]) {
-        // Web links (they open little windows) and Markdown files from Finder (they open as notes).
-        waiting.append(contentsOf: urls.filter { LittleWindowRules.accepts($0) || Self.isMarkdownFile($0) })
+        // Web links and HTML files (they open little windows) and Markdown files from Finder
+        // (they open as notes).
+        waiting.append(contentsOf: urls.filter { LittleWindowRules.opens($0) || Self.isMarkdownFile($0) })
         flush()
     }
 

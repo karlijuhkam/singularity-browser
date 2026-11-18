@@ -108,7 +108,13 @@ final class WebTabController: NSObject {
     }
 
     func load(_ url: URL) {
-        webView.load(URLRequest(url: url))
+        // A local file needs `loadFileURL`: a plain request for a file:// address loads nothing.
+        // The page may read the files in its own folder (its CSS, scripts and images), no more.
+        if url.isFileURL {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        } else {
+            webView.load(URLRequest(url: url))
+        }
     }
 
     // MARK: - Little windows

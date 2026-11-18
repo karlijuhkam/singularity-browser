@@ -14,6 +14,26 @@ import Testing
         #expect(!LittleWindowRules.accepts(url("https:///nohost")))
     }
 
+    @Test func htmlFilesFromOtherAppsOpenToo() {
+        let page = URL(fileURLWithPath: "/Users/me/report/index.html")
+        #expect(LittleWindowRules.isHTMLFile(page))
+        #expect(LittleWindowRules.isHTMLFile(URL(fileURLWithPath: "/Users/me/a.HTM")))
+        #expect(LittleWindowRules.isHTMLFile(URL(fileURLWithPath: "/Users/me/a.xhtml")))
+        #expect(!LittleWindowRules.isHTMLFile(URL(fileURLWithPath: "/Users/me/notes.md")))
+        #expect(!LittleWindowRules.isHTMLFile(URL(fileURLWithPath: "/Users/me/run.sh")))
+        #expect(!LittleWindowRules.isHTMLFile(url("https://example.com/index.html")))
+        #expect(LittleWindowRules.opens(page))
+        #expect(LittleWindowRules.opens(url("https://example.com/")))
+        #expect(!LittleWindowRules.opens(url("mailto:someone@example.com")))
+        // Pop-ups inside a little window still only follow web links.
+        #expect(!LittleWindowRules.accepts(page))
+        // The title bar shows the file's path.
+        #expect(LittleWindowRules.addressText(URL(fileURLWithPath: "/Users/me/my report/index.html")) == "/Users/me/my report/index.html")
+        // A file page that is open goes to another Space as itself.
+        let home = UUID(), other = UUID()
+        #expect(LittleWindowRules.openAction(home: home, chosen: other, current: page, failed: nil, first: url("https://example.com")) == .reload(page))
+    }
+
     @Test func addressIsHostAndPath() {
         #expect(LittleWindowRules.addressText(url("https://github.com/roosa/singularity/pull/42?tab=files#x")) == "github.com/roosa/singularity/pull/42")
         #expect(LittleWindowRules.addressText(url("https://www.example.com/")) == "example.com")
