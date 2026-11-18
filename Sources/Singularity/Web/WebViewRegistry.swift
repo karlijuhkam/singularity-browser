@@ -137,8 +137,22 @@ final class WebViewRegistry {
     /// gives each Space its own persistent cookie jar, localStorage, IndexedDB, cache, etc.
     /// WebKit stores them under ~/Library/WebKit/<bundle id>/WebsiteDataStore/<space id>/.
     static func configuration(for space: Space) -> WKWebViewConfiguration {
+        let configuration = browserConfiguration(store: WKWebsiteDataStore(forIdentifier: space.id))
+        // Agent tools (read_page, find, click, type), in an isolated world pages can't see.
+        PageAgentScript.install(in: configuration)
+        return configuration
+    }
+
+    /// A private window's page: the private windows' in-memory store and nothing of ours on top
+    /// (no page agent, plugin scripts, extensions or capture). See `PrivateWindows`.
+    static func privateConfiguration(store: WKWebsiteDataStore) -> WKWebViewConfiguration {
+        browserConfiguration(store: store)
+    }
+
+    /// What every page of the browser gets, whatever its data store.
+    private static func browserConfiguration(store: WKWebsiteDataStore) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: space.id)
+        configuration.websiteDataStore = store
         // Without "Version/x Safari/y" in the user agent, some sites (Google sign-in among them)
         // treat WKWebView as an insecure embedded browser. We append the installed Safari's version.
         configuration.applicationNameForUserAgent = Self.safariUserAgentSuffix
@@ -147,8 +161,6 @@ final class WebViewRegistry {
         // Safari's Develop menu attach; the menu item needs this WebKit preference, which has no
         // public Swift property (it is set by key, as other WKWebView browsers do).
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        // Agent tools (read_page, find, click, type), in an isolated world pages can't see.
-        PageAgentScript.install(in: configuration)
         return configuration
     }
 

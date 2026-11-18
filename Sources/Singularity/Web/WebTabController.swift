@@ -31,6 +31,19 @@ final class WebTabController: NSObject {
     @ObservationIgnored private(set) var isLittle = false
     /// Closes the little window (the page called `window.close()`, or the link was a download).
     @ObservationIgnored var onLittleClose: (() -> Void)?
+
+    /// True for a private window's page (see `PrivateWindows`). Its web view uses the private
+    /// windows' in-memory data store; it is in no Space and not in `WebViewRegistry`, so it never
+    /// reports to a Space, records no history, fetches no favicon, and no agent, plugin or
+    /// extension reaches it. Pop-ups and ⌘-clicks go to `onPrivatePopup` (a new private window).
+    let isPrivate: Bool
+    /// A private page's pop-up: returns the web view of the new private window, made with
+    /// `configuration` (nil to refuse). ⌘-clicks come here too, with `configuration` nil.
+    @ObservationIgnored var onPrivatePopup: ((WKWebViewConfiguration?, URLRequest) -> WKWebView?)?
+    /// Closes the private window (`window.close()`, or a pop-up that was only a download).
+    @ObservationIgnored var onPrivateClose: (() -> Void)?
+    /// A private pop-up's window closes when its first response turns out to be a download.
+    @ObservationIgnored var closesWhenOnlyADownload = false
     /// True once any page has started arriving. A link that turns out to be a download never gets here.
     @ObservationIgnored private(set) var hasCommittedPage = false
     /// Title and address of the page, mirrored for the little window's title bar.
@@ -88,10 +101,12 @@ final class WebTabController: NSObject {
     /// Bumped by ⌘F so an already open find bar takes the keyboard again.
     private(set) var findFocusToken = 0
 
-    init(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration, state: AppState?, isArtifact: Bool = false) {
+    init(tabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration, state: AppState?, isArtifact: Bool = false,
+         isPrivate: Bool = false) {
         self.tabID = tabID
         self.spaceID = spaceID
         self.isArtifact = isArtifact
+        self.isPrivate = isPrivate
         self.state = state
         // A realistic size even before the tab is shown: tabs that agents open in the background
         // are laid out (and screenshotted) at this size until the user looks at them.
@@ -340,14 +355,14 @@ final class WebTabController: NSObject {
         if let url = webView.url { pageURL = url }
         // A little window's page is no tab: telling the Space would find nothing to update and
         // still mark it changed, rewriting space.json for a page that should leave no trace.
-        guard !isLittle else { return }
+        guard !isLittle, !isPrivate else { return }
         // `url` is briefly nil during some navigations; keep the last known URL then.
         state?.webTabDidChange(tabID: tabID, spaceID: spaceID, title: title, url: webView.url)
     }
 
     /// Finds the page's declared icon (<link rel="icon">), falling back to /favicon.ico.
     private func fetchFavicon() async {
-        guard let pageURL = webView.url, let host = pageURL.host(), let slug = state?.space(spaceID)?.slug else { return }
+        guard !isPrivate, let pageURL = webView.url, let host = pageURL.host(), let slug = state?.space(spaceID)?.slug else { return }
         guard let favicons = state?.favicons, !favicons.hasIcon(slug: slug, host: host) else { return }
 
         let script = """
@@ -398,7 +413,11 @@ extension WebTabController: WKNavigationDelegate {
         // Cmd+click on a link opens it in a background tab, like every other browser.
         if navigationAction.navigationType == .linkActivated,
            navigationAction.modifierFlags.contains(.command) {
-            state?.openInBackgroundTab(url, spaceID: spaceID, after: tabID)
+            if isPrivate {
+                _ = onPrivatePopup?(nil, URLRequest(url: url))
+            } else {
+                state?.openInBackgroundTab(url, spaceID: spaceID, after: tabID)
+            }
             return .cancel
         }
         return .allow
@@ -430,6 +449,7 @@ extension WebTabController: WKNavigationDelegate {
         // A link from another app that is a file, not a page: the little window would stay
         // empty, so it closes. The download goes on and shows in the main window's list.
         if isLittle, !hasCommittedPage { onLittleClose?() }
+        if isPrivate, closesWhenOnlyADownload, !hasCommittedPage { onPrivateClose?() }
     }
 
     /// Controllers with a running download, by download (see `downloadStarted`).
@@ -450,7 +470,7 @@ extension WebTabController: WKNavigationDelegate {
             failedURL = errorNavigationURL
             return
         }
-        guard !isArtifact, !isLittle else { return } // a little window's page is not recorded
+        guard !isArtifact, !isLittle, !isPrivate else { return } // little and private pages are not recorded
         if let url = webView.url {
             state?.recordVisit(spaceID: spaceID, url: url, title: webView.title ?? "")
         }
@@ -501,7 +521,7 @@ extension WebTabController: WKNavigationDelegate {
             guard let self, !self.titleBelongsToPage, self.committedPage == page else { return }
             self.titleBelongsToPage = true
             self.pageTitle = ""
-            guard !self.isLittle else { return }
+            guard !self.isLittle, !self.isPrivate else { return }
             self.state?.webTabDidChange(tabID: self.tabID, spaceID: self.spaceID, title: "", url: self.webView.url)
         }
     }
@@ -581,6 +601,13 @@ extension WebTabController: WKUIDelegate {
         // In a little window there is no tab list to add a pop-up to: the address loads in the
         // same window. (A sign-in that needs a pop-up talking back to its opener won't complete
         // here; open the page in a Space for that.)
+        // A private page's pop-up gets a private window of its own, hosting the web view WebKit
+        // asks for (made from this configuration, so it shares the in-memory store and the
+        // pop-up's `window.opener` works, which sign-in pop-ups need).
+        if isPrivate {
+            guard PrivateWindowRules.opensPopup(navigationAction.request.url) else { return nil }
+            return onPrivatePopup?(configuration, navigationAction.request)
+        }
         if isLittle {
             // Only real addresses: `window.open('')` and about:blank pop-ups (filled in by script
             // afterwards) would replace the page with an empty one.
@@ -593,6 +620,7 @@ extension WebTabController: WKUIDelegate {
     /// The page called `window.close()`.
     func webViewDidClose(_ webView: WKWebView) {
         if isLittle { onLittleClose?(); return }
+        if isPrivate { onPrivateClose?(); return }
         state?.closeTab(tabID, in: spaceID)
     }
 
@@ -705,7 +733,7 @@ extension WebTabController: WKDownloadDelegate {
         state?.downloads.finished(download)
         // A browser extension (a .crx, or Firefox Add-ons' .xpi): offer it for installing. The
         // file stays in Downloads; nothing is installed without the owner's Install.
-        if let state, let file = state.downloads.destination(of: download), ExtensionRules.isExtensionFile(file) {
+        if !isPrivate, let state, let file = state.downloads.destination(of: download), ExtensionRules.isExtensionFile(file) {
             state.extensions.add(file: file, fromSpace: spaceID)
         }
     }

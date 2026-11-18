@@ -12,6 +12,8 @@ import SwiftUI
 /// While a little window has the keyboard (`state.little.frontWindow`), the page commands act on its
 /// page, ⌘W closes it and ⌘O opens it in the chosen Space; commands for the main window's tab,
 /// sidebar or layout are off. Commands that go somewhere in the main window bring it forward.
+/// A private window in front (`state.privateWindows.frontWindow`) is treated the same way, except
+/// that ⌘L puts the cursor in its address field and ⌘O stays Open File….
 struct SingularityCommands: Commands {
     let state: AppState
 
@@ -39,23 +41,28 @@ struct SingularityCommands: Commands {
             // The day's journal note (notes/Journal/<date>.md), made when it isn't there yet.
             Button("Today's Note") { inMainWindow { state.openTodayNote() } }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+            // From anywhere: also over a little window or the welcome flow.
+            Button("New Private Window") { state.openPrivateWindow() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("Command Palette") { inMainWindow { state.showPalette(.newTab) } }
                 .keyboardShortcut("k")
             // Changes the main window's selected tab, so it is off while a little window is in front.
             // With no tab selected (an empty Space) it opens the home, as New Tab does.
             Button("Open Location…") {
-                if state.selectedTab == nil { state.openHome() } else { state.showPalette(.navigateCurrent) }
+                if let front = state.privateWindows.frontWindow {
+                    front.chrome?.focusAddress()
+                } else if state.selectedTab == nil { state.openHome() } else { state.showPalette(.navigateCurrent) }
             }
                 .keyboardShortcut("l")
-                .disabled(littleInFront)
+                .disabled(state.little.frontWindow != nil)
             // The selected web tab's address (the address row's copy button does the same).
             Button("Copy Link") { state.copySelectedAddress() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(covered || littleInFront || state.selectedAddress == nil)
             // One shortcut, two meanings. A little window in front: its page becomes a tab of the
             // Space chosen in its title bar. Otherwise: open Markdown files from the disk as notes.
-            Button(littleInFront ? openInSpaceTitle : "Open File…") {
-                if let key = state.little.frontWindow { state.little.openInSpace(key) } else { state.openMarkdownFilePanel() }
+            Button(state.little.frontWindow != nil ? openInSpaceTitle : "Open File…") {
+                if let key = state.little.frontWindow { state.little.openInSpace(key) } else { inMainWindow { state.openMarkdownFilePanel() } }
             }
             .keyboardShortcut("o")
             Divider()
@@ -183,8 +190,8 @@ struct SingularityCommands: Commands {
     /// The welcome flow hides the sidebar and the tab (see the type's comment).
     private var covered: Bool { state.welcomeCoversWindow }
 
-    /// A little window has the keyboard (see the type's comment).
-    private var littleInFront: Bool { state.little.frontWindow != nil }
+    /// A little or private window is the app's main window (see the type's comment).
+    private var littleInFront: Bool { state.little.frontWindow != nil || state.privateWindows.frontWindow != nil }
 
     private var openInSpaceTitle: String {
         guard let key = state.little.frontWindow,

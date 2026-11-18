@@ -432,7 +432,7 @@ private final class FakeDefaultBrowserSystem: DefaultBrowserSystem {
 }
 
 /// A navigation action with a request, for calling the "new window" delegate method directly.
-private final class FakeNavigationAction: WKNavigationAction {
+final class FakeNavigationAction: WKNavigationAction {
     private let fakeRequest: URLRequest
     init(_ request: URLRequest) { fakeRequest = request }
     override var request: URLRequest { fakeRequest }
@@ -440,7 +440,7 @@ private final class FakeNavigationAction: WKNavigationAction {
 
 /// A local site: "/" (title "home", a text field, a favicon), "/two" (title "two") and "/file"
 /// (an attachment). Run with the system Python, as the other fixture servers are.
-private struct LittleFixtureServer {
+struct LittleFixtureServer {
     let process: Process
     let url: URL
 

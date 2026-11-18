@@ -86,6 +86,8 @@ final class AppState {
     @ObservationIgnored private(set) var inboxNotifier: InboxNotifier?
     /// Little windows: links from other apps, each in its own throwaway window.
     let little = LittleWindows()
+    /// Private windows: pages with an in-memory data store that leave nothing behind.
+    let privateWindows = PrivateWindows()
     /// The browser window (set by `MainView`). Kept so it can be brought forward, and so sheets
     /// that belong to it don't land on a little window.
     @ObservationIgnored weak var mainWindow: NSWindow? {
@@ -218,6 +220,7 @@ final class AppState {
 
         web.state = self
         little.state = self
+        privateWindows.state = self
         extensions.state = self
         // Before any web view is made: restored pages wait for the approved extensions to load.
         extensions.start()
@@ -227,8 +230,10 @@ final class AppState {
         let browserWindow: () -> NSWindow? = { [weak self] in
             if let window = self?.mainWindow, window.isVisible { return window }
             let littleWindows = self?.little.windows.map(\.window) ?? []
+            let privateWindows = self?.privateWindows.windows.map(\.window) ?? []
             return NSApp.windows.first { window in
                 window.isVisible && window.canBecomeMain && !littleWindows.contains { $0 === window }
+                    && !privateWindows.contains { $0 === window }
             }
         }
         inbox.panelController.parentWindow = browserWindow
@@ -492,6 +497,8 @@ final class AppState {
         if let front = little.frontWindow {
             // Not while a sheet is open on it (a page's dialog, a login, printing): answer that first.
             if front.window.attachedSheet == nil { little.close(front) }
+        } else if let front = privateWindows.frontWindow {
+            if front.window.attachedSheet == nil { privateWindows.close(front) }
         } else if welcomeCoversWindow {
             if !welcomeSheetIsOpen { closeWelcome() }
         } else {
@@ -917,6 +924,11 @@ final class AppState {
         }
     }
 
+    /// File → New Private Window (⇧⌘N) and the palette.
+    func openPrivateWindow() {
+        privateWindows.open()
+    }
+
     /// "Open in <home Space>" in a little window: the live page becomes a tab of its Space. The
     /// controller is already in the registry under `tabID`, so adding a tab with that id is all
     /// it takes; the pane then shows the same web view, with everything on the page as it was.
@@ -935,6 +947,7 @@ final class AppState {
     /// flow hides it).
     var frontController: WebTabController? {
         if let front = little.frontWindow { return front.controller }
+        if let front = privateWindows.frontWindow { return front.controller }
         guard !welcomeCoversWindow else { return nil }
         return selectedTab.flatMap { web.existingController($0.id) }
     }
