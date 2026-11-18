@@ -176,3 +176,36 @@ pane.
   long as commands and the inbox agree on it.
 - How SwiftUI's own window restoration is switched off on macOS 14.
 - Tests: Core rules in Swift Testing; app tests with two windows off-screen, never key.
+
+## As built (2026-11-18)
+
+Overrides the design where they differ. Plan: `docs/superpowers/plans/2026-11-18-multi-window.md`.
+
+- **"The front window is live."** `AppState.selectedSpaceID` and each `Space.selectedTabID` describe the
+  front browser window only; other windows keep their records (`BrowserWindowState`). A window that
+  becomes key swaps its record into the live fields (`activateWindow`), without `selectSpace`/`selectTab`
+  side effects. `Space.selectedTabID` is therefore "selected in the front window", saved as before.
+- **One place per tab**: `WindowLayout` (Core) — `shownTabIDs`, `freeTab` (preferred, then the
+  nearest free tab after it, then before it), `reconcile` (front untouched; others moved, in order).
+  Called explicitly at the end of `mutateSpace`, `selectSpace`, `deleteSpace` and the window calls.
+- **Clicks in a background window**: a local mouse-down monitor (`WindowActivationMonitor`) makes the
+  window the front one before anything else sees the click; `focusPane` does the same defensively.
+- **Views** read `@Environment(\.browserWindowID)` and `shownSpace(in:)`, which for a background window
+  is a copy of the Space with that window's selection, so rows, splits and the home need no changes.
+  Sheets, alerts and the palette only in the front window.
+- **Sidebar**: hidden per window (`BrowserWindowState.sidebarHidden`; `settings.sidebarHidden` follows
+  the front window). Only the front window's hidden sidebar slides out (one `SidebarPeekController`).
+- **Plugin panel**: in `panelWindowID`; showing it (⌃⌘J, the sidebar button) moves it to the front
+  window, and ⌃⌘J on a panel open in another window brings it over instead of closing it.
+- **Welcome flow**: covers `onboardingWindowID` (the front window when opened; the first window at a
+  brand-new launch).
+- **⌘W on an empty window** closes it only while another browser window is open (the last one would
+  quit the app).
+- **Extensions** see one window: the front one (as before). `ExtensionCenter`'s new tabs and
+  `activate` keep acting on the front window; the owner's click in an extension's popup is what
+  usually causes them.
+- **Restore**: `claimWindow` gives SwiftUI's first window the first unclaimed record and opens the rest
+  with `openWindow(id: "browser", value:)`; a scene with no free record closes itself. `isRestorable`
+  is off and `tabbingMode` disallowed on every browser window.
+- **Not tried by hand** (no window may be made key in a test): two windows on screen with a real
+  page in each, sharing one in Meet, the Window menu, restoring frames across displays.
