@@ -71,8 +71,9 @@ extension AppState {
     /// the selected Space's visible tabs (alone or in its split).
     func pluginPageIsShown(_ id: String, windowWidth: Double) -> Bool {
         guard !welcomeCoversWindow else { return false }
-        if shownPanelPlugin == id {
-            let sidebar = settings.sidebarHidden ? 8 : sidebarWidth
+        // The panel counts only in the window in front (it is in one window at a time).
+        if shownPanelPlugin == id, panelIsIn(frontWindowID) {
+            let sidebar = sidebarHidden(in: frontWindowID) ? 8 : sidebarWidth
             if PluginPanelLayout.shownWidth(pluginPanelWidth, windowWidth: windowWidth, sidebarWidth: sidebar) != nil {
                 return true
             }

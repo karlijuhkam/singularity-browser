@@ -14,11 +14,19 @@ struct MainView: View {
 
     /// Sheets and the palette belong to the front window only: with two windows, each would
     /// otherwise show the same sheet, and closing one would close both.
-    private var isFront: Bool { state.isFront(windowID) }
+    /// Sheets, alerts and the palette are shown in one window: the one in front when they opened
+    /// (`AppState.showsModals`), so clicking another window neither moves nor closes them.
+    private var isFront: Bool { state.showsModals(windowID) }
 
     private func onlyInFront<Value>(_ binding: Binding<Value?>) -> Binding<Value?> {
-        Binding(get: { [state, windowID] in state.isFront(windowID) ? binding.wrappedValue : nil },
-                set: { binding.wrappedValue = $0 })
+        Binding(get: { [state, windowID] in state.showsModals(windowID) ? binding.wrappedValue : nil },
+                set: { [state, windowID] in if state.showsModals(windowID) { binding.wrappedValue = $0 } })
+    }
+
+    /// Something modal is open (sheets, the extension alert, the palette).
+    private var modalIsOpen: Bool {
+        state.spaceEditor != nil || state.nameRequest != nil || state.isImportingFromArc || state.palette != nil
+            || state.extensions.pending != nil || state.extensions.installMessage != nil
     }
 
     var body: some View {
@@ -48,13 +56,17 @@ struct MainView: View {
         }
         // Tells AppState which NSWindow this browser window is: key → front, close, frame, title.
         .background(BrowserWindowReader { [state, windowID] window in
-            guard let id = windowID ?? state.frontWindowID else { return }
-            WindowLink.attach(window, id: id, state: state)
-            // The Window menu lists windows by title: the Space each one shows.
-            let title = state.shownSpace(in: id)?.name ?? "Singularity"
-            if window.title != title { window.title = title }
+            // Next turn: this runs during SwiftUI's view update, and linking may change observed state.
+            DispatchQueue.main.async {
+                guard let id = windowID ?? state.frontWindowID else { return }
+                WindowLink.attach(window, id: id, state: state)
+                // The Window menu lists windows by title: the Space each one shows.
+                let title = state.shownSpace(in: id)?.name ?? "Singularity"
+                if window.title != title { window.title = title }
+            }
         })
         .onChange(of: state.sidebarIsOffScreen(in: windowID)) { state.applyWindowButtons() }
+        .onChange(of: modalIsOpen, initial: true) { state.pinModals(open: modalIsOpen) }
         // Let the sidebar run up under the (invisible) title bar, next to the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
         .sheet(item: onlyInFront($state.spaceEditor)) { request in
@@ -63,19 +75,19 @@ struct MainView: View {
         .sheet(item: onlyInFront($state.nameRequest)) { request in
             NameSheet(request: request)
         }
-        .sheet(isPresented: Binding(get: { [state, windowID] in state.isFront(windowID) && state.isImportingFromArc },
-                                    set: { state.isImportingFromArc = $0 })) {
+        .sheet(isPresented: Binding(get: { [state, windowID] in state.showsModals(windowID) && state.isImportingFromArc },
+                                    set: { [state, windowID] in if state.showsModals(windowID) { state.isImportingFromArc = $0 } })) {
             ArcImportSheet()
         }
         // A browser extension waiting for Install (Chrome Web Store, Add Extension…, a download).
         .sheet(item: Binding(
             get: { isFront ? state.extensions.pending : nil },
             // Closed some other way than its buttons: same as Cancel (the staged files go).
-            set: { if $0 == nil, let pending = state.extensions.pending { state.extensions.cancel(pending) } }
+            set: { if $0 == nil, isFront, let pending = state.extensions.pending { state.extensions.cancel(pending) } }
         )) { pending in
             ExtensionApprovalSheet(pending: pending)
         }
-        .alert(item: Binding(get: { isFront ? state.extensions.installMessage : nil }, set: { state.extensions.installMessage = $0 })) { message in
+        .alert(item: Binding(get: { isFront ? state.extensions.installMessage : nil }, set: { if isFront { state.extensions.installMessage = $0 } })) { message in
             Alert(title: Text(verbatim: message.title), message: Text(verbatim: message.text))
         }
         .onAppear {
@@ -132,7 +144,7 @@ extension MainView {
         let width = CGFloat(state.sidebarWidth)
         let hidden = state.sidebarHidden(in: windowID)
         // Only the front window's hidden sidebar slides out (one slide-out controller).
-        let peeking = isFront && state.sidebarPeek.isPeeking
+        let peeking = state.isFront(windowID) && state.sidebarPeek.isPeeking
         ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
                 ContentArea()
@@ -147,7 +159,7 @@ extension MainView {
                 }
             }
 
-            if hidden && isFront {
+            if hidden && state.isFront(windowID) {
                 // In that left margin: the strip that notices the pointer at the window's edge.
                 SidebarEdgeTrigger { [state] in state.sidebarPeek.pointerReachedEdge() }
                     .frame(width: SidebarPeekController.edgeWidth)

@@ -142,16 +142,87 @@ extension AppTests {
         #expect(f.state.shownTab(in: second)?.id != f.t[0])
     }
 
+    /// An NSWindow for a record, never shown (registered as if SwiftUI had made it).
+    func fakeWindow(_ f: Fixture, _ id: UUID) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 400, height: 300),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        f.state.registerWindow(window, for: id)
+        return window
+    }
+
     @Test func closingFrontWindowActivatesNext() throws {
         let f = try make()
         defer { done(f) }
         let second = secondWindow(f, showing: f.t[1])
+        let w1 = fakeWindow(f, f.first), w2 = fakeWindow(f, second)
+        defer { _ = (w1, w2) }
+        f.state.nsWindows[second] = nil // closed
         f.state.windowClosed(second)
         #expect(f.state.windows.count == 1)
         #expect(f.state.frontWindowID == f.first)
         #expect(f.state.selectedTab?.id == f.t[0])
         // Its tab stays in the Space.
         #expect(f.state.space(f.work)?.tab(f.t[1]) != nil)
+    }
+
+    @Test func selectionSurvivesRelaunchWithoutWindowChange() throws {
+        let f = try make()
+        // A tab selected after the last window change: space.json has it, state.json doesn't.
+        f.state.flushSaves()
+        f.state.selectTab(f.t[2])
+        TestAppState.shutDown(f.state)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let again = try make(root: f.root)
+        defer { TestAppState.shutDown(again.state) }
+        #expect(again.state.selectedTab?.id == f.t[2])
+    }
+
+    @Test func closingTabDoesNotTakeAnotherWindowsTab() throws {
+        let f = try make()
+        defer { done(f) }
+        // The second window shows B, A's neighbour. Closing A in the first must not take B.
+        let second = secondWindow(f, showing: f.t[1])
+        f.state.activateWindow(f.first)
+        f.state.closeTab(f.t[0], in: f.work, confirmIfBusy: false)
+        #expect(f.state.shownTab(in: second)?.id == f.t[1])
+        #expect(f.state.selectedTab?.id != f.t[1])
+    }
+
+    @Test func homeStaysHomeAfterSwap() throws {
+        let f = try make()
+        defer { done(f) }
+        // The new window shows Work's home (A is in the first window).
+        let second = f.state.addWindow()
+        f.state.activateWindow(second)
+        #expect(f.state.selectedTab == nil)
+        f.state.activateWindow(f.first)
+        #expect(f.state.shownTab(in: second) == nil)
+        f.state.activateWindow(second)
+        #expect(f.state.selectedTab == nil)
+        #expect(f.state.shownTab(in: f.first)?.id == f.t[0])
+    }
+
+    @Test func dropOnAnotherWindowsPaneDoesNothing() throws {
+        let f = try make()
+        defer { done(f) }
+        let second = secondWindow(f, showing: f.t[1])
+        f.state.activateWindow(f.first)
+        f.state.handleTabDrop(f.t[2], onto: f.t[1], zone: .center)
+        #expect(f.state.shownTab(in: second)?.id == f.t[1])
+        #expect(f.state.selectedTab?.id == f.t[0])
+    }
+
+    @Test func newWindowWithNoneOpenReopensTheWaitingOne() throws {
+        let f = try make()
+        defer { done(f) }
+        var opened: [UUID] = []
+        f.state.openBrowserWindow = { opened.append($0) }
+        // The last browser window was closed while something else kept the app running.
+        f.state.windowClosed(f.first)
+        f.state.newWindow()
+        #expect(opened == [f.first])
+        #expect(f.state.windows.count == 1)
     }
 
     @Test func closingLastWindowKeepsRecord() throws {

@@ -209,3 +209,16 @@ Overrides the design where they differ. Plan: `docs/superpowers/plans/2026-11-18
   is off and `tabbingMode` disallowed on every browser window.
 - **Not tried by hand** (no window may be made key in a test): two windows on screen with a real
   page in each, sharing one in Meet, the Window menu, restoring frames across displays.
+- **After the branch review** (fixed): the front window's selected tabs come from `space.json` at launch
+  (only its Space from `state.json`); sheets, alerts and the palette are pinned to the window they
+  opened in (`modalWindowID`), and the palette closes when another window comes forward; Assistant
+  approval cards count only when the panel is in the front window; nothing loads before `init` is
+  done; open windows are counted from live NSWindows (⌘W on an empty window, closing, ⌘N with none
+  open reopens the waiting record); closing a tab never picks a tab another window shows
+  (`withoutTakingTabs`); a drop on another window's pane does nothing; window linking runs on the
+  next turn, not during a SwiftUI update; closing the window the welcome flow covers closes the flow;
+  after launch the saved front window comes forward again.
+- **Known limits**: a background window whose selected tab is closed elsewhere shows the first free
+  tab in sidebar order, not the closed tab's neighbour (its position is gone by then);
+  `panelWindowID` isn't saved, so after a launch the panel is in the front window; tabs moved by
+  ⌃⇥ / ⌘\ / reusing a home are clicks in the owner's sense and may take a tab from another window.

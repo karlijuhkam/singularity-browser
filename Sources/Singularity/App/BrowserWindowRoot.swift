@@ -48,8 +48,17 @@ struct BrowserWindowRoot: View {
         }
         windowID = id
         if requested != id { requested = id }
-        for other in state.unclaimedWindowIDs() {
+        let others = state.unclaimedWindowIDs()
+        guard !others.isEmpty else { return }
+        // Each window opened here becomes key in turn; afterwards the one in front at the last
+        // quit comes forward again (it was made front in `restoreWindows`).
+        let front = state.frontWindowID
+        for other in others {
             openWindow(id: "browser", value: other)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [state] in
+            guard let front, let window = state.nsWindow(for: front) else { return }
+            window.makeKeyAndOrderFront(nil)
         }
     }
 }

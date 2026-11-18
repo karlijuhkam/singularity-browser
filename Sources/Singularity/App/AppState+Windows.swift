@@ -128,7 +128,10 @@ extension AppState {
         windows = restored
         let front = file.frontWindowID.flatMap { id in restored.first { $0.id == id } } ?? restored[0]
         frontWindowID = front.id
-        loadIntoLiveFields(front)
+        // For the front window, each space.json's selected tab is newer than state.json (a tab
+        // selected after the last window change). Only its Space comes from the record.
+        if let spaceID = front.spaceID, space(spaceID) != nil { setLiveSpace(spaceID) }
+        if settings.sidebarHidden != front.sidebarHidden { updateSettings { $0.sidebarHidden = front.sidebarHidden } }
         reconcileWindows()
     }
 
@@ -143,6 +146,8 @@ extension AppState {
         for space in spaces {
             if let tab = space.selectedTabID { record.selectedTabIDs[space.id] = tab }
         }
+        // The Space on screen exactly as shown: nothing selected (its home) stays nothing.
+        if let shown = selectedSpace { record.selectedTabIDs[shown.id] = shown.selectedTabID }
         return record
     }
 
@@ -180,6 +185,8 @@ extension AppState {
         }
         frontWindowID = id
         sidebarPeek.close()
+        // The palette acts on the front window's tab: it doesn't follow the owner to another window.
+        if palette != nil { palette = nil }
         loadIntoLiveFields(windows[index])
         stateFileDirty = true
         scheduleSave()
@@ -234,6 +241,7 @@ extension AppState {
     /// Makes the tabs on screen in windows other than the front one live (web views, shells,
     /// artifact servers). The front's are loaded by `loadSelectedTab`.
     func loadBackgroundWindows() {
+        guard initFinished else { return }
         for window in windows where window.id != frontWindowID {
             guard let spaceID = window.spaceID, let space = space(spaceID) else { continue }
             let shown = WindowLayout.shownTabIDs(in: space, selected: window.selectedTabIDs[spaceID])
@@ -297,8 +305,47 @@ extension AppState {
     /// File → New Window (⌘N) and the palette: a new record, then its window.
     func newWindow() {
         closeWelcomeIfFrontCovered()
+        // No browser window open (the last one was closed while a little window kept the app
+        // running): bring back the one whose record is waiting, rather than add another.
+        if openBrowserWindowCount == 0, let waiting = unclaimedWindowIDs().first {
+            openBrowserWindow?(waiting)
+            return
+        }
         let id = addWindow()
         openBrowserWindow?(id)
+    }
+
+    /// Browser windows on screen now (registered and not closed).
+    var openBrowserWindowCount: Int {
+        nsWindows.values.filter { $0.window != nil }.count
+    }
+
+    /// Runs a change that may pick a new selected tab for the front window by itself (closing a
+    /// tab picks its neighbour): the pick must not be a tab another window shows. Only a click on
+    /// a tab takes it over.
+    func withoutTakingTabs(_ change: () -> Void) {
+        let wasReconciling = reconcilingWindows
+        reconcilingWindows = true
+        change()
+        reconcilingWindows = wasReconciling
+        keepFrontOffOtherWindows()
+        reconcileWindows()
+    }
+
+    /// The window that shows sheets and the palette now: the one they opened in, else the front one.
+    func showsModals(_ windowID: UUID?) -> Bool {
+        let owner = modalWindowID.flatMap { id in windows.contains { $0.id == id } ? id : nil } ?? frontWindowID
+        return owner == nil || (windowID ?? frontWindowID) == owner
+    }
+
+    /// Called by every window when a sheet, alert or the palette opens or closes: pins them to the
+    /// window that was in front when they opened, so clicking another window doesn't move them.
+    func pinModals(open: Bool) {
+        if open {
+            if modalWindowID == nil { modalWindowID = frontWindowID }
+        } else if modalWindowID != nil {
+            modalWindowID = nil
+        }
     }
 
     private func closeWelcomeIfFrontCovered() {
@@ -337,17 +384,21 @@ extension AppState {
     func windowClosed(_ id: UUID) {
         nsWindows[id] = nil
         claimedWindowIDs.remove(id)
-        guard !isTerminating, windows.count > 1, let index = windows.firstIndex(where: { $0.id == id }) else { return }
+        // Counted by windows really open: a record whose window is gone (the last browser window
+        // closed while a little window kept the app running) doesn't count.
+        guard !isTerminating, openBrowserWindowCount > 0,
+              let index = windows.firstIndex(where: { $0.id == id }) else { return }
         let wasFront = id == frontWindowID
         windows.remove(at: index)
         if panelWindowID == id { panelWindowID = nil }
-        if onboardingWindowID == id { onboardingWindowID = nil }
+        if onboardingWindowID == id { closeWelcome() }
+        if modalWindowID == id { modalWindowID = nil }
         stateFileDirty = true
         scheduleSave()
         guard wasFront else { return }
         // The next window: one still on screen, else any record.
         frontWindowID = nil
-        let next = windows.first { nsWindows[$0.id]?.window?.isVisible == true } ?? windows.first
+        let next = windows.first { nsWindows[$0.id]?.window != nil } ?? windows.first
         if let next { activateWindow(next.id) }
     }
 

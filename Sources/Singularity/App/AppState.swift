@@ -103,6 +103,10 @@ final class AppState {
     @ObservationIgnored var nsWindows: [UUID: WeakWindow] = [:]
     /// Set while `reconcileWindows` runs (it calls code that mutates Spaces, which calls it again).
     @ObservationIgnored var reconcilingWindows = false
+    /// `init` has wired everything (web views, extensions, terminals); before that nothing loads.
+    @ObservationIgnored var initFinished = false
+    /// Which window shows the sheets and the palette while one is open (pinned when it opens).
+    var modalWindowID: UUID?
     /// The app is quitting: windows closing now keep their records.
     @ObservationIgnored var isTerminating = false
     /// False only during launch, until a browser window exists.
@@ -347,6 +351,8 @@ final class AppState {
                 self?.plugins.terminateAll()
             }
         }
+        // Everything is wired: tabs other windows show may load now (`loadBackgroundWindows`).
+        initFinished = true
     }
 
     // MARK: - Reading
@@ -526,7 +532,7 @@ final class AppState {
     /// ⌘W in a browser window that shows no tab closes that window, as in other browsers, while
     /// another browser window is open (the last one stays: closing it would quit the app).
     var commandWClosesWindow: Bool {
-        selectedTab == nil && windows.count > 1 && mainWindow != nil
+        selectedTab == nil && openBrowserWindowCount > 1 && mainWindow != nil
     }
 
     /// File → Close Window (⇧⌘W): the window in front. A little or private window closes as with
@@ -1157,7 +1163,8 @@ final class AppState {
         terminals.removeSessions(for: [tabID])
         notes.removeHosts(for: [tabID])
         inbox.tabClosed(tabID)
-        mutateSpace(spaceID) { $0.closeTab(tabID) }
+        // The neighbour picked for the front window must not be a tab another window shows.
+        withoutTakingTabs { mutateSpace(spaceID) { $0.closeTab(tabID) } }
         missingArtifactTabs.remove(tabID)
         herdr.updateRunning() // the last terminal tab may be gone: nothing left to listen for
         if spaceID == selectedSpaceID { loadSelectedTab() }
@@ -1620,7 +1627,9 @@ final class AppState {
 
     /// A tab from the sidebar was dropped on a pane (or on the single visible tab).
     func handleTabDrop(_ dropped: UUID, onto paneTab: UUID, zone: PaneDropZone) {
-        guard dropped != paneTab, let space = selectedSpace, space.tab(dropped) != nil else { return }
+        // Dragging tabs between windows is not a feature: a drop on another window's pane does nothing.
+        guard dropped != paneTab, let space = selectedSpace, space.tab(dropped) != nil,
+              windowIDShowing(paneTab) == frontWindowID else { return }
         switch zone {
         case .edge(let edge):
             splitTab(dropped, beside: paneTab, edge: edge)
@@ -1934,8 +1943,11 @@ final class AppState {
 
     func mutateSpace(_ id: UUID, _ change: (inout Space) -> Void) {
         guard let index = spaces.firstIndex(where: { $0.id == id }) else { return }
+        let selectedBefore = spaces[index].selectedTabID
         change(&spaces[index])
         markDirty(id)
+        // The front window's record in state.json carries the selection too.
+        if spaces[index].selectedTabID != selectedBefore { stateFileDirty = true }
         // Once the launch Space has a tab it is no longer an untouched placeholder.
         if id == firstRunPlaceholderID, !spaces[index].tabs.isEmpty { firstRunPlaceholderID = nil }
         // Same turn as the change: a tab this window took must leave the others before SwiftUI draws.
