@@ -395,8 +395,8 @@ import Testing
         _ = inbox.apply(rec(.blocked), tab: facts(tab: UUID()), agent: "A", now: now)
         _ = inbox.apply(rec(.done), tab: facts(tab: UUID()), agent: "A", now: now)
         _ = inbox.apply(rec(.done), tab: facts(tab: UUID(), space: other), agent: "A", now: now)
-        #expect(inbox.count(spaceID: space) == 2)
-        #expect(inbox.count(spaceID: other) == 1)
+        #expect(inbox.needsYouCount(spaceID: space) == 1)   // "done" is not counted on the circle
+        #expect(inbox.needsYouCount(spaceID: other) == 0)
         #expect(inbox.count == 3)
     }
     @Test func removeAndSetDeadline() {

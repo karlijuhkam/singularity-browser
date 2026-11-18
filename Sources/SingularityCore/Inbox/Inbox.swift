@@ -58,7 +58,15 @@ public struct Inbox: Equatable, Sendable {
 
     public var count: Int { visible.count }
 
-    public func count(spaceID: UUID) -> Int { visible.filter { $0.spaceID == spaceID }.count }
+    /// What a Space circle in the rail counts: the Space's visible entries that need the owner to
+    /// react (questions, permissions, approvals, waiting agents). "Done" entries are left out: they
+    /// stay in the inbox and on their tab's row, but don't call the owner to the Space.
+    public func needsYouCount(spaceID: UUID) -> Int {
+        visible.filter { entry in
+            if case .done = entry.kind { return false }
+            return entry.spaceID == spaceID
+        }.count
+    }
 
     /// Working tabs that no visible entry already speaks for.
     public var workingCount: Int {

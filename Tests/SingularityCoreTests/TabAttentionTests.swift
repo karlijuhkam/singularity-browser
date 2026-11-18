@@ -78,4 +78,25 @@ import Testing
         #expect(s.attention(ofFolder: inner.id, marks: [b.id: .needsYou]) == nil)   // b is in the parent
         #expect(s.attention(ofFolder: other.id, marks: [a.id: .needsYou, loose.id: .needsYou]) == nil)
     }
+
+    @Test func aSpaceCircleCountsOnlyWhatNeedsTheOwner() {
+        let (waiting, done, held, approval, busy) = (UUID(), UUID(), UUID(), UUID(), UUID())
+        let elsewhere = UUID()
+        var inbox = Inbox()
+        _ = inbox.apply(rec(.done), tab: facts(done), agent: "A", now: now)
+        _ = inbox.apply(rec(.working), tab: facts(busy), agent: "A", now: now)
+        #expect(inbox.needsYouCount(spaceID: space) == 0)   // done and working call no one
+
+        _ = inbox.apply(rec(.blocked), tab: facts(waiting), agent: "A", now: now)
+        _ = inbox.hold(.question([]), tab: facts(held), agent: "A", now: now)
+        _ = inbox.addApproval(InboxApproval(actor: "A", action: "click", detail: "Buy"),
+                              spaceID: space, tabID: approval, deadline: now.addingTimeInterval(60), now: now)
+        _ = inbox.addApproval(InboxApproval(actor: "A", action: "click", detail: "Buy"),
+                              spaceID: elsewhere, tabID: UUID(), deadline: now.addingTimeInterval(60), now: now)
+        #expect(inbox.needsYouCount(spaceID: space) == 3)
+        #expect(inbox.needsYouCount(spaceID: elsewhere) == 1)
+
+        _ = inbox.wentToTerminal(waiting)
+        #expect(inbox.needsYouCount(spaceID: space) == 2)
+    }
 }

@@ -12,7 +12,7 @@ struct SpaceRail: View {
 
             ForEach(state.spaces) { space in
                 SpaceDot(space: space, isSelected: space.id == state.selectedSpaceID,
-                         waiting: state.inbox.inbox.count(spaceID: space.id))
+                         waiting: state.inbox.inbox.needsYouCount(spaceID: space.id))
                     .onTapGesture { state.userSelectSpace(space.id) }
                     .contextMenu {
                         Button("Edit Space…") { state.showSpaceEditor(spaceID: space.id) }
@@ -52,7 +52,7 @@ struct SpaceRail: View {
 private struct SpaceDot: View {
     let space: Space
     let isSelected: Bool
-    /// The Space's inbox entries.
+    /// The Space's inbox entries that need the owner to react (not "done").
     let waiting: Int
 
     var body: some View {
