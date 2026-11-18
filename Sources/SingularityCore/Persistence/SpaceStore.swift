@@ -3,12 +3,39 @@ import Foundation
 /// Contents of `~/Singularity/state.json`.
 public struct AppStateFile: Codable, Equatable, Sendable {
     public var spaceOrder: [UUID]
+    /// The front window's Space. Still written with windows, so an older version opens sensibly.
     public var selectedSpaceID: UUID?
+    /// The open browser windows (empty in files from before 0.18.0: one window is made from
+    /// `selectedSpaceID`).
+    public var windows: [BrowserWindowState]
+    /// The window that was in front at the last save.
+    public var frontWindowID: UUID?
 
-    public init(spaceOrder: [UUID] = [], selectedSpaceID: UUID? = nil) {
+    public init(spaceOrder: [UUID] = [], selectedSpaceID: UUID? = nil, windows: [BrowserWindowState] = [],
+                frontWindowID: UUID? = nil) {
         self.spaceOrder = spaceOrder
         self.selectedSpaceID = selectedSpaceID
+        self.windows = windows
+        self.frontWindowID = frontWindowID
     }
+
+    private enum CodingKeys: String, CodingKey { case spaceOrder, selectedSpaceID, windows, frontWindowID }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        spaceOrder = try container.decodeIfPresent([UUID].self, forKey: .spaceOrder) ?? []
+        selectedSpaceID = try container.decodeIfPresent(UUID.self, forKey: .selectedSpaceID)
+        // A window that can't be read is dropped, not the whole file.
+        windows = (try? container.decodeIfPresent([Lenient<BrowserWindowState>].self, forKey: .windows))?
+            .compactMap(\.value) ?? []
+        frontWindowID = try? container.decodeIfPresent(UUID.self, forKey: .frontWindowID)
+    }
+}
+
+/// Decodes a value or nil, so one bad element doesn't fail its array.
+private struct Lenient<Value: Decodable>: Decodable {
+    let value: Value?
+    init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
 }
 
 /// Reads and writes Spaces as JSON files. Every write is atomic (written to a temp file,
