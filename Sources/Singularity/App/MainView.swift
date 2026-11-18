@@ -9,12 +9,23 @@ struct MainView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// This window's record (nil when hosted outside a window scene, as in tests: the front one).
+    @Environment(\.browserWindowID) private var windowID
+
+    /// Sheets and the palette belong to the front window only: with two windows, each would
+    /// otherwise show the same sheet, and closing one would close both.
+    private var isFront: Bool { state.isFront(windowID) }
+
+    private func onlyInFront<Value>(_ binding: Binding<Value?>) -> Binding<Value?> {
+        Binding(get: { [state, windowID] in state.isFront(windowID) ? binding.wrappedValue : nil },
+                set: { binding.wrappedValue = $0 })
+    }
 
     var body: some View {
         @Bindable var state = state
 
         ZStack {
-            if state.welcomeCoversWindow {
+            if state.welcomeCovers(windowID) {
                 // The welcome flow takes the whole window. The sheets below (Arc import) and the
                 // palette still work on top of it.
                 OnboardingView()
@@ -23,7 +34,7 @@ struct MainView: View {
                 browser
             }
 
-            if let mode = state.palette {
+            if isFront, let mode = state.palette {
                 // `.id(mode)`: a new mode is a new palette, with an empty field and the first
                 // row selected. Without it, choosing "New Terminal" in the palette would hand the
                 // typed text and the selected row over to the project picker (SwiftUI keeps a
@@ -35,39 +46,43 @@ struct MainView: View {
                 .id(mode)
             }
         }
-        // Tells AppState which NSWindow the browser window is (little windows bring it forward).
-        .background(MainWindowReader { [state] window in
-            state.mainWindow = window
-            state.applyWindowButtons()
+        // Tells AppState which NSWindow this browser window is: key → front, close, frame, title.
+        .background(BrowserWindowReader { [state, windowID] window in
+            guard let id = windowID ?? state.frontWindowID else { return }
+            WindowLink.attach(window, id: id, state: state)
+            // The Window menu lists windows by title: the Space each one shows.
+            let title = state.shownSpace(in: id)?.name ?? "Singularity"
+            if window.title != title { window.title = title }
         })
-        .onChange(of: state.sidebarIsOffScreen) { state.applyWindowButtons() }
+        .onChange(of: state.sidebarIsOffScreen(in: windowID)) { state.applyWindowButtons() }
         // Let the sidebar run up under the (invisible) title bar, next to the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
-        .sheet(item: $state.spaceEditor) { request in
+        .sheet(item: onlyInFront($state.spaceEditor)) { request in
             SpaceEditorSheet(request: request)
         }
-        .sheet(item: $state.nameRequest) { request in
+        .sheet(item: onlyInFront($state.nameRequest)) { request in
             NameSheet(request: request)
         }
-        .sheet(isPresented: $state.isImportingFromArc) {
+        .sheet(isPresented: Binding(get: { [state, windowID] in state.isFront(windowID) && state.isImportingFromArc },
+                                    set: { state.isImportingFromArc = $0 })) {
             ArcImportSheet()
         }
         // A browser extension waiting for Install (Chrome Web Store, Add Extension…, a download).
         .sheet(item: Binding(
-            get: { state.extensions.pending },
+            get: { isFront ? state.extensions.pending : nil },
             // Closed some other way than its buttons: same as Cancel (the staged files go).
             set: { if $0 == nil, let pending = state.extensions.pending { state.extensions.cancel(pending) } }
         )) { pending in
             ExtensionApprovalSheet(pending: pending)
         }
-        .alert(item: Binding(get: { state.extensions.installMessage }, set: { state.extensions.installMessage = $0 })) { message in
+        .alert(item: Binding(get: { isFront ? state.extensions.installMessage : nil }, set: { state.extensions.installMessage = $0 })) { message in
             Alert(title: Text(verbatim: message.title), message: Text(verbatim: message.text))
         }
         .onAppear {
             state.openSettingsWindow = { [openSettings] in openSettings() }
-            // "main" is the id of the browser window's scene (SingularityApp). Opening it shows
-            // the window again after it was closed, or brings it forward.
-            state.openMainWindow = { [openWindow] in openWindow(id: "main") }
+            // "browser" is the id of the browser windows' scene (SingularityApp); its value is the
+            // window's record. Opening a record already on screen brings that window forward.
+            state.openBrowserWindow = { [openWindow] id in openWindow(id: "browser", value: id) }
             state.loadSelectedTab()
             // Clicking inside a pane (a web page or terminal) focuses it.
             PaneContainerView.installFocusMonitor { [state] tabID in state.focusPane(tabID) }
@@ -90,19 +105,24 @@ extension MainView {
     }
 
     /// The width the plugin's panel is drawn at in a window this wide; nil while none is drawn.
+    /// The plugin whose panel this window draws: the panel is in one window at a time.
+    private var panelPlugin: String? {
+        state.panelIsIn(windowID) ? state.shownPanelPlugin : nil
+    }
+
     private func shownPanelWidth(windowWidth: CGFloat) -> Double? {
-        guard state.shownPanelPlugin != nil else { return nil }
-        let sidebar = state.settings.sidebarHidden ? 8 : Double(state.sidebarWidth)
+        guard panelPlugin != nil else { return nil }
+        let sidebar = state.sidebarHidden(in: windowID) ? 8 : Double(state.sidebarWidth)
         return PluginPanelLayout.shownWidth(state.pluginPanelWidth, windowWidth: Double(windowWidth), sidebarWidth: sidebar)
     }
 
     /// Where the palette goes: over the page, between the sidebar (when it is beside the page, not
     /// hidden or slid out over it) and the panel. The welcome flow has neither.
     fileprivate func paletteFrame(windowWidth: CGFloat) -> PaletteLayout.Frame {
-        guard !state.welcomeCoversWindow else {
+        guard !state.welcomeCovers(windowID) else {
             return PaletteLayout.frame(windowWidth: Double(windowWidth), pageLeading: 0, pageTrailing: 0)
         }
-        let leading = state.settings.sidebarHidden ? 8 : Double(state.sidebarWidth)
+        let leading = state.sidebarHidden(in: windowID) ? 8 : Double(state.sidebarWidth)
         let trailing = 8 + (shownPanelWidth(windowWidth: windowWidth) ?? 0)
         return PaletteLayout.frame(windowWidth: Double(windowWidth), pageLeading: leading, pageTrailing: trailing)
     }
@@ -110,8 +130,9 @@ extension MainView {
     @ViewBuilder
     private func browser(windowWidth: CGFloat) -> some View {
         let width = CGFloat(state.sidebarWidth)
-        let hidden = state.settings.sidebarHidden
-        let peeking = state.sidebarPeek.isPeeking
+        let hidden = state.sidebarHidden(in: windowID)
+        // Only the front window's hidden sidebar slides out (one slide-out controller).
+        let peeking = isFront && state.sidebarPeek.isPeeking
         ZStack(alignment: .topLeading) {
             HStack(spacing: 0) {
                 ContentArea()
@@ -121,12 +142,12 @@ extension MainView {
                     // Hidden: the page has the whole window, with the same 8 pt margin on the left.
                     .padding(.leading, hidden ? 8 : width)
                 // Too narrow a window draws no panel; it stays open and ⌃⌘J still closes it.
-                if let pluginID = state.shownPanelPlugin, let panelWidth = shownPanelWidth(windowWidth: windowWidth) {
+                if let pluginID = panelPlugin, let panelWidth = shownPanelWidth(windowWidth: windowWidth) {
                     PluginPanel(pluginID: pluginID, width: panelWidth)
                 }
             }
 
-            if hidden {
+            if hidden && isFront {
                 // In that left margin: the strip that notices the pointer at the window's edge.
                 SidebarEdgeTrigger { [state] in state.sidebarPeek.pointerReachedEdge() }
                     .frame(width: SidebarPeekController.edgeWidth)
@@ -169,11 +190,11 @@ extension MainView {
                 spaceTint
             }
         }
-        .onChange(of: state.welcomeCoversWindow) { state.sidebarPeek.close() }
+        .onChange(of: state.welcomeCovers(windowID)) { state.sidebarPeek.close() }
     }
 
     private var spaceTint: some View {
-        Color(hex: state.selectedSpace?.colorHex ?? "#8A8F98").opacity(0.14)
+        Color(hex: state.shownSpace(in: windowID)?.colorHex ?? "#8A8F98").opacity(0.14)
     }
 }
 
@@ -181,9 +202,10 @@ extension MainView {
 /// a split comes back whenever one of its tabs is selected).
 private struct ContentArea: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
 
     var body: some View {
-        if let space = state.selectedSpace, let tab = space.selectedTab {
+        if let space = state.shownSpace(in: windowID), let tab = space.selectedTab {
             if let group = space.splitGroup(containing: tab.id) {
                 SplitGroupView(group: group, space: space)
             } else {
@@ -208,23 +230,4 @@ private struct VisualEffectBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSVisualEffectView, context: Context) {}
-}
-
-/// Finds the NSWindow this SwiftUI view is shown in. SwiftUI has no API for that, so an invisible
-/// AppKit view reports its `window` once it has been put into one.
-private struct MainWindowReader: NSViewRepresentable {
-    let found: (NSWindow) -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        // The view has no window yet while it is being made; ask one run-loop turn later.
-        DispatchQueue.main.async { [weak view] in
-            if let window = view?.window { found(window) }
-        }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        if let window = view.window { found(window) }
-    }
 }

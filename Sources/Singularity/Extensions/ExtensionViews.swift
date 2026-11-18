@@ -156,10 +156,11 @@ struct ExtensionApprovalSheet: View {
 /// detail page our own "Add to Singularity" button. Up to three buttons, the rest in a menu.
 struct ExtensionToolbar: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
     static let maxButtons = 3
 
     var body: some View {
-        if let space = state.selectedSpace, let tab = space.selectedTab, ExtensionCenter.isWebTab(tab) {
+        if let space = state.shownSpace(in: windowID), let tab = space.selectedTab, ExtensionCenter.isWebTab(tab) {
             let items = state.extensions.toolbarItems(spaceID: space.id, tabID: tab.id)
             HStack(spacing: 0) {
                 if let storeID = ChromeWebStore.extensionID(from: tab.url) {

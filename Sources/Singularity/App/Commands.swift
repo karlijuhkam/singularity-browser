@@ -26,8 +26,10 @@ struct SingularityCommands: Commands {
             Button("Welcome to Singularity…") { inMainWindow { state.showWelcome() } }
         }
 
-        // Replaces File → New Window.
+        // Replaces SwiftUI's File → New Window with ours (a window on the front window's Space).
         CommandGroup(replacing: .newItem) {
+            Button("New Window") { state.newWindow() }
+                .keyboardShortcut("n")
             Button("New Tab") { inMainWindow { state.openHome() } }
                 .keyboardShortcut("t")
             Button("New Terminal") { inMainWindow { state.openTerminal() } }
@@ -37,7 +39,7 @@ struct SingularityCommands: Commands {
             Button("New Terminal in…") { inMainWindow { state.openTerminalChoosingProject() } }
                 .keyboardShortcut("t", modifiers: [.command, .option, .shift])
             Button("New Note") { inMainWindow { state.newNote() } }
-                .keyboardShortcut("n")
+                .keyboardShortcut("n", modifiers: [.command, .control])
             // The day's journal note (notes/Journal/<date>.md), made when it isn't there yet.
             Button("Today's Note") { inMainWindow { state.openTodayNote() } }
                 .keyboardShortcut("n", modifiers: [.command, .option])
@@ -83,7 +85,12 @@ struct SingularityCommands: Commands {
                 state.closeTabCommand()
             }
             .keyboardShortcut("w")
-            .disabled(littleInFront ? false : (covered ? state.welcomeSheetIsOpen : state.selectedTab == nil))
+            .disabled(littleInFront ? false : (covered ? state.welcomeSheetIsOpen
+                : state.selectedTab == nil && !state.commandWClosesWindow))
+            // A window with its sidebar hidden has no close button: this is how it is closed.
+            Button("Close Window") { state.closeWindowCommand() }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .disabled(!littleInFront && state.mainWindow == nil)
         }
 
         // Edit → Find. Web pages only; WKWebView has no find bar, so the tab draws its own (FindBar).

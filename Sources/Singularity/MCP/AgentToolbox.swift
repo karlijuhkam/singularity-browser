@@ -290,9 +290,13 @@ final class AgentToolbox {
             case .open: entry["section"] = "open"
             case .folder(let id): entry["section"] = "folder: " + space.folderPath(id) // "Outer / Inner" for a nested folder
             }
-            if tab.id == space.selectedTabID { entry["selected"] = true }
-            // On screen right now: the selected tab, or any pane of its split (in the Space being shown).
-            if state?.selectedSpaceID == space.id, space.visibleTabIDs.contains(tab.id) { entry["visible"] = true }
+            // Selected in some window (in a window that shows this Space), or the Space's last
+            // selected tab when no window shows it, as with one window.
+            if tab.id == space.selectedTabID || state?.isTabSelectedInAnyWindow(tab.id, spaceID: space.id) == true {
+                entry["selected"] = true
+            }
+            // On screen right now in any browser window: a selected tab, or any pane of its split.
+            if state?.isTabShownInAnyWindow(tab.id) == true { entry["visible"] = true }
             // A plugin's connection learns only that a terminal is there: its title, folder and
             // project carry folders and commands (a plugin with `terminals` gets them from the
             // `terminals` tool, under its own switch; `front` withholds them too).

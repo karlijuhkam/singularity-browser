@@ -253,6 +253,7 @@ enum PaletteResults {
         }
         items.append(command("new-terminal", "New Terminal", "terminal") { state.openTerminal() })
         items.append(command("new-note", "New Note", "note.text.badge.plus") { state.newNote() })
+        items.append(command("new-window", "New Window", "macwindow.badge.plus") { state.newWindow() })
         items.append(command("private-window", "New Private Window", "eye.slash") { state.openPrivateWindow() })
         items.append(command("today-note", "Today's Note", "calendar") { state.openTodayNote() })
         items.append(command("open-file", "Open Markdown File…", "doc.text") { state.openMarkdownFilePanel() })

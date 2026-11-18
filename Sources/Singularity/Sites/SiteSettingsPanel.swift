@@ -5,10 +5,11 @@ import SwiftUI
 /// Hidden for tabs without an http(s) page (terminals, artifacts, empty tabs).
 struct SiteSettingsButton: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
     @State private var isOpen = false
 
     var body: some View {
-        if let space = state.selectedSpace, let tab = space.selectedTab, let url = tab.url, let site = SiteInfo.site(of: url) {
+        if let space = state.shownSpace(in: windowID), let tab = space.selectedTab, let url = tab.url, let site = SiteInfo.site(of: url) {
             // A tint while agents can see this page's console and network, so it is never forgotten.
             let capturing = InspectionRules.isAllowed(space, site: site)
             Button {

@@ -131,7 +131,7 @@ extension AppTests {
         defer { setup.tearDown() }
         let state = setup.state
         var mainWindowShown = 0
-        state.openMainWindow = { mainWindowShown += 1 }
+        state.openBrowserWindow = { _ in mainWindowShown += 1 }
 
         let little = try #require(state.little.open(setup.server.url))
         let webView = little.controller.webView

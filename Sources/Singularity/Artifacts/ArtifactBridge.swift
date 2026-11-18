@@ -83,7 +83,10 @@ final class ArtifactBridge: NSObject, WKScriptMessageHandlerWithReply {
                   ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
                 return (nil, "open needs an http(s) URL")
             }
-            state.openInNewTab(url, spaceID: spaceID)
+            // Not something the owner clicked: the new tab goes to the window showing this page
+            // (a window shared in a meeting never changes by itself), or is only added.
+            let origin = message.webView.flatMap { state.web.tabID(for: $0) }
+            state.openInNewTab(url, spaceID: spaceID, target: origin.map(TabTarget.origin) ?? .nowhere)
             return (true, nil)
 
         default:

@@ -8,12 +8,13 @@ import SwiftUI
 /// empty, the sections (`HomeSections`). Spec: docs/superpowers/specs/2026-11-17-space-home-design.md
 struct HomeView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
     let tabID: UUID?
 
     var body: some View {
         ZStack {
             Color(nsColor: .textBackgroundColor)
-            if let space = state.selectedSpace {
+            if let space = state.shownSpace(in: windowID) {
                 // A new identity per Space and home tab: the typed text and the Recent list never
                 // carry over from another Space's home (two empty Spaces show the same view here).
                 HomeContent(space: space, tabID: tabID)
@@ -33,6 +34,7 @@ struct HomeView: View {
 
 private struct HomeContent: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
     let space: Space
     let tabID: UUID?
 
@@ -72,7 +74,8 @@ private struct HomeContent: View {
     /// The row takes the keyboard when this home is what the owner is on: the selected tab (the
     /// focused pane of a split), or the empty Space's home.
     private var takesFocus: Bool {
-        tabID == nil || space.selectedTabID == tabID
+        // Only in the window the owner is in: a home in another window must not take the keyboard.
+        state.isFront(windowID) && (tabID == nil || space.selectedTabID == tabID)
     }
 
     /// Reads the Recent list off the main actor; a result for a Space no longer shown is dropped.
@@ -83,7 +86,7 @@ private struct HomeContent: View {
         let files = await Task.detached(priority: .utility) {
             HomeRecentLoader.load(notesRoot: notesRoot, artifactsRoot: artifactsRoot)
         }.value
-        guard !Task.isCancelled, state.selectedSpaceID == spaceID else { return }
+        guard !Task.isCancelled, state.shownSpace(in: windowID)?.id == spaceID else { return }
         recent = files
     }
 }

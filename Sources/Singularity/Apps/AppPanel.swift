@@ -7,10 +7,11 @@ import SwiftUI
 /// button, and opens the app's panel. Hidden for every other tab.
 struct AppPanelButton: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
     @State private var isOpen = false
 
     var body: some View {
-        if let space = state.selectedSpace, let app = AppPanelButton.app(of: space.selectedTab, in: space, state: state) {
+        if let space = state.shownSpace(in: windowID), let app = AppPanelButton.app(of: space.selectedTab, in: space, state: state) {
             let status = state.apps.status(space: space.id, app: app)
             Button {
                 isOpen.toggle()

@@ -28,9 +28,10 @@ struct SingularityApp: App {
     }
 
     var body: some Scene {
-        // `Window` (not `WindowGroup`) = exactly one browser window; no File → New Window.
-        Window("Singularity", id: "main") {
-            MainView()
+        // Any number of browser windows, all equal; each one's value is its record in
+        // `state.json` (`BrowserWindowState`, see AppState+Windows.swift and BrowserWindowRoot).
+        WindowGroup("Singularity", id: "browser", for: UUID.self) { $windowID in
+            BrowserWindowRoot(requested: $windowID)
                 .environment(state)
                 .frame(minWidth: 820, minHeight: 520)
                 .onAppear {
@@ -143,6 +144,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Second pass (see below): the question was answered and the notes are written.
         if notesWrittenForQuit { return .terminateNow }
         guard state?.confirmQuit() ?? true else { return .terminateCancel }
+        // From here on the app quits: windows closing now keep their records for the next launch.
+        state?.isTerminating = true
         // Open notes may hold a moment's typing that isn't on disk yet (the editor saves 0.4 s
         // after the last keystroke). So this quit is called off, the editors write, and the app
         // quits again by itself right after; each editor gives up after 2 s.

@@ -4,6 +4,7 @@ import SwiftUI
 /// The vertical column of Spaces on the far left. One coloured circle per Space.
 struct SpaceRail: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
     @State private var spacePendingDeletion: Space?
 
     var body: some View {
@@ -11,7 +12,7 @@ struct SpaceRail: View {
             InboxRailButton()
 
             ForEach(state.spaces) { space in
-                SpaceDot(space: space, isSelected: space.id == state.selectedSpaceID,
+                SpaceDot(space: space, isSelected: space.id == state.shownSpace(in: windowID)?.id,
                          waiting: state.inbox.inbox.needsYouCount(spaceID: space.id))
                     .onTapGesture { state.userSelectSpace(space.id) }
                     .contextMenu {

@@ -36,7 +36,7 @@ final class AppState {
     private(set) var onboarding: OnboardingFlow?
     /// The welcome flow covers the window (sidebar and tab hidden). Menu commands that act on the
     /// hidden tab or page are off meanwhile, and ⌘W closes the flow (`closeTabCommand`).
-    var welcomeCoversWindow: Bool { onboarding != nil }
+    var welcomeCoversWindow: Bool { welcomeCovers(frontWindowID) }
     /// The plugin whose approval sheet step 4 of the welcome flow shows (its id), nil when none.
     /// Kept here rather than in the step's view so that ⌘W can see the sheet (`welcomeSheetIsOpen`).
     /// Set it with `reviewWelcomePlugin` (only on step 4); the sheet's binding clears it.
@@ -88,15 +88,27 @@ final class AppState {
     let little = LittleWindows()
     /// Private windows: pages with an in-memory data store that leave nothing behind.
     let privateWindows = PrivateWindows()
-    /// The browser window (set by `MainView`). Kept so it can be brought forward, and so sheets
-    /// that belong to it don't land on a little window.
-    @ObservationIgnored weak var mainWindow: NSWindow? {
-        didSet { if mainWindow != nil { mainWindowWasShown = true } }
-    }
-    /// False only during launch, until the browser window exists.
-    @ObservationIgnored private var mainWindowWasShown = false
-    /// Opens the browser window again after it was closed (SwiftUI's `openWindow`; set by `MainView`).
-    @ObservationIgnored var openMainWindow: (() -> Void)?
+    /// The browser windows (see AppState+Windows.swift). While a window is the front one, the live
+    /// fields (`selectedSpaceID`, each `Space.selectedTabID`) are its truth, not its record here.
+    var windows: [BrowserWindowState] = []
+    /// The browser window in front (the last one that was key); its selection is the live one.
+    var frontWindowID: UUID?
+    /// The window the plugin's right-hand panel is in (one page view, one place); nil = the front one.
+    var panelWindowID: UUID?
+    /// The window the welcome flow covers; nil = the front one.
+    var onboardingWindowID: UUID?
+    /// Records a SwiftUI scene is showing now (`claimWindow`).
+    @ObservationIgnored var claimedWindowIDs: Set<UUID> = []
+    /// Each window's NSWindow, held weakly (`registerWindow`).
+    @ObservationIgnored var nsWindows: [UUID: WeakWindow] = [:]
+    /// Set while `reconcileWindows` runs (it calls code that mutates Spaces, which calls it again).
+    @ObservationIgnored var reconcilingWindows = false
+    /// The app is quitting: windows closing now keep their records.
+    @ObservationIgnored var isTerminating = false
+    /// False only during launch, until a browser window exists.
+    @ObservationIgnored var mainWindowWasShown = false
+    /// Opens a browser window for a record (SwiftUI's `openWindow(id:value:)`; set by `MainView`).
+    @ObservationIgnored var openBrowserWindow: ((UUID) -> Void)?
     /// Installed plugins: approvals, background processes, Settings → Plugins.
     let plugins: PluginManager
     /// Self-updating (Sparkle), only in a copy that may update itself (`UpdatePolicy`).
@@ -157,7 +169,7 @@ final class AppState {
 
     // Saving: changes mark things dirty; a short debounce then writes them all at once.
     @ObservationIgnored private var dirtySpaceIDs: Set<UUID> = []
-    @ObservationIgnored private var stateFileDirty = false
+    @ObservationIgnored var stateFileDirty = false
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
     /// `discardFolder`: what `deleteSpace` does with the Space's folder. The app keeps the default
@@ -208,6 +220,7 @@ final class AppState {
         loadErrors = loaded.errors
         selectedSpaceID = loaded.state.selectedSpaceID.flatMap { id in spaces.contains { $0.id == id } ? id : nil }
             ?? spaces.first?.id
+        restoreWindows(from: loaded.state)
 
         if spaces.isEmpty {
             let first = createSpace(name: "Personal", colorHex: SpaceColors.presets[0], workingDirectory: "~")
@@ -466,6 +479,7 @@ final class AppState {
     /// Opens the welcome flow at step 1 (menu and palette: "Welcome to Singularity…").
     func showWelcome() {
         onboarding = OnboardingFlow()
+        onboardingWindowID = frontWindowID // it covers the window it was opened in
         palette = nil
         welcomePluginReview = nil
         plugins.frontDidChange() // nothing is in front while the flow covers the window
@@ -483,6 +497,7 @@ final class AppState {
     /// user somewhere else (New Tab, New Terminal, picking a Space, …).
     func closeWelcome() {
         onboarding = nil
+        onboardingWindowID = nil
         firstRunPlaceholderID = nil
         welcomePluginReview = nil
         plugins.frontDidChange()
@@ -501,8 +516,28 @@ final class AppState {
             if front.window.attachedSheet == nil { privateWindows.close(front) }
         } else if welcomeCoversWindow {
             if !welcomeSheetIsOpen { closeWelcome() }
+        } else if commandWClosesWindow {
+            mainWindow?.performClose(nil)
         } else {
             closeSelectedTab()
+        }
+    }
+
+    /// ⌘W in a browser window that shows no tab closes that window, as in other browsers, while
+    /// another browser window is open (the last one stays: closing it would quit the app).
+    var commandWClosesWindow: Bool {
+        selectedTab == nil && windows.count > 1 && mainWindow != nil
+    }
+
+    /// File → Close Window (⇧⌘W): the window in front. A little or private window closes as with
+    /// ⌘W; over the welcome flow it closes the flow, as ⌘W does.
+    func closeWindowCommand() {
+        if little.frontWindow != nil || privateWindows.frontWindow != nil {
+            closeTabCommand()
+        } else if welcomeCoversWindow {
+            if !welcomeSheetIsOpen { closeWelcome() }
+        } else {
+            mainWindow?.performClose(nil)
         }
     }
 
@@ -626,6 +661,10 @@ final class AppState {
     func selectSpace(_ id: UUID) {
         guard spaces.contains(where: { $0.id == id }) else { return }
         selectedSpaceID = id
+        // Switching Space never takes a tab away from another window: if the Space's last tab is
+        // on screen there, this window shows a free one (or the Space's home).
+        keepFrontOffOtherWindows()
+        reconcileWindows()
         stateFileDirty = true
         scheduleSave()
         loadSelectedTab()
@@ -666,8 +705,10 @@ final class AppState {
         historyCache[id] = nil
         if selectedSpaceID == id {
             selectedSpaceID = spaces.first?.id
+            keepFrontOffOtherWindows()
             loadSelectedTab()
         }
+        reconcileWindows()
         herdr.updateRunning() // its terminal tabs may have been the last ones
         stateFileDirty = true
         scheduleSave()
@@ -797,14 +838,22 @@ final class AppState {
     /// Opens a URL in a new tab and selects it (in the current Space unless one is given).
     /// Leaves the welcome flow alone: an artifact page's `singularity.open` calls this without the
     /// user doing anything, so the user-driven callers (the palette) close the flow themselves.
-    func openInNewTab(_ url: URL, spaceID: UUID? = nil) {
+    func openInNewTab(_ url: URL, spaceID: UUID? = nil, target: TabTarget = .front) {
         guard let spaceID = spaceID ?? selectedSpaceID else { return }
         let tab = BrowserTab.web(url)
-        mutateSpace(spaceID) {
-            $0.append(tab)
-            $0.selectedTabID = tab.id
+        switch resolve(target) {
+        case .front:
+            mutateSpace(spaceID) {
+                $0.append(tab)
+                $0.selectedTabID = tab.id
+            }
+            loadSelectedTab()
+        case .window(let windowID):
+            mutateSpace(spaceID) { $0.append(tab) }
+            selectInBackground(tab.id, spaceID: spaceID, windowID: windowID)
+        case .nowhere:
+            mutateSpace(spaceID) { $0.append(tab) }
         }
-        loadSelectedTab()
     }
 
     // MARK: - The Space's home (the rules are in Core: HomeRules.swift)
@@ -917,8 +966,8 @@ final class AppState {
     func showMainWindow() {
         if let mainWindow, mainWindow.isVisible {
             mainWindow.makeKeyAndOrderFront(nil)
-        } else if let openMainWindow {
-            openMainWindow()
+        } else if let id = frontWindowID ?? windows.first?.id, let openBrowserWindow {
+            openBrowserWindow(id)
         } else {
             mainWindow?.makeKeyAndOrderFront(nil)
         }
@@ -1300,7 +1349,10 @@ final class AppState {
     /// Nothing while the welcome flow covers the window.
     func togglePluginPanel() {
         guard !welcomeCoversWindow else { return }
-        if shownPanelPlugin != nil {
+        // Open in another window: ⌃⌘J brings it here rather than closing it out of sight.
+        if let shown = shownPanelPlugin, !panelIsIn(frontWindowID) {
+            showPluginPanel(shown)
+        } else if shownPanelPlugin != nil {
             closePluginPanel()
         } else if let id = pluginPanelTarget {
             showPluginPanel(id)
@@ -1317,6 +1369,8 @@ final class AppState {
             showTab(tabID, in: spaceID)
             return
         }
+        // One page view, one place: the panel moves to the window the owner is in.
+        panelWindowID = frontWindowID
         updateSettings { $0.pluginPanel = id }
     }
 
@@ -1476,6 +1530,8 @@ final class AppState {
     /// and that the Space's artifact server runs. All of these start lazily, so restored tabs and
     /// Spaces cost nothing until first shown.
     func loadSelectedTab() {
+        // Other windows' tabs are on screen too (and after a launch nothing has loaded them).
+        loadBackgroundWindows()
         guard let space = selectedSpace else { return }
         if artifacts.host(space.id) == nil {
             Task { _ = await ensureArtifactHost(space) }
@@ -1499,7 +1555,7 @@ final class AppState {
         extensions.selectionChanged(in: space.id)
     }
 
-    private func loadTab(_ tab: BrowserTab, in space: Space) {
+    func loadTab(_ tab: BrowserTab, in space: Space) {
         switch tab.kind {
         case .web:
             _ = web.controller(for: tab, in: space)
@@ -1583,6 +1639,9 @@ final class AppState {
 
     /// A click landed in a pane: make it the focused (selected) tab.
     func focusPane(_ tabID: UUID) {
+        // A click in another window's pane makes that window the front one first, so the click
+        // selects there and never pulls the tab into the window that was in front.
+        if let windowID = windowIDShowing(tabID), windowID != frontWindowID { activateWindow(windowID) }
         guard selectedSpace?.selectedTabID != tabID else { return }
         selectTab(tabID)
     }
@@ -1710,7 +1769,7 @@ final class AppState {
         }
     }
 
-    private func ensureArtifactHost(_ space: Space) async -> ArtifactHost? {
+    func ensureArtifactHost(_ space: Space) async -> ArtifactHost? {
         // Callers may hold an older copy of the Space; the welcome flow can change its slug (and
         // folder) in between, so take the folder from the current one.
         guard let space = self.space(space.id) else { return nil }
@@ -1879,14 +1938,21 @@ final class AppState {
         markDirty(id)
         // Once the launch Space has a tab it is no longer an untouched placeholder.
         if id == firstRunPlaceholderID, !spaces[index].tabs.isEmpty { firstRunPlaceholderID = nil }
+        // Same turn as the change: a tab this window took must leave the others before SwiftUI draws.
+        reconcileWindows()
     }
+
+    func markSpaceDirty(_ id: UUID) { markDirty(id) }
+
+    /// A browser window came forward: its Space becomes the live one (AppState+Windows.swift).
+    func setLiveSpace(_ id: UUID?) { selectedSpaceID = id }
 
     private func markDirty(_ id: UUID) {
         dirtySpaceIDs.insert(id)
         scheduleSave()
     }
 
-    private func scheduleSave() {
+    func scheduleSave() {
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
@@ -1908,7 +1974,8 @@ final class AppState {
         dirtySpaceIDs.removeAll()
         if stateFileDirty {
             do {
-                try store.save(AppStateFile(spaceOrder: spaces.map(\.id), selectedSpaceID: selectedSpaceID))
+                try store.save(AppStateFile(spaceOrder: spaces.map(\.id), selectedSpaceID: selectedSpaceID,
+                                            windows: windowsForSaving(), frontWindowID: frontWindowID))
             } catch {
                 NSLog("Singularity: could not save state.json: \(error)")
             }
@@ -1959,21 +2026,30 @@ final class AppState {
     /// Hidden and not slid out: nothing of the sidebar is on screen. (Never while the welcome
     /// flow covers the window: the sidebar isn't shown then anyway, and the window keeps its buttons.)
     var sidebarIsOffScreen: Bool {
-        settings.sidebarHidden && !sidebarPeek.isPeeking && !welcomeCoversWindow
+        sidebarIsOffScreen(in: frontWindowID)
     }
 
-    /// View → Hide Sidebar / Show Sidebar (⌘S), and the palette.
+    /// The same for one window: only the front window's sidebar ever slides out.
+    func sidebarIsOffScreen(in windowID: UUID?) -> Bool {
+        let isFront = windowID == nil || windowID == frontWindowID
+        return sidebarHidden(in: windowID) && !(isFront && sidebarPeek.isPeeking) && !welcomeCovers(windowID)
+    }
+
+    /// View → Hide Sidebar / Show Sidebar (⌘S), and the palette: the front window's sidebar.
     func toggleSidebar() {
         sidebarPeek.close()
-        updateSettings { $0.sidebarHidden.toggle() }
+        setFrontSidebarHidden(!sidebarHidden(in: frontWindowID))
     }
 
     /// The window's close, minimise and zoom buttons go away with a hidden sidebar and come back
-    /// with the slide-out (as in Arc); otherwise they would sit on the page's corner.
+    /// with the slide-out (as in Arc); otherwise they would sit on the page's corner. Each window
+    /// by its own sidebar.
     func applyWindowButtons() {
-        guard let window = mainWindow else { return }
-        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            window.standardWindowButton(kind)?.isHidden = sidebarIsOffScreen
+        for (id, holder) in nsWindows {
+            guard let window = holder.window else { continue }
+            for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+                window.standardWindowButton(kind)?.isHidden = sidebarIsOffScreen(in: id)
+            }
         }
     }
 

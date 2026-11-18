@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 extension AppState {
     // MARK: Opening
 
-    /// New Note (⌘N, the palette): an empty note called "Untitled" (then "Untitled 2", …) in the
+    /// New Note (⌃⌘N, the palette): an empty note called "Untitled" (then "Untitled 2", …) in the
     /// selected Space. The file is made right away, so the name is taken and the note is listed.
     func newNote() {
         guard let space = selectedSpace else { return }

@@ -5,6 +5,7 @@ import SwiftUI
 /// and the current Space's tab list.
 struct SidebarView: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,7 +29,7 @@ struct SidebarView: View {
                         // buttons are never there together: one is for web pages, one for artifacts.
                         AppPanelButton()
                     }
-                    if let space = state.selectedSpace {
+                    if let space = state.shownSpace(in: windowID) {
                         TabList(space: space)
                     }
                     if !state.downloads.items.isEmpty {
@@ -94,9 +95,12 @@ private struct PluginPanelButton: View {
 
 private struct NavigationButtons: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
+    /// This window's tab (the front window's is the live selected tab).
+    private var shownTab: BrowserTab? { state.shownTab(in: windowID) }
 
     var body: some View {
-        let controller = state.selectedTab.flatMap { state.web.existingController($0.id) }
+        let controller = shownTab.flatMap { state.web.existingController($0.id) }
         HStack(spacing: 2) {
             Spacer()
             iconButton("chevron.left", help: "Back (⌘[)", enabled: controller?.canGoBack == true) { controller?.goBack() }
@@ -124,13 +128,16 @@ private struct NavigationButtons: View {
 /// starting with the page's full address. A web tab also gets a copy button at the right end.
 private struct AddressRow: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
+    /// This window's tab (the front window's is the live selected tab).
+    private var shownTab: BrowserTab? { state.shownTab(in: windowID) }
     /// True for two seconds after a copy: the button shows a tick.
     @State private var copied = false
 
     var body: some View {
         HStack(spacing: 0) {
             Button {
-                state.showPalette(state.selectedTab == nil ? .newTab : .navigateCurrent)
+                state.showPalette(shownTab == nil ? .newTab : .navigateCurrent)
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: addressSymbol)
@@ -139,7 +146,7 @@ private struct AddressRow: View {
                     Text(addressText)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .foregroundStyle(state.selectedTab == nil ? .secondary : .primary)
+                        .foregroundStyle(shownTab == nil ? .secondary : .primary)
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 10)
@@ -176,11 +183,11 @@ private struct AddressRow: View {
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
             copied = false
         }
-        .onChange(of: state.selectedTab?.id) { copied = false }
+        .onChange(of: shownTab?.id) { copied = false }
     }
 
     private var addressSymbol: String {
-        guard let tab = state.selectedTab else { return "magnifyingglass" }
+        guard let tab = shownTab else { return "magnifyingglass" }
         if tab.isArtifact { return "doc.richtext" }
         if tab.isTerminal { return "terminal" }
         if tab.isPlugin { return "puzzlepiece.extension" }
@@ -190,12 +197,12 @@ private struct AddressRow: View {
     }
 
     private var addressText: String {
-        if let path = state.selectedTab?.artifactPath { return "artifacts/\(path)" }
-        if let directory = state.selectedTab?.workingDirectory { return directory }
-        if let path = state.selectedTab?.notePath { return NoteFiles.subtitle(tabPath: path) }
+        if let path = shownTab?.artifactPath { return "artifacts/\(path)" }
+        if let directory = shownTab?.workingDirectory { return directory }
+        if let path = shownTab?.notePath { return NoteFiles.subtitle(tabPath: path) }
         // A plugin's page has no address: the row names it (a click still opens the palette).
-        if let tab = state.selectedTab, let pluginID = tab.pluginID { return state.pluginTitle(pluginID, fallback: tab.title) }
-        guard let url = state.selectedTab?.url else { return "Search or enter address" }
+        if let tab = shownTab, let pluginID = tab.pluginID { return state.pluginTitle(pluginID, fallback: tab.title) }
+        guard let url = shownTab?.url else { return "Search or enter address" }
         if let host = url.host() {
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         }
