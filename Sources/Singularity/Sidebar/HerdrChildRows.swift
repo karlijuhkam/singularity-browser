@@ -42,11 +42,12 @@ struct TabWithChildrenRow: View {
             .frame(minHeight: 22)
             // The highlight reaches a little past the row, so the tab's icon stays in line with
             // the icons of the rows above and below.
-            .background(HerdrRowHighlight(isOn: isSelected && state.shownChild[tab.id] == nil).padding(.horizontal, -4))
+            .background(HerdrRowHighlight(isOn: HerdrShown.ownIsHighlighted(isSelected: isSelected, shownChild: state.shownChild[tab.id]))
+                .padding(.horizontal, -4))
             .contentShape(Rectangle())
             .onTapGesture { state.showOwnTerminal(tab.id) }
             if !isCollapsed {
-                HerdrChildList(tab: tab, children: children, isTabSelected: isSelected)
+                HerdrChildList(tab: tab, children: children, tabIsOnScreen: isSelected)
             }
         }
         .background(ListDragOperations())
@@ -61,11 +62,14 @@ struct HerdrChildList: View {
     @Environment(AppState.self) private var state
     let tab: BrowserTab
     let children: HerdrChildren
-    let isTabSelected: Bool
+    /// The tab's pane is on screen: the tab is selected, or (under a split's row) its split is shown.
+    let tabIsOnScreen: Bool
 
     var body: some View {
         ForEach(children.rows) { row in
-            HerdrChildRowView(row: row, isShown: isTabSelected && state.shownChild[tab.id] == row.address)
+            HerdrChildRowView(row: row, isShown: HerdrShown.childIsHighlighted(tabIsOnScreen: tabIsOnScreen,
+                                                                    shownChild: state.shownChild[tab.id],
+                                                                    address: row.address))
                 .onTapGesture { state.showChild(row.address, under: tab.id) }
         }
         if children.more > 0 {

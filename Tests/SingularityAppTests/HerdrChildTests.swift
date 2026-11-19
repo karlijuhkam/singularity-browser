@@ -114,6 +114,36 @@ extension AppTests {
             #expect(f.state.selectedTab?.id == f.bot.id)
         }
 
+        /// In a split the tab has no row of its own, only a chip: the chip's click (which calls
+        /// `showOwnTerminal`) must bring its own terminal back, while a click in the pane keeps the child.
+        @Test func aChipInASplitBringsTheOwnTerminalBack() throws {
+            let f = try makeFixture()
+            defer { tearDown(f) }
+            feedBot(f)
+            f.state.splitTab(f.bot.id, beside: f.web.id, edge: .right)
+            #expect(f.state.selectedSpace?.splitGroup(containing: f.bot.id) != nil)
+            f.state.showChild("t3", under: f.bot.id)
+            #expect(f.state.shownChild[f.bot.id] == "t3")
+
+            // Focusing the other pane, or a click in the Bot's pane, keeps the child.
+            f.state.selectTab(f.web.id)
+            #expect(f.state.shownChild[f.bot.id] == "t3")
+            f.state.focusPane(f.bot.id)
+            #expect(f.state.shownChild[f.bot.id] == "t3")
+            #expect(!f.state.isTabOnScreen(f.bot.id))
+
+            // The chip's click: the Bot's own terminal, focused and on screen.
+            f.state.selectTab(f.web.id)
+            f.state.showOwnTerminal(f.bot.id)
+            #expect(f.state.shownChild[f.bot.id] == nil)
+            #expect(f.state.selectedTab?.id == f.bot.id)
+            #expect(f.state.isTabOnScreen(f.bot.id))
+            // The web tab's chip does what it always did.
+            f.state.showOwnTerminal(f.web.id)
+            #expect(f.state.selectedTab?.id == f.web.id)
+            #expect(f.state.isTabOnScreen(f.bot.id))
+        }
+
         @Test func onlyATabsOwnChildCanBeShown() throws {
             let f = try makeFixture()
             defer { tearDown(f) }

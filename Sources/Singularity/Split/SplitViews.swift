@@ -273,6 +273,14 @@ private struct PaneHeader: View {
                         .font(.system(size: 11, weight: isFocused ? .semibold : .regular))
                         .lineLimit(1)
                         .truncationMode(.tail)
+                    // The pane shows one of the tab's child terminals: say which, as the strip
+                    // at the pane's bottom does. The name comes from a program: text only.
+                    if let address = state.shownChild[tab.id] {
+                        Text(verbatim: "/ " + (state.herdr.facts.terminals[address].map(HerdrFacts.rowName) ?? address))
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                     AgentBadge(tab: tab)
                     Spacer(minLength: 4)
                 }

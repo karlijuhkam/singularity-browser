@@ -350,11 +350,13 @@ private struct SidebarItemRow: View {
             // overridden by the List selecting "the row".
             VStack(alignment: .leading, spacing: 1) {
                 SplitRow(tabIDs: tabIDs, space: space)
-                // The child terminals of the split's terminal tabs hang under its row.
+                // The child terminals of the split's terminal tabs hang under its row. A child is
+                // on screen whenever its split is, also in a pane that isn't focused.
+                let splitIsShown = space.selectedTabID.map(tabIDs.contains) ?? false
                 ForEach(tabIDs, id: \.self) { id in
                     if let tab = space.tab(id), tab.isTerminal {
                         HerdrChildList(tab: tab, children: state.herdr.children(of: id),
-                                       isTabSelected: space.selectedTabID == id)
+                                       tabIsOnScreen: splitIsShown)
                     }
                 }
             }
@@ -379,7 +381,10 @@ private struct SplitRow: View {
         HStack(spacing: 3) {
             ForEach(tabIDs, id: \.self) { id in
                 if let tab = space.tab(id) {
-                    let focused = splitIsShown && space.selectedTabID == id
+                    // A terminal chip whose pane shows one of its child terminals drops to the
+                    // "in the shown split" tint: the child's row has the highlight then.
+                    let focused = splitIsShown && HerdrShown.ownIsHighlighted(isSelected: space.selectedTabID == id,
+                                                                              shownChild: state.shownChild[id])
                     let attention = marks[id]
                     HStack(spacing: 5) {
                         TabIcon(tab: tab, space: space)
@@ -410,7 +415,9 @@ private struct SplitRow: View {
                     )
                     .agentBusyBackground(id, cornerRadius: 5)
                     .contentShape(Rectangle())
-                    .onTapGesture { state.selectTab(id) }
+                    // Like a tab's own row: brings back its own terminal when its pane shows a
+                    // child terminal (for any other tab it is just selecting it).
+                    .onTapGesture { state.showOwnTerminal(id) }
                     .contextMenu { TabContextMenu(tab: tab, space: space) }
                     // No drag source on a chip: dragging the row moves the whole split in the
                     // sidebar. Panes are rearranged by dragging their header on the page.

@@ -820,9 +820,10 @@ final class AppState {
         selectTab(tabID)
     }
 
-    /// Back to the tab's own terminal (a click on the tab's row, the strip under a child, ⌘W).
+    /// Back to the tab's own terminal (a click on the tab's row or on its chip in a split's row,
+    /// the strip under a child, ⌘W). A click inside a pane (`focusPane`) does not come here.
     func showOwnTerminal(_ tabID: UUID) {
-        shownChild[tabID] = nil
+        shownChild = HerdrShown.afterOwnClick(shownChild, tabID: tabID)
         selectTab(tabID)
     }
 
