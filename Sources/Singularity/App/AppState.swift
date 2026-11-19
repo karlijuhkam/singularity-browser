@@ -1587,7 +1587,11 @@ final class AppState {
         case .terminal:
             // Tests hand in fake terminals (`terminalHandleOverride`) and must never start the
             // owner's login shell, so with fakes in place a terminal tab on screen starts nothing.
-            if terminalHandleOverride == nil { _ = terminals.session(for: tab, in: space) }
+            if terminalHandleOverride == nil {
+                _ = terminals.session(for: tab, in: space)
+            } else {
+                terminalLoadedForTest?(tab.id)
+            }
         case .plugin(let pluginID):
             // Nothing to start: the page belongs to the plugin (`PluginManager.pageHost`), shown by
             // `PluginPageArea`. Only keep the tab's stored title in step with the manifest.
@@ -1744,8 +1748,14 @@ final class AppState {
         case .note:
             tab = BrowserTab.note(path: makeNewNoteFile(in: space))
         }
-        guard addInSplit(tab, edge: edge, beside: target) else { return }
+        // The command must wait before the tab goes on screen: `addInSplit` loads it, which makes
+        // the terminal's session, and the session takes its command right then. Set afterwards,
+        // it would miss the first shell and be typed into a restarted one instead.
         setPendingCommand(launcher, for: tab.id)
+        guard addInSplit(tab, edge: edge, beside: target) else {
+            pendingCommands[tab.id] = nil
+            return
+        }
         focusNewPane(tab.id)
     }
 
@@ -1996,6 +2006,9 @@ final class AppState {
 
     /// Tests only: replaces `terminalHandle` with fakes, so no test starts a shell.
     @ObservationIgnored var terminalHandleOverride: ((UUID) -> (any TerminalHandle)?)?
+    /// Tests only: called where a terminal tab put on screen would make its session (and take its
+    /// launcher command), while `terminalHandleOverride` keeps that session from being made.
+    @ObservationIgnored var terminalLoadedForTest: ((UUID) -> Void)?
 
     /// The terminal that `singularity.prompt` types into: the most recently selected terminal tab
     /// with a running shell, else any terminal tab with a running shell. If the Space's terminal

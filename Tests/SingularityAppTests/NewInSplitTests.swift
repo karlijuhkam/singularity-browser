@@ -44,14 +44,19 @@ extension AppTests {
             #expect(f.space.splitGroup(containing: f.page.id)?.root.tabIDs == [f.page.id, new.id])
         }
 
-        @Test func aLauncherTerminalKeepsItsCommandForTheFirstShell() throws {
+        @Test func aLauncherTerminalHasItsCommandWaitingWhenItsFirstShellStarts() throws {
             let f = try make()
             defer { finish(f) }
+            // The moment the real session would be made (and take the command), stand in for it.
+            var taken: [UUID: String?] = [:]
+            f.state.terminalLoadedForTest = { id in taken[id] = f.state.takePendingCommand(id) }
             f.state.newInSplit(.terminal(Launcher(name: "Claude Code", command: "claude")), edge: .bottom, beside: f.page.id)
             let new = try #require(f.state.selectedTab)
             #expect(new.isTerminal)
             #expect(f.space.splitGroup(containing: new.id)?.root.tabIDs == [f.page.id, new.id])
-            #expect(f.state.takePendingCommand(new.id) == "claude")
+            #expect(taken[new.id] == .some("claude"))
+            // Nothing is left over for a restarted shell to type.
+            #expect(f.state.pendingCommands[new.id] == nil)
         }
 
         @Test func aNewNoteMakesItsFileAndGoesInTheSplit() throws {
@@ -77,10 +82,12 @@ extension AppTests {
             f.state.openInSplit(URL(string: "about:blank")!, edge: .right, beside: f.page.id)
             f.state.newInSplit(.tab, edge: .right, beside: f.page.id)
             f.state.newInSplit(.terminal(nil), edge: .bottom, beside: f.page.id)
+            f.state.newInSplit(.terminal(Launcher(name: "Claude Code", command: "claude")), edge: .bottom, beside: f.page.id)
             f.state.newInSplit(.note, edge: .right, beside: f.page.id)
 
             #expect(f.space.tabs == before.tabs)
             #expect(f.space.splits == before.splits)
+            #expect(f.state.pendingCommands.isEmpty)
             let notes = f.state.paths.notesDirectory(f.space.slug)
             #expect(!FileManager.default.fileExists(atPath: notes.appending(path: "Untitled.md").path))
         }
