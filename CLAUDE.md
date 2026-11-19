@@ -188,7 +188,9 @@ Sources/
                      file), NoteRegistry (one host per note tab; watches the notes' folders), AppState+Notes (New
                      Note, Today's Note, Open File…, rename, delete)
     Split/           SplitViews (recursive panes + draggable gaps), PaneContainerView (hosts a tab's view; drop
-                     overlay during tab drags; click-to-focus monitor), PaneDragHandle (pane header drag source)
+                     overlay during tab drags; click-to-focus monitor), PaneDragHandle (pane header drag source;
+                     its right-click menu), NewInSplitMenu (Split Right / Split Down → New Tab, Terminal, launchers, Note: a
+                     new tab straight into a split, `Space.addInSplit`; tab menus, the pane header's button and right-click)
   singularity-mcp/   Stdio launcher agents start: relays bytes to ~/Singularity/.run/mcp.sock, starts the app if needed
   singularity-hook/  Claude Code's hook command: relays one hook call to <root>/.run/hook.sock and prints the reply;
                      outside a Singularity terminal or with no app listening: no output, exit 0, at once (never starts the app)

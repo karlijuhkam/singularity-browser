@@ -273,6 +273,44 @@ extension Space {
         return true
     }
 
+    /// Whether one more pane fits beside `target` (a tab not in a split always has room).
+    public func hasRoomInSplit(beside target: UUID) -> Bool {
+        guard tab(target) != nil else { return false }
+        return (splitGroup(containing: target)?.root.tabIDs.count ?? 1) < Self.maxPanesPerSplit
+    }
+
+    /// Adds a new tab and shows it straight away beside `target` (right-click → Split Right →
+    /// New Terminal, the split palette), selected.
+    ///
+    /// The tab goes where the split's sidebar row is: into the folder `folderShowing(target)`
+    /// (else Tabs; never pinned), right after the split's last tab in that section (else at the
+    /// section's end). The row's first tab doesn't change, so the row stays where it was.
+    /// Changes nothing and returns false for a tab that is already there, an unknown target or a
+    /// full split, so no stray tab is ever left at the end of Tabs.
+    @discardableResult
+    public mutating func addInSplit(_ newTab: BrowserTab, beside target: UUID, edge: SplitEdge) -> Bool {
+        guard tab(newTab.id) == nil, let targetTab = tab(target), hasRoomInSplit(beside: target) else { return false }
+        var added = newTab
+        added.isPinned = false
+        added.folderID = folderShowing(targetTab)
+
+        let members = Set(splitGroup(containing: target)?.root.tabIDs ?? [target])
+        // The array order is per section, so "right after a member of the same section" is
+        // right after it in the sidebar.
+        if let last = tabs.lastIndex(where: { members.contains($0.id) && $0.section == added.section }) {
+            tabs.insert(added, at: last + 1)
+        } else {
+            tabs.append(added)
+        }
+        guard split(added.id, beside: target, edge: edge) else {
+            // Can't happen after the checks above; never leave the tab behind if it does.
+            tabs.removeAll { $0.id == added.id }
+            return false
+        }
+        selectedTabID = added.id
+        return true
+    }
+
     /// Takes a tab out of its split. A split left with one tab dissolves.
     public mutating func removeFromSplit(_ tabID: UUID) {
         guard let index = splits.firstIndex(where: { $0.root.contains(tabID) }) else { return }

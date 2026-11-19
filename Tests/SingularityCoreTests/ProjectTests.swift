@@ -170,6 +170,20 @@ import Testing
         #expect(f.space.folderForNewTerminal == nil)
     }
 
+    @Test func aTerminalAddedInASplitInAFolderHasNoTag() {
+        var f = make()
+        let first = terminal(project: f.web.id, folder: f.task.id)
+        f.space.append(first)
+        let start = f.space.splitTerminalStart(beside: first.id)
+        var second = BrowserTab.terminal(workingDirectory: start.directory)
+        second.projectID = start.projectID
+        let ok = f.space.addInSplit(second, beside: first.id, edge: .right)
+        #expect(ok)
+        let added = f.space.tab(second.id)!
+        #expect(added.folderID == f.task.id)
+        #expect(f.space.projectTag(of: added) == nil)
+    }
+
     @Test func pickerOrder() {
         var f = make()
         #expect(f.space.projectChoices.map(\.name) == ["acme-web", "acme-docs", "Space folder"])

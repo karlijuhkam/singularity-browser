@@ -216,6 +216,8 @@ struct TabContextMenu: View {
                 Button("Above Current Tab") { state.splitTab(tab.id, beside: current, edge: .top) }
             }
         }
+        // A new tab, terminal or note straight into a split beside this tab.
+        NewInSplitMenus(target: tab.id, space: space)
         if space.splitGroup(containing: tab.id) != nil {
             Button("Remove from Split") { state.removeFromSplit(tab.id) }
         }

@@ -1702,22 +1702,82 @@ final class AppState {
 
     /// Opens a URL as a new tab and shows it in a split next to `target`.
     func openInSplit(_ url: URL, edge: SplitEdge, beside target: UUID) {
-        guard let spaceID = selectedSpaceID else { return }
-        let tab = BrowserTab.web(url)
-        mutateSpace(spaceID) { $0.append(tab) }
-        splitTab(tab.id, beside: target, edge: edge)
+        addInSplit(BrowserTab.web(url), edge: edge, beside: target)
     }
 
     /// Opens a new terminal and shows it in a split next to `target`.
     func openTerminalInSplit(edge: SplitEdge, beside target: UUID) {
-        guard let space = selectedSpace else { return }
-        // Never asks: the project of the terminal it goes beside, else that tab's folder's
-        // project, else the Space's folder (`splitTerminalStart`).
-        let start = space.splitTerminalStart(beside: target)
-        var tab = BrowserTab.terminal(workingDirectory: start.directory)
-        tab.projectID = start.projectID
-        mutateSpace(space.id) { $0.append(tab) }
-        splitTab(tab.id, beside: target, edge: edge)
+        newInSplit(.terminal(nil), edge: edge, beside: target)
+    }
+
+    /// What right-click → Split Right / Split Down (and the split palette) can make.
+    enum NewPane {
+        /// A new home (the Space's start page), never the Space's existing one: pulling that in
+        /// could move the split's row to the home's place or take it out of another split.
+        case tab
+        /// A terminal, started like any terminal opened in a split (`splitTerminalStart`: never
+        /// asks for a project), with a launcher's command typed in when one is given.
+        case terminal(Launcher?)
+        /// A new empty note ("Untitled").
+        case note
+    }
+
+    /// Makes a new tab of `kind` and shows it straight away beside `target`, focused (rather than
+    /// at the end of Tabs). Beeps when the split is full or `target` isn't a tab of the front
+    /// window's Space; then nothing is made (no tab, no note file).
+    func newInSplit(_ kind: NewPane, edge: SplitEdge, beside target: UUID) {
+        guard let space = selectedSpace, space.hasRoomInSplit(beside: target) else {
+            NSSound.beep()
+            return
+        }
+        let tab: BrowserTab
+        var launcher: Launcher?
+        switch kind {
+        case .tab:
+            tab = BrowserTab.home()
+        case .terminal(let chosen):
+            let start = space.splitTerminalStart(beside: target)
+            var terminal = BrowserTab.terminal(workingDirectory: start.directory)
+            terminal.projectID = start.projectID
+            tab = terminal
+            launcher = chosen
+        case .note:
+            tab = BrowserTab.note(path: makeNewNoteFile(in: space))
+        }
+        guard addInSplit(tab, edge: edge, beside: target) else { return }
+        setPendingCommand(launcher, for: tab.id)
+        focusNewPane(tab.id)
+    }
+
+    /// Adds `tab` to the selected Space beside `target`, in a split, selected (`Space.addInSplit`:
+    /// in the split's folder, next to its other tabs). Beeps and returns false when it didn't fit.
+    @discardableResult
+    private func addInSplit(_ tab: BrowserTab, edge: SplitEdge, beside target: UUID) -> Bool {
+        guard let spaceID = selectedSpaceID else { return false }
+        closeWelcome()
+        var added = false
+        mutateSpace(spaceID) { added = $0.addInSplit(tab, beside: target, edge: edge) }
+        guard added else {
+            NSSound.beep()
+            return false
+        }
+        previousTabBySpace[spaceID] = target
+        loadSelectedTab()
+        return true
+    }
+
+    /// Gives the keyboard to a pane that was just made, as ⌥⌘ + arrow does. A new pane's view
+    /// takes it by itself when it is first put on screen (`HostedView.focusOnShow`; a home's search
+    /// field when its pane is focused); this is for when the view was already in the window (a
+    /// note's or terminal's view made earlier). Waits one turn: the pane is laid out after this.
+    private func focusNewPane(_ tabID: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.selectedSpace?.selectedTabID == tabID else { return }
+            let view: NSView? = self.web.existingController(tabID)?.webView
+                ?? self.terminals.existingSession(tabID)?.view
+                ?? self.notes.existingHost(tabID)?.webView
+            view?.window?.makeFirstResponder(view)
+        }
     }
 
     func setSplitFractions(groupID: UUID, path: [Int], fractions: [Double]) {

@@ -14,11 +14,17 @@ extension AppState {
     /// selected Space. The file is made right away, so the name is taken and the note is listed.
     func newNote() {
         guard let space = selectedSpace else { return }
+        openNote(makeNewNoteFile(in: space))
+    }
+
+    /// Makes the empty file of a new note ("Untitled", "Untitled 2", …) in `space`'s notes folder
+    /// and returns its tab path. Also used by right-click → Split Right → New Note.
+    func makeNewNoteFile(in space: Space) -> String {
         let root = paths.notesDirectory(space.slug)
         let taken = NoteFiles.list(in: root).map(\.path) + space.tabs.compactMap(\.notePath)
         let path = NoteFiles.freePath(taken: taken)
         createEmptyNote(path, root: root)
-        openNote(path)
+        return path
     }
 
     /// Today's Note (⌥⌘N, the palette): the day's journal note, `Journal/2026-11-16.md`, made

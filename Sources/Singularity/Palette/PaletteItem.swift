@@ -51,8 +51,14 @@ enum PaletteResults {
             .map(historyItem)
         let commands: [PaletteItem]
         if case .splitWith(let edge, let beside) = mode {
-            commands = [PaletteItem(id: "cmd-split-terminal", title: "New Terminal", subtitle: "", hint: "Command",
-                                    icon: .symbol("terminal"), action: .run { state.openTerminalInSplit(edge: edge, beside: beside) })]
+            commands = [
+                PaletteItem(id: "cmd-split-tab", title: "New Tab", subtitle: "", hint: "Command",
+                            icon: .symbol("plus.square"), action: .run { state.newInSplit(.tab, edge: edge, beside: beside) }),
+                PaletteItem(id: "cmd-split-terminal", title: "New Terminal", subtitle: "", hint: "Command",
+                            icon: .symbol("terminal"), action: .run { state.openTerminalInSplit(edge: edge, beside: beside) }),
+                PaletteItem(id: "cmd-split-note", title: "New Note", subtitle: "", hint: "Command",
+                            icon: .symbol("note.text.badge.plus"), action: .run { state.newInSplit(.note, edge: edge, beside: beside) }),
+            ]
         } else {
             commands = commandItems(state: state, space: space)
         }

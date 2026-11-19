@@ -14,6 +14,8 @@ struct PaneDragHandle: NSViewRepresentable {
     let tabID: UUID
     let title: String
     let onClick: () -> Void
+    /// The right-click menu (made when asked).
+    var makeMenu: (() -> NSMenu?)?
 
     func makeNSView(context: Context) -> PaneDragHandleView {
         PaneDragHandleView()
@@ -23,6 +25,7 @@ struct PaneDragHandle: NSViewRepresentable {
         view.tabID = tabID
         view.title = title
         view.onClick = onClick
+        view.makeMenu = makeMenu
     }
 }
 
@@ -30,6 +33,7 @@ final class PaneDragHandleView: NSView, NSDraggingSource {
     var tabID: UUID?
     var title = ""
     var onClick: (() -> Void)?
+    var makeMenu: (() -> NSMenu?)?
     private var mouseDownEvent: NSEvent?
     /// The window whose `isMovable` we switched off (so we can always switch it back on).
     private weak var pinnedWindow: NSWindow?
@@ -103,6 +107,14 @@ final class PaneDragHandleView: NSView, NSDraggingSource {
     override func mouseUp(with event: NSEvent) {
         if mouseDownEvent != nil { onClick?() }
         mouseDownEvent = nil
+    }
+
+    /// Right-click (or control-click): AppKit asks the view under the mouse for its context menu
+    /// and shows it. SwiftUI's `.contextMenu` isn't used here: the header sits in the title-bar
+    /// strip, where SwiftUI overlays have been seen to take the clicks the drag needs.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        mouseDownEvent = nil // a control-click is a menu, not a click that focuses
+        return makeMenu?()
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {

@@ -254,6 +254,7 @@ private struct PaneView: View {
 
 private struct PaneHeader: View {
     @Environment(AppState.self) private var state
+    @Environment(\.browserWindowID) private var windowID
     let tab: BrowserTab
     let space: Space
     let isFocused: Bool
@@ -261,9 +262,12 @@ private struct PaneHeader: View {
     var body: some View {
         ZStack {
             // Drag the header onto another pane to move this one; click to focus it.
-            PaneDragHandle(tabID: tab.id, title: tab.displayTitle) { [state, tabID = tab.id] in
+            PaneDragHandle(tabID: tab.id, title: tab.displayTitle, onClick: { [state, tabID = tab.id] in
                 state.focusPane(tabID)
-            }
+            }, makeMenu: { [state, space, windowID, tabID = tab.id] in
+                // Right-click: built when asked, so it shows the launchers and room of that moment.
+                NewInSplitNSMenu.make(state: state, space: state.space(space.id) ?? space, target: tabID, windowID: windowID)
+            })
             HStack(spacing: 6) {
                 // Icon and title let clicks and drags fall through to the handle underneath.
                 Group {
@@ -286,8 +290,7 @@ private struct PaneHeader: View {
                 }
                 .allowsHitTesting(false)
                 Menu {
-                    Button("Split Right…") { state.showSplitPalette(.right, beside: tab.id) }
-                    Button("Split Down…") { state.showSplitPalette(.bottom, beside: tab.id) }
+                    NewInSplitMenus(target: tab.id, space: space)
                     Divider()
                     Button("Remove from Split") { state.removeFromSplit(tab.id) }
                 } label: {

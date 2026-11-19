@@ -285,3 +285,92 @@ import Testing
         #expect(UUID(uuidString: "split:" + id.uuidString) == nil)
     }
 }
+
+/// New tabs straight into a split (right-click → Split Right / Split Down, the split palette).
+@Suite struct AddInSplitTests {
+    func makeSpace() -> (Space, [UUID]) { SplitTests().makeSpace() }
+    func describe(_ node: SplitNode, _ space: Space) -> String { SplitTests().describe(node, space) }
+
+    func newTab(_ title: String) -> BrowserTab {
+        .web(URL(string: "https://\(title.lowercased()).test")!, title: title)
+    }
+
+    @Test func addInSplitPutsTheNewTabRightAfterItsPartner() {
+        var (space, t) = makeSpace()
+        let new = newTab("N")
+        let ok = space.addInSplit(new, beside: t[0], edge: .right)
+        #expect(ok)
+        #expect(space.tabs.map { $0.title } == ["A", "N", "B", "C", "D", "E", "F", "G"])
+        #expect(describe(space.splits[0].root, space) == "H[A,N]")
+        #expect(space.selectedTabID == new.id)
+        #expect(space.sidebarItems(in: .open).first == .split(groupID: space.splits[0].id, tabIDs: [t[0], new.id]))
+    }
+
+    @Test func addInSplitBelowStacks() {
+        var (space, t) = makeSpace()
+        space.addInSplit(newTab("N"), beside: t[0], edge: .bottom)
+        #expect(describe(space.splits[0].root, space) == "V[A,N]")
+    }
+
+    @Test func addInSplitGoesAfterTheSplitsLastTab() {
+        var (space, t) = makeSpace()
+        space.split(t[3], beside: t[0], edge: .right)  // [A,D]
+        space.addInSplit(newTab("N"), beside: t[0], edge: .bottom)
+        #expect(space.tabs.map { $0.title } == ["A", "B", "C", "D", "N", "E", "F", "G"])
+        #expect(describe(space.splits[0].root, space) == "H[V[A,N],D]")
+    }
+
+    @Test func addInSplitInAFolderJoinsTheFolder() {
+        var (space, _, folder, x, y) = SidebarItemTests().spaceWithFolder()
+        let new = newTab("N")
+        space.addInSplit(new, beside: x, edge: .right)
+        #expect(space.tab(new.id)?.folderID == folder.id)
+        #expect(space.tabs(in: .folder(folder.id)).map { $0.title } == ["X", "N", "Y"])
+        #expect(space.sidebarItems(in: .folder(folder.id)).count == 2) // the split's row, then Y
+        #expect(!space.sidebarItems(in: .open).contains { $0.tabIDs.contains(new.id) })
+    }
+
+    @Test func addInSplitBesideALaterPaneUsesTheRowsFolder() {
+        var (space, t, folder, x, _) = SidebarItemTests().spaceWithFolder()
+        space.split(t[1], beside: x, edge: .right)  // the row lives in F; B is in Tabs
+        let new = newTab("N")
+        space.addInSplit(new, beside: t[1], edge: .bottom)
+        #expect(space.tab(new.id)?.folderID == folder.id)
+        #expect(space.tabs(in: .folder(folder.id)).map { $0.title } == ["X", "N", "Y"])
+        #expect(space.sidebarItems(in: .folder(folder.id)).first?.tabIDs.contains(new.id) == true)
+    }
+
+    @Test func addInSplitBesideAPinnedTabNeverPins() {
+        var (space, t) = makeSpace()
+        space.moveTab(t[0], to: .pinned)
+        var new = newTab("N")
+        new.isPinned = true
+        space.addInSplit(new, beside: t[0], edge: .right)
+        #expect(space.tab(new.id)?.isPinned == false)
+        #expect(space.sidebarItems(in: .pinned).first?.tabIDs == [t[0], new.id])
+        #expect(!space.sidebarItems(in: .open).contains { $0.tabIDs.contains(new.id) })
+    }
+
+    @Test func addInSplitRefusesAFullSplit() {
+        var (space, t) = makeSpace()
+        for index in 1..<Space.maxPanesPerSplit { space.split(t[index], beside: t[0], edge: .right) }
+        #expect(!space.hasRoomInSplit(beside: t[0]))
+        #expect(space.hasRoomInSplit(beside: t[6])) // a tab on its own always has room
+        let before = space
+        let ok = space.addInSplit(newTab("N"), beside: t[1], edge: .bottom)
+        #expect(!ok)
+        #expect(space == before)
+    }
+
+    @Test func addInSplitRefusesAnUnknownTargetOrATabTwice() {
+        var (space, t) = makeSpace()
+        let before = space
+        #expect(!space.hasRoomInSplit(beside: UUID()))
+        let ok = space.addInSplit(newTab("N"), beside: UUID(), edge: .right)
+        #expect(!ok)
+        #expect(space == before)
+        let twice = space.addInSplit(space.tab(t[1])!, beside: t[0], edge: .right)
+        #expect(!twice)
+        #expect(space == before)
+    }
+}
