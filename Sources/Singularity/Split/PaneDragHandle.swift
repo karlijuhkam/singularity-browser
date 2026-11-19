@@ -109,12 +109,12 @@ final class PaneDragHandleView: NSView, NSDraggingSource {
         mouseDownEvent = nil
     }
 
-    /// Right-click (or control-click): AppKit asks the view under the mouse for its context menu
-    /// and shows it. SwiftUI's `.contextMenu` isn't used here: the header sits in the title-bar
+    /// Right-click: NSView's default `rightMouseDown` asks the view under the mouse for its menu
+    /// here and shows it. (Control-click goes to our `mouseDown`, which doesn't call super, so it
+    /// stays a plain click.) SwiftUI's `.contextMenu` isn't used: the header sits in the title-bar
     /// strip, where SwiftUI overlays have been seen to take the clicks the drag needs.
     override func menu(for event: NSEvent) -> NSMenu? {
-        mouseDownEvent = nil // a control-click is a menu, not a click that focuses
-        return makeMenu?()
+        makeMenu?()
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
