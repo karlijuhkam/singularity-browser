@@ -389,16 +389,12 @@ extension Space {
 
     /// Moves a single tab to row `row` of a section (a drop between rows in the sidebar; `row`
     /// counts the rows of `sidebarItems(in: section)` as they are before the move). Works within
-    /// a section too. A tab that is part of a split stands for the split's row (the sidebar drags
-    /// that row by one of its tabs): the row moves within its section, and to another section
-    /// nothing moves.
+    /// a section too. A tab that is part of a split stands for the split's row (a pane header's
+    /// drag carries one tab of its split): the whole split moves, as `moveSplit` does.
     public mutating func moveTab(_ id: UUID, to section: SidebarSection, atRow row: Int) {
         guard let tab = tab(id) else { return }
-        if splitGroup(containing: id) != nil {
-            let items = sidebarItems(in: section)
-            guard let current = items.firstIndex(where: { $0.tabIDs.contains(id) }) else { return }
-            // `row` counts the rows before the move, as `onMove`'s destination does.
-            moveSidebarItems(in: section, fromOffsets: [current], toOffset: max(0, min(row, items.count)))
+        if let group = splitGroup(containing: id) {
+            moveSplit(group.id, to: section, atRow: row)
             return
         }
         if case .folder(let folderID) = section, !folders.contains(where: { $0.id == folderID }) { return }
@@ -413,5 +409,38 @@ extension Space {
         let items = sidebarItems(in: section)
         guard let last = items.firstIndex(of: .tab(id)) else { return }
         moveSidebarItems(in: section, fromOffsets: [last], toOffset: max(0, min(target, last)))
+    }
+
+    /// Moves a split's row to row `row` of `section` (rows of `sidebarItems(in: section)` before
+    /// the move, as `onInsert` counts them; past the end = last). Every tab of the split goes to
+    /// that section, side by side in their current sidebar order, also those that were in another
+    /// section (a split can span sections, e.g. a terminal opened in a split in a folder lands in
+    /// Tabs). The split itself (`splits`) doesn't change. An unknown split or folder: nothing moves.
+    public mutating func moveSplit(_ groupID: UUID, to section: SidebarSection, atRow row: Int) {
+        guard let group = splits.first(where: { $0.id == groupID }) else { return }
+        if case .folder(let folderID) = section, !folders.contains(where: { $0.id == folderID }) { return }
+
+        // The row the split goes in front of (nil: the end). Members may be scattered, so the
+        // place is found by that row's tab, not by counting. Dropped onto its own position (its
+        // own row, or the gap right after it), the next row is the anchor: nothing changes.
+        let rows = sidebarItems(in: section)
+        var anchorRow = max(0, row)
+        if anchorRow < rows.count, case .split(let id, _) = rows[anchorRow], id == groupID {
+            anchorRow += 1
+        }
+        let anchorTabs = anchorRow < rows.count ? Set(rows[anchorRow].tabIDs) : []
+        let anchor = tabs.first { anchorTabs.contains($0.id) && $0.section == section }?.id
+
+        let memberIDs = Set(group.root.tabIDs)
+        var members = tabsInSidebarOrder.filter { memberIDs.contains($0.id) }
+        tabs.removeAll { memberIDs.contains($0.id) }
+        for index in members.indices {
+            members[index].place(in: section)
+        }
+        if let anchor, let index = tabs.firstIndex(where: { $0.id == anchor }) {
+            tabs.insert(contentsOf: members, at: index)
+        } else {
+            tabs.append(contentsOf: members) // array order is per section: the section's end
+        }
     }
 }

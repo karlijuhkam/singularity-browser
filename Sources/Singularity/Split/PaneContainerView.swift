@@ -26,10 +26,15 @@ enum TabDragSession {
     static let didEnd = Notification.Name("SingularityTabDragDidEnd")
     private static var timer: Timer?
 
-    /// Called when a tab drag starts (SwiftUI asks for the drag data at that moment).
-    static func begin() {
+    /// `userInfo` key of `didBegin`: false when the panes keep their drop layers down.
+    static let raisesPanesKey = "raisesPanes"
+
+    /// Called when a tab drag starts (SwiftUI asks for the drag data at that moment). With
+    /// `raisesPanes` false (a split's row, which can only be dropped in the sidebar) only the
+    /// sidebar reacts: it shows its drop rows, and the panes' drop layers stay down.
+    static func begin(raisesPanes: Bool = true) {
         guard timer == nil else { return }
-        NotificationCenter.default.post(name: didBegin, object: nil)
+        NotificationCenter.default.post(name: didBegin, object: nil, userInfo: [raisesPanesKey: raisesPanes])
         // AppKit runs its drag loop in "event tracking" mode, where ordinary timers don't fire.
         // So this check only runs after the drag (and its drop) have finished.
         timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
@@ -84,7 +89,8 @@ final class PaneContainerView: NSView {
         if let overlay, subview !== overlay { addSubview(overlay, positioned: .above, relativeTo: nil) }
     }
 
-    @objc private func showOverlay() {
+    @objc private func showOverlay(_ note: Notification) {
+        if note.userInfo?[TabDragSession.raisesPanesKey] as? Bool == false { return }
         guard overlay == nil, onDrop != nil else { return }
         let overlay = PaneDropOverlay(frame: bounds)
         overlay.autoresizingMask = [.width, .height]
@@ -170,7 +176,8 @@ final class PaneDropOverlay: NSView {
         }
         guard let zone,
               let data = sender.draggingPasteboard.data(forType: .singularityTab),
-              let droppedTab = UUID(uuidString: String(decoding: data, as: UTF8.self)) else { return false }
+              // Only a single tab: a split's row (`split:<id>`) is never dropped on a pane.
+              case .tab(let droppedTab) = TabDragPayload(string: String(decoding: data, as: UTF8.self)) else { return false }
         onDrop?(droppedTab, zone)
         return true
     }

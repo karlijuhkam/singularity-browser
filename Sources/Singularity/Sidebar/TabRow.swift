@@ -107,20 +107,23 @@ enum TabDrag {
     static func provider(for tabID: UUID) -> NSItemProvider {
         // SwiftUI asks for this when the drag starts: time to put the panes' drop layers up.
         TabDragSession.begin()
-        return payload(tabID)
+        return payload(.tab(tabID))
     }
 
-    /// A split's row dragged within the sidebar: it carries one of the split's tabs, and a drop
-    /// in the sidebar moves the split's row (`Space.moveTab(_:to:atRow:)`). The panes' drop
-    /// layers stay down, so the row can't be dropped on the page (that would pull one tab out).
-    static func splitRowProvider(for tabID: UUID) -> NSItemProvider {
-        payload(tabID)
+    /// A split's row dragged within the sidebar: it carries the split (`split:<id>`), and a drop
+    /// in the sidebar moves the whole split there (`Space.moveSplit`). The session begins so the
+    /// sidebar shows its drop rows (an empty Pinned or Tabs), but the panes' drop layers stay
+    /// down: the row can't be dropped on the page (that would pull one tab out).
+    static func splitRowProvider(groupID: UUID) -> NSItemProvider {
+        TabDragSession.begin(raisesPanes: false)
+        return payload(.split(groupID: groupID))
     }
 
-    private static func payload(_ tabID: UUID) -> NSItemProvider {
+    private static func payload(_ payload: TabDragPayload) -> NSItemProvider {
+        let text = payload.string
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: UTType.singularityTab.identifier, visibility: .ownProcess) { completion in
-            completion(Data(tabID.uuidString.utf8), nil)
+            completion(Data(text.utf8), nil)
             return nil
         }
         return provider
@@ -165,15 +168,15 @@ final class ListDragOperationsView: NSView {
 enum TabDrop {
     static let types = [UTType.singularityTab]
 
-    /// Hands the dragged tab's id to `action` on the main thread. (Item providers deliver their
-    /// data asynchronously, on a background queue.)
+    /// Hands what was dragged (a tab, or a split's row) to `action` on the main thread. (Item
+    /// providers deliver their data asynchronously, on a background queue.)
     @discardableResult
-    static func handle(_ providers: [NSItemProvider], action: @escaping @MainActor (UUID) -> Void) -> Bool {
+    static func handle(_ providers: [NSItemProvider], action: @escaping @MainActor (TabDragPayload) -> Void) -> Bool {
         guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.singularityTab.identifier) })
         else { return false }
         _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.singularityTab.identifier) { data, _ in
-            guard let data, let id = UUID(uuidString: String(decoding: data, as: UTF8.self)) else { return }
-            Task { @MainActor in action(id) }
+            guard let data, let payload = TabDragPayload(string: String(decoding: data, as: UTF8.self)) else { return }
+            Task { @MainActor in action(payload) }
         }
         return true
     }

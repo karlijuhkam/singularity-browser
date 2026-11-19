@@ -188,7 +188,7 @@ extension AppTests {
         #expect(f.space.sidebarItems(in: .folder(f.folder)).last == .tab(f.open))
     }
 
-    @Test func aSplitsRowMovesWithinItsSection() async throws {
+    @Test func aSplitsRowMovesWithinItsSectionAndToAnother() async throws {
         let f = try await make()
         defer { finish(f) }
         let open2 = f.space.sidebarItems(in: .open)[1].tabIDs[0]
@@ -203,11 +203,64 @@ extension AppTests {
         #expect(try await drag(f, fromRow: 6, toRow: 5, childIndex: 2))
         #expect(f.space.sidebarItems(in: .open).map(\.tabIDs.count) == [1, 2])
         #expect(f.space.sidebarItems(in: .open).first == .tab(third.id))
-        // To another section nothing moves: a split's tabs stay together.
+        // Into folder F, as its first row: both of its tabs go, and it stays a split.
         try await Task.sleep(for: .milliseconds(300))
         #expect(try await drag(f, fromRow: 7, toRow: 3, childIndex: 0))
         #expect(f.space.splitGroup(containing: f.open) != nil)
-        #expect(f.space.tab(f.open)?.section == .open)
+        #expect(f.space.tab(f.open)?.section == .folder(f.folder))
+        #expect(f.space.tab(open2)?.section == .folder(f.folder))
+        #expect(f.space.sidebarItems(in: .folder(f.folder)).map(\.tabIDs.count) == [2, 1])
+        #expect(f.space.sidebarItems(in: .open) == [.tab(third.id)])
+    }
+
+    @Test func withNothingPinnedASplitsRowCanBePinned() async throws {
+        let f = try await make()
+        defer { finish(f) }
+        #expect(try await drag(f, fromRow: 1, toRow: 5, childIndex: 0)) // nothing pinned now
+        let open2 = f.space.sidebarItems(in: .open)[2].tabIDs[0]
+        f.state.mutateSpace(f.state.selectedSpaceID!) { _ = $0.split(open2, beside: f.open, edge: .right) }
+        // Rows: 0 "Folders", 1 F, 2 its tab, 3 "Tabs", 4 Pinned (now open), 5 the split.
+        for _ in 0..<30 where f.outline.numberOfRows != 6 {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(f.outline.numberOfRows == 6)
+        // The split's row is dragged: "Pinned" and its drop row appear at the top, and that row
+        // takes the drop. Rows then: 0 "Pinned", 1 "Drop here to pin", 2 "Folders", …
+        // (Only asked, not dropped: a drop *on* a row goes through SwiftUI's `onDrop`, which can
+        // read the drag's data only in a real drag; see `drag`.)
+        var rowsDuringDrag = 0
+        let wouldLand = try await drag(f, fromRow: 5, toRow: { rowsDuringDrag = f.outline.numberOfRows; return 1 }(),
+                                       childIndex: NSOutlineViewDropOnItemIndex, perform: false, settle: true)
+        #expect(rowsDuringDrag == 8)
+        #expect(wouldLand)
+        // What that row does with the split's payload: the whole split is pinned.
+        let groupID = try #require(f.space.splitGroup(containing: f.open)?.id)
+        f.state.moveDropped(.split(groupID: groupID), to: .pinned, atRow: .max)
+        #expect(f.space.tab(f.open)?.section == .pinned)
+        #expect(f.space.tab(open2)?.section == .pinned)
+        #expect(f.space.splitGroup(containing: f.open) != nil)
+    }
+
+    @Test func aSplitsRowDragLeavesThePanesDropLayersDown() async throws {
+        MainRunLoopGuard.start
+        let pane = PaneContainerView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        pane.onDrop = { _, _ in }
+        func hasOverlay() -> Bool { pane.subviews.contains { $0 is PaneDropOverlay } }
+        func waitForEnd() async throws {
+            // The session ends on a timer once no mouse button is down (none is, in a test).
+            var ended = false
+            let token = NotificationCenter.default.addObserver(forName: TabDragSession.didEnd, object: nil, queue: nil) { _ in ended = true }
+            defer { NotificationCenter.default.removeObserver(token) }
+            for _ in 0..<30 where !ended { try await Task.sleep(for: .milliseconds(100)) }
+        }
+
+        TabDragSession.begin(raisesPanes: false)
+        #expect(!hasOverlay())
+        try await waitForEnd()
+        TabDragSession.begin()
+        #expect(hasOverlay())
+        try await waitForEnd()
+        #expect(!hasOverlay())
     }
 
     @Test func aDropInAFolderCountsItsTabsNotItsFolders() async throws {

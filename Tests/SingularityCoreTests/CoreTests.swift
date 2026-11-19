@@ -129,7 +129,7 @@ import Testing
         #expect(rows(.open) == [ids[2], ids[4], ids[3]])
     }
 
-    @Test func droppingASplitsRowMovesTheWholeSplitWithinItsSection() {
+    @Test func droppingASplitsRowMovesTheWholeSplit() {
         let folder = Folder(name: "Docs")
         var space = Space(name: "Work", slug: "work", colorHex: "#5E81F4", folders: [folder])
         let tabs = (0..<4).map { BrowserTab.web(URL(string: "https://example.com/\($0)")!) }
@@ -147,11 +147,19 @@ import Testing
         space.moveTab(ids[1], to: .open, atRow: 0)
         #expect(space.sidebarItems(in: .open).map(first) == [ids[1], ids[0], ids[3]])
         #expect(space.splitGroup(containing: ids[1]) != nil)
-        // Another section: nothing moves (a split's tabs can't be moved one by one).
+        // Dropped on its own place (before itself or right after itself): nothing changes.
+        let before = space.tabs.map(\.id)
+        space.moveTab(ids[1], to: .open, atRow: 0)
+        space.moveTab(ids[1], to: .open, atRow: 1)
+        #expect(space.tabs.map(\.id) == before)
+        // Another section: the whole split goes there, its tabs side by side.
         space.moveTab(ids[1], to: .folder(folder.id), atRow: 0)
-        space.moveTab(ids[1], to: .pinned, atRow: 0)
-        #expect(space.sidebarItems(in: .open).map(first) == [ids[1], ids[0], ids[3]])
-        #expect(space.sidebarItems(in: .pinned).isEmpty)
+        #expect(space.sidebarItems(in: .open).map(first) == [ids[0], ids[3]])
+        #expect(space.sidebarItems(in: .folder(folder.id)).map(\.tabIDs) == [[ids[1], ids[2]]])
+        space.moveTab(ids[2], to: .pinned, atRow: 0)
+        #expect(space.sidebarItems(in: .pinned).map(\.tabIDs) == [[ids[1], ids[2]]])
+        #expect(space.tab(ids[1])?.section == .pinned && space.tab(ids[2])?.section == .pinned)
+        #expect(space.sidebarItems(in: .folder(folder.id)).isEmpty)
     }
 
     @Test func moveBetweenSections() {

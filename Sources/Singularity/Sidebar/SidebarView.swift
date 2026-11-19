@@ -290,7 +290,7 @@ private struct TabList: View {
 
     /// A tab dropped between two rows of a section, from this section or another.
     private func drop(_ providers: [NSItemProvider], in section: SidebarSection, atRow row: Int) {
-        TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section, atRow: row) }
+        TabDrop.handle(providers) { dragged in state.moveDropped(dragged, to: section, atRow: row) }
     }
 }
 
@@ -316,7 +316,7 @@ private struct EmptySectionDropRow: View {
             .background(ListDragOperations())
             .selectionDisabled()
             .onDrop(of: TabDrop.types, isTargeted: $isTargeted) { providers in
-                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: section, atRow: .max) }
+                TabDrop.handle(providers) { dragged in state.moveDropped(dragged, to: section, atRow: .max) }
             }
     }
 }
@@ -345,7 +345,7 @@ private struct SidebarItemRow: View {
                     TabWithChildrenRow(tab: tab, space: space, children: children)
                 }
             }
-        case .split(_, let tabIDs):
+        case .split(let groupID, let tabIDs):
             // Not tagged: the chips handle selection themselves, so a click on one chip isn't
             // overridden by the List selecting "the row".
             VStack(alignment: .leading, spacing: 1) {
@@ -361,8 +361,8 @@ private struct SidebarItemRow: View {
                 }
             }
             .background(ListDragOperations())
-            // Dragging the row moves the whole split within the sidebar.
-            .itemProvider { tabIDs.first.map(TabDrag.splitRowProvider(for:)) }
+            // Dragging the row moves the whole split, within its section or to another one.
+            .itemProvider { TabDrag.splitRowProvider(groupID: groupID) }
         }
     }
 }
@@ -450,7 +450,7 @@ private struct FolderGroup: View {
                 SidebarItemRow(item: item, space: space)
             }
             .onInsert(of: TabDrop.types) { row, providers in
-                TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id), atRow: row) }
+                TabDrop.handle(providers) { dragged in state.moveDropped(dragged, to: .folder(folder.id), atRow: row) }
             }
         } label: {
             HStack(spacing: 6) {
@@ -483,7 +483,7 @@ private struct FolderGroup: View {
                 .selectionDisabled()
                 .onTapGesture { state.toggleFolder(folder.id) }
                 .onDrop(of: TabDrop.types, isTargeted: $isDropTargeted) { providers in
-                    TabDrop.handle(providers) { tabID in state.moveTab(tabID, to: .folder(folder.id), atRow: .max) }
+                    TabDrop.handle(providers) { dragged in state.moveDropped(dragged, to: .folder(folder.id), atRow: .max) }
                 }
                 .contextMenu {
                     Button("New Terminal") { state.openTerminal(inFolder: folder.id) }

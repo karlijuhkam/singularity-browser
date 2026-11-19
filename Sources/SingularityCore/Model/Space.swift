@@ -273,16 +273,7 @@ public struct Space: Codable, Hashable, Identifiable, Sendable {
     public mutating func moveTab(_ id: UUID, to section: SidebarSection) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         var tab = tabs.remove(at: index)
-        switch section {
-        case .pinned:
-            tab.isPinned = true
-            tab.folderID = nil
-        case .open:
-            tab.isPinned = false
-            tab.folderID = nil
-        case .folder(let folderID):
-            tab.folderID = folderID
-        }
+        tab.place(in: section)
         tabs.append(tab)
     }
 
@@ -314,4 +305,20 @@ public enum SpaceColors {
         "#3BA7B5", // teal
         "#8A8F98", // grey
     ]
+}
+
+extension BrowserTab {
+    /// Sets the fields that say which sidebar section the tab is in (not its place in that section).
+    mutating func place(in section: SidebarSection) {
+        switch section {
+        case .pinned:
+            isPinned = true
+            folderID = nil
+        case .open:
+            isPinned = false
+            folderID = nil
+        case .folder(let folderID):
+            self.folderID = folderID
+        }
+    }
 }

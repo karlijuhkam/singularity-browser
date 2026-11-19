@@ -169,4 +169,119 @@ import Testing
         #expect(space.sidebarItems(in: .open).first?.tabIDs == [t[5]])
         #expect(space.tabs.count == 7)
     }
+
+    /// A Space with tabs A…G (open) and folder F holding X and Y.
+    func spaceWithFolder() -> (Space, [UUID], Folder, x: UUID, y: UUID) {
+        var (space, t) = SplitTests().makeSpace()
+        let folder = Folder(name: "F")
+        space.folders.append(folder)
+        let x = BrowserTab.web(URL(string: "https://x.test")!, title: "X")
+        let y = BrowserTab.web(URL(string: "https://y.test")!, title: "Y")
+        for tab in [x, y] {
+            space.append(tab)
+            space.moveTab(tab.id, to: .folder(folder.id))
+        }
+        return (space, t, folder, x.id, y.id)
+    }
+
+    @Test func aSplitMovesToAnotherSectionWithAllItsTabs() throws {
+        for (row, expected) in [(0, 0), (1, 1), (Int.max, 2)] {
+            var (space, t, folder, x, y) = spaceWithFolder()
+            space.split(t[3], beside: t[1], edge: .right)  // [B,D] in Tabs
+            let group = try #require(space.splitGroup(containing: t[1]))
+            space.moveSplit(group.id, to: .folder(folder.id), atRow: row)
+            #expect(space.tab(t[1])?.section == .folder(folder.id))
+            #expect(space.tab(t[3])?.section == .folder(folder.id))
+            #expect(space.splits == [group])
+            #expect(!space.sidebarItems(in: .open).flatMap(\.tabIDs).contains(t[1]))
+            var rows: [[UUID]] = [[x], [y]]
+            rows.insert([t[1], t[3]], at: expected)
+            #expect(space.sidebarItems(in: .folder(folder.id)).map(\.tabIDs) == rows)
+            #expect(space.tabs.count == 9)
+        }
+    }
+
+    @Test func aSplitMovesIntoAnEmptyPinnedSection() throws {
+        var (space, t) = SplitTests().makeSpace()
+        space.split(t[3], beside: t[1], edge: .right)
+        let group = try #require(space.splitGroup(containing: t[1]))
+        space.moveSplit(group.id, to: .pinned, atRow: .max)
+        for id in [t[1], t[3]] {
+            #expect(space.tab(id)?.isPinned == true)
+            #expect(space.tab(id)?.folderID == nil)
+        }
+        #expect(space.sidebarItems(in: .pinned) == [.split(groupID: group.id, tabIDs: [t[1], t[3]])])
+    }
+
+    @Test func aSplitWithTabsInSeveralSectionsIsGatheredOnMove() throws {
+        var (space, t, folder, x, _) = spaceWithFolder()
+        space.moveTab(t[2], to: .pinned)                    // C pinned
+        space.split(x, beside: t[2], edge: .right)          // C (pinned) and X (folder)
+        space.split(t[5], beside: x, edge: .bottom)         // and F (open), as a terminal in a split
+        let group = try #require(space.splitGroup(containing: t[2]))
+        #expect(space.splitGroup(containing: t[5])?.id == group.id)
+        space.moveSplit(group.id, to: .open, atRow: 1)      // between A and B
+        let open = space.tabs(in: .open).map(\.id)
+        // Side by side, in their old sidebar order (pinned C, folder X, open F), before B.
+        #expect(open == [t[0], t[2], x, t[5], t[1], t[3], t[4], t[6]])
+        #expect(space.sidebarItems(in: .open).filter { $0.tabIDs.count > 1 }.count == 1)
+        #expect(space.sidebarItems(in: .pinned).isEmpty)
+        #expect(space.tabs(in: .folder(folder.id)).count == 1)
+    }
+
+    @Test func movingASplitWithinItsSectionAndOntoItsOwnPlace() throws {
+        var (space, t) = SplitTests().makeSpace()
+        space.split(t[3], beside: t[1], edge: .right)       // rows: A, [B,D], C, E, F, G
+        let group = try #require(space.splitGroup(containing: t[1]))
+        // Onto its own place (its row, or the gap after it): the rows stay as they were; its
+        // tabs B and D, apart in the array (C is between them), become neighbours.
+        let before = space.sidebarItems(in: .open)
+        space.moveSplit(group.id, to: .open, atRow: 1)
+        #expect(space.sidebarItems(in: .open) == before)
+        #expect(space.tabs.map(\.id) == [t[0], t[1], t[3], t[2], t[4], t[5], t[6]])
+        space.moveSplit(group.id, to: .open, atRow: 2)
+        #expect(space.sidebarItems(in: .open) == before)
+        #expect(space.tabs.map(\.id) == [t[0], t[1], t[3], t[2], t[4], t[5], t[6]])
+        space.moveSplit(group.id, to: .open, atRow: 4)      // before F
+        #expect(space.sidebarItems(in: .open).map(\.tabIDs) == [[t[0]], [t[2]], [t[4]], [t[1], t[3]], [t[5]], [t[6]]])
+        space.moveSplit(group.id, to: .open, atRow: 0)
+        #expect(space.sidebarItems(in: .open).first?.tabIDs == [t[1], t[3]])
+    }
+
+    @Test func movingASplitToAnUnknownFolderOrAnUnknownSplitChangesNothing() throws {
+        var (space, t) = SplitTests().makeSpace()
+        space.split(t[3], beside: t[1], edge: .right)
+        let group = try #require(space.splitGroup(containing: t[1]))
+        let before = space
+        space.moveSplit(group.id, to: .folder(UUID()), atRow: 0)
+        space.moveSplit(UUID(), to: .pinned, atRow: 0)
+        #expect(space == before)
+    }
+
+    @Test func aTabOfASplitStandsForItsSplit() throws {
+        var (a, t, folder, _, _) = spaceWithFolder()
+        a.split(t[3], beside: t[1], edge: .right)
+        var b = a
+        let group = try #require(a.splitGroup(containing: t[1]))
+        a.moveTab(t[3], to: .folder(folder.id), atRow: 1)
+        b.moveSplit(group.id, to: .folder(folder.id), atRow: 1)
+        #expect(a.tabs.map(\.id) == b.tabs.map(\.id))
+        #expect(a.tabs.map(\.section) == b.tabs.map(\.section))
+    }
+}
+
+@Suite struct TabDragPayloadTests {
+    @Test func roundTrips() {
+        let id = UUID()
+        #expect(TabDragPayload(string: "split:" + id.uuidString) == .split(groupID: id))
+        #expect(TabDragPayload(string: id.uuidString) == .tab(id))
+        #expect(TabDragPayload(string: TabDragPayload.split(groupID: id).string) == .split(groupID: id))
+        #expect(TabDragPayload(string: TabDragPayload.tab(id).string) == .tab(id))
+        #expect(TabDragPayload(string: "") == nil)
+        #expect(TabDragPayload(string: "split:") == nil)
+        #expect(TabDragPayload(string: "split:nonsense") == nil)
+        #expect(TabDragPayload(string: "hello") == nil)
+        // Why the panes ignore a split's row: it is not a tab id.
+        #expect(UUID(uuidString: "split:" + id.uuidString) == nil)
+    }
 }

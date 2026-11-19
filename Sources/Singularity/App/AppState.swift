@@ -1182,21 +1182,38 @@ final class AppState {
         }
     }
 
+    /// Pins or unpins a tab, as the last row of its new section. A tab of a split takes its
+    /// whole split along (the split's tabs stay in one section).
     func togglePin(_ tabID: UUID) {
         guard let spaceID = selectedSpaceID, let tab = space(spaceID)?.tab(tabID) else { return }
-        mutateSpace(spaceID) { $0.moveTab(tabID, to: tab.isPinned && tab.folderID == nil ? .open : .pinned) }
+        mutateSpace(spaceID) { $0.moveTab(tabID, to: tab.isPinned && tab.folderID == nil ? .open : .pinned, atRow: .max) }
     }
 
+    /// Moves a tab to the end of a section (the context menu's Move to Folder). A tab of a split
+    /// takes its whole split along.
     func moveTab(_ tabID: UUID, to section: SidebarSection) {
-        guard let spaceID = selectedSpaceID else { return }
-        mutateSpace(spaceID) { $0.moveTab(tabID, to: section) }
+        moveTab(tabID, to: section, atRow: .max)
     }
 
-    /// A tab dropped between two rows of a section (possibly coming from another section), or a
-    /// split's row dragged by one of its tabs (within its section).
+    /// A tab dropped between two rows of a section (possibly coming from another section). A tab
+    /// of a split (a pane header's drag) stands for its split: the whole split moves.
     func moveTab(_ tabID: UUID, to section: SidebarSection, atRow row: Int) {
         guard let spaceID = selectedSpaceID else { return }
         mutateSpace(spaceID) { $0.moveTab(tabID, to: section, atRow: row) }
+    }
+
+    /// A split's row dropped between two rows of a section: all its tabs go there.
+    func moveSplit(_ groupID: UUID, to section: SidebarSection, atRow row: Int) {
+        guard let spaceID = selectedSpaceID else { return }
+        mutateSpace(spaceID) { $0.moveSplit(groupID, to: section, atRow: row) }
+    }
+
+    /// Whatever a sidebar drop carried: a tab or a split's row.
+    func moveDropped(_ dragged: TabDragPayload, to section: SidebarSection, atRow row: Int) {
+        switch dragged {
+        case .tab(let id): moveTab(id, to: section, atRow: row)
+        case .split(let groupID): moveSplit(groupID, to: section, atRow: row)
+        }
     }
 
     // MARK: - Folders
