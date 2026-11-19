@@ -254,10 +254,20 @@ extension AppTests {
             for _ in 0..<30 where !ended { try await Task.sleep(for: .milliseconds(100)) }
         }
 
+        // A session left by an earlier test would make `begin` do nothing: let it end first.
+        try await Task.sleep(for: .milliseconds(600))
+        var raised: [Bool?] = []
+        let begun = NotificationCenter.default.addObserver(forName: TabDragSession.didBegin, object: nil, queue: nil) { note in
+            raised.append(note.userInfo?[TabDragSession.raisesPanesKey] as? Bool)
+        }
+        defer { NotificationCenter.default.removeObserver(begun) }
+
         TabDragSession.begin(raisesPanes: false)
+        #expect(raised == [false]) // the session did begin (the sidebar shows its drop rows)
         #expect(!hasOverlay())
         try await waitForEnd()
         TabDragSession.begin()
+        #expect(raised == [false, true])
         #expect(hasOverlay())
         try await waitForEnd()
         #expect(!hasOverlay())
