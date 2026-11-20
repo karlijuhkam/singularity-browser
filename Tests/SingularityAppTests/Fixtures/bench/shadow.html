@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Shadow</title><x-open></x-open><x-closed></x-closed><p id=result>RESULT: none</p>
+<script>
+class O extends HTMLElement{constructor(){super();const s=this.attachShadow({mode:'open'});s.innerHTML='<label>Coupon <input id=c></label><button>Apply coupon</button>';s.querySelector('button').onclick=()=>result('coupon '+s.querySelector('input').value)}}
+class C extends HTMLElement{constructor(){super();const s=this.attachShadow({mode:'closed'});s.innerHTML='<button>Accept terms</button>';s.querySelector('button').onclick=()=>result('terms accepted')}}
+customElements.define('x-open',O);customElements.define('x-closed',C);
+</script>

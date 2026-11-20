@@ -1,0 +1,3 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Modal</title><button id=open onclick="document.getElementById('d').showModal()">Rename project</button>
+<dialog id=d><form method=dialog><label>New name <input id=n></label><button value=ok onclick="result('renamed to '+document.getElementById('n').value)">Save</button><button value=cancel>Cancel</button></form></dialog>
+<p id=result>RESULT: none</p>

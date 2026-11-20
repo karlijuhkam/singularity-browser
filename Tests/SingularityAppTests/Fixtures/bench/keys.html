@@ -1,0 +1,5 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Keys</title><p>Search box that submits on Enter only (no button):</p><input id=s placeholder="Search docs" onkeydown="if(event.key=='Enter')result('searched '+this.value)">
+<p>Popover closed by Escape:</p><button onclick="pop.hidden=false;pop.querySelector('input').focus()">Open popover</button>
+<div id=pop hidden style="border:1px solid">Popover <input onkeydown="if(event.key=='Escape'){pop.hidden=true;result('popover closed with Escape')}"></div>
+<p>Shortcut: press Ctrl+K anywhere</p><p id=result>RESULT: none</p>
+<script>addEventListener('keydown',e=>{if(e.ctrlKey&&e.key=='k')result('ctrl+k')})</script>

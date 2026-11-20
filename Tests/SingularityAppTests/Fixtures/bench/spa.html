@@ -1,0 +1,5 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>SPA</title><nav><a href="/spa.html#/home" data-r>Home</a> <a href="/spa.html#/orders" data-r>Orders</a></nav><main id=m>Home page</main><p id=result>RESULT: none</p>
+<script>
+function route(){const h=location.hash;const m=document.getElementById('m');if(h=='#/orders'){m.textContent='Loading…';setTimeout(()=>{m.innerHTML='<table><tr><th>Order</th><th>Total</th></tr><tr><td>#1042</td><td>17.50</td></tr></table><button onclick="result(\'order 1042 opened\')">Open #1042</button>'},2500)}else m.textContent='Home page'}
+addEventListener('hashchange',route);route();
+</script>

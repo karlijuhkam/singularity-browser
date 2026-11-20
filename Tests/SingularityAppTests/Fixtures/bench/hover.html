@@ -1,0 +1,4 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Hover</title><style>.menu .sub{display:none}.menu:hover .sub{display:block}</style>
+<div class=menu><span>Account ▾</span><div class=sub><a href="#" onclick="result('settings via css hover');return false">Settings</a></div></div>
+<div id=js style="margin-top:2em"><span id=t>Tools ▾</span><div id=jsub hidden><a href="#" onclick="result('export via js hover');return false">Export</a></div></div><p id=result>RESULT: none</p>
+<script>const t=document.getElementById('js');t.addEventListener('mouseenter',()=>jsub.hidden=false);t.addEventListener('mouseleave',()=>jsub.hidden=true)</script>

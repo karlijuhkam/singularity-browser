@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Inputs</title>
+<p>A: listens to input events <input id=a oninput="ra.textContent='A='+this.value"></p><p id=ra>A=</p>
+<p>B: builds value from keydown only (masked) <input id=b readonly-ish></p><p id=rb>B=</p>
+<p>C: contenteditable editor</p><div id=c contenteditable=true role=textbox aria-label="Comment editor" style="border:1px solid;min-height:2em" oninput="rc.textContent='C='+this.textContent"></div><p id=rc>C=</p>
+<p>D: React-like (value tracker, only change via native setter is ignored)</p><input id=d aria-label="Email"><p id=rd>D=</p>
+<script>
+let bv='';b.addEventListener('keydown',e=>{e.preventDefault();if(e.key.length==1)bv+=e.key;else if(e.key=='Backspace')bv=bv.slice(0,-1);b.value=bv;rb.textContent='B='+bv});
+let last='';d.addEventListener('input',e=>{if(!e.isTrusted&&!(e instanceof InputEvent)){return}rd.textContent='D='+d.value});
+</script>

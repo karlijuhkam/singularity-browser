@@ -1,0 +1,3 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Lazy</title><div id=items></div><div id=sentinel>Loading more…</div><p id=result>RESULT: none</p>
+<script>let n=0;const I=document.getElementById('items');function more(){for(let i=0;i<20&&n<60;i++){n++;const b=document.createElement('button');b.textContent='Item '+n;const k=n;b.onclick=()=>result('item '+k);b.style.display='block';b.style.height='40px';I.appendChild(b)}}
+more();new IntersectionObserver(e=>{if(e[0].isIntersecting)setTimeout(more,400)}).observe(document.getElementById('sentinel'));</script>

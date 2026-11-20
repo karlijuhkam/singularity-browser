@@ -1,0 +1,2 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Drag</title><ul id=l><li draggable=true>Alpha</li><li draggable=true>Beta</li><li draggable=true>Gamma</li></ul><p id=result>RESULT: order Alpha,Beta,Gamma</p>
+<script>let dr;l.addEventListener('dragstart',e=>dr=e.target);l.addEventListener('dragover',e=>e.preventDefault());l.addEventListener('drop',e=>{e.preventDefault();if(e.target.tagName=='LI'&&dr!=e.target){l.insertBefore(dr,e.target)}result('order '+[...l.children].map(x=>x.textContent).join(','))})</script>

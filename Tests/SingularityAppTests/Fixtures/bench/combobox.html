@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><script src="common.js"></script><title>Combobox</title><style>#list li{cursor:pointer}#list li.active{background:#ddd}</style>
+<label for=q>Country</label><input id=q role=combobox aria-autocomplete=list aria-controls=list autocomplete=off>
+<ul id=list role=listbox></ul><p id=result>RESULT: none</p>
+<script>
+const all=['Estonia','Finland','France','Latvia','Lithuania'];let act=-1;const q=document.getElementById('q'),L=document.getElementById('list');
+function render(){const v=q.value.toLowerCase();L.innerHTML='';if(!v)return;setTimeout(()=>{all.filter(c=>c.toLowerCase().startsWith(v)).forEach((c,i)=>{const li=document.createElement('li');li.role='option';li.textContent=c;if(i==act)li.className='active';li.addEventListener('mousedown',e=>{e.preventDefault();pick(c)});L.appendChild(li)})},300)}
+function pick(c){q.value=c;L.innerHTML='';result(c)}
+q.addEventListener('input',()=>{act=-1;render()});
+q.addEventListener('keydown',e=>{const items=[...L.children];if(e.key=='ArrowDown'){act=Math.min(act+1,items.length-1);items.forEach((x,i)=>x.className=i==act?'active':'')}if(e.key=='Enter'&&act>=0){pick(items[act].textContent)}});
+</script>
