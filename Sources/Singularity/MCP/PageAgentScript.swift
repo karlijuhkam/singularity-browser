@@ -96,9 +96,10 @@ enum PageAgentScript {
 
       // ---- helpers ------------------------------------------------------------------------
       const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK", "SVG", "CANVAS"]);
-      const MEANINGFUL = "a[href],button,input,select,textarea,summary,[role],[tabindex],[contenteditable],h1,h2,h3,h4,h5,h6,img[alt],iframe,frame";
+      const MEANINGFUL = "a[href],button,input,select,textarea,summary,[role],[tabindex],[contenteditable],h1,h2,h3,h4,h5,h6,img[alt],iframe,frame,[draggable=true],[onclick]";
       const INTERACTIVE_ROLES = new Set(["link", "button", "textbox", "searchbox", "combobox", "listbox", "checkbox",
-        "radio", "slider", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "spinbutton"]);
+        "radio", "slider", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "spinbutton",
+        "clickable", "draggable"]);
       const TEXT_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
       const LANDMARKS = new Set(["navigation", "main", "form", "dialog", "banner", "contentinfo", "complementary", "search", "region"]);
 
@@ -145,6 +146,11 @@ enum PageAgentScript {
         }
         if (el.isContentEditable && el.hasAttribute("contenteditable")) return "textbox";
         if (el.hasAttribute("tabindex") && el.tabIndex >= 0) return "focusable";
+        // No role, but made to be dragged or clicked (Playwright lists these too).
+        if (el.getAttribute("draggable") === "true") return "draggable";
+        if (el.hasAttribute("onclick")) return "clickable";
+        if (el.tagName !== "BODY" && el.tagName !== "HTML" && getComputedStyle(el).cursor === "pointer"
+            && !(el.parentElement && getComputedStyle(el.parentElement).cursor === "pointer")) return "clickable";
         return null;
       };
 
@@ -178,6 +184,7 @@ enum PageAgentScript {
         if (TEXT_ROLES.has(role) && "value" in el && el.value) {
           parts.push(`value=${quote(el.type === "password" ? "••••" : clean(el.value, 60))}`);
         }
+        if (role === "slider" && "value" in el) parts.push(`value=${quote(clean(String(el.value), 30))}`);
         if (role === "combobox" && el.tagName === "SELECT" && el.selectedOptions?.length) {
           parts.push(`selected=${quote(clean(el.selectedOptions[0].textContent, 60))}`);
         }
@@ -230,7 +237,30 @@ enum PageAgentScript {
             }
             if (isInteractive(role)) {
               lines.push(`${indent}[${refFor(el)}] ${role} ${quote(nameOf(el, role))}${extrasOf(el, role)}`);
+              // A <select>'s choices (pick one with type), and a listbox's or menu's options.
+              if (el.tagName === "SELECT") {
+                Array.from(el.options).slice(0, 20).forEach((o) =>
+                  lines.push(`${indent}  option ${quote(clean(o.textContent, 80))}${o.selected ? " selected" : ""}`));
+                if (el.options.length > 20) lines.push(`${indent}  … ${el.options.length - 20} more options`);
+              } else if (role === "listbox" || role === "menu" || role === "tree" || role === "radiogroup" || role === "tablist") {
+                walk(el, depth + 1);
+              }
               continue; // the name already covers the contents
+            }
+            // Tables: one line per row of plain cells, so columns stay together.
+            if (el.tagName === "TABLE") {
+              lines.push(`${indent}table:`);
+              walk(el, depth + 1);
+              continue;
+            }
+            if (["THEAD", "TBODY", "TFOOT"].includes(el.tagName)) {
+              walk(el, depth);
+              continue;
+            }
+            if (el.tagName === "TR" && !el.querySelector(MEANINGFUL)) {
+              const cells = Array.from(el.cells).map((c) => quote(clean(c.innerText, 80)));
+              if (cells.length) lines.push(`${indent}row: ${cells.join(" | ")}`);
+              continue;
             }
             if (role === "heading") {
               const level = /^H[1-6]$/.test(el.tagName) ? el.tagName[1] : (el.getAttribute("aria-level") || "?");
@@ -306,7 +336,8 @@ enum PageAgentScript {
           const start = Math.max(0, index - 60);
           const snippet = (start > 0 ? "…" : "") + text.slice(start, index + needle.length + 60).trim() + "…";
           const near = el.closest("a[href],button,[role=button],[role=link]");
-          results.push(`text ${quote(snippet)}${near ? ` (inside ${describe(near)})` : ""}`);
+          // A ref for the text's element too: something to hover, or to click when it is clickable.
+          results.push(`[${refFor(el)}] text ${quote(snippet)}${near ? ` (inside ${describe(near)})` : ""}`);
         }
         return results.length ? results.join("\n") : `No matches for ${quote(String(query))}.`;
       };
@@ -366,6 +397,62 @@ enum PageAgentScript {
           }
         }
         return `Typed into ${describe(el)}${submitted}.`;
+      };
+
+      // ---- hover and drag: script events (real mouse moves don't reach a page in the background) --
+      let hovered = null;
+      const centre = (el) => {
+        const r = el.getBoundingClientRect();
+        return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      };
+      const fire = (el, Type, name, extra) =>
+        el.dispatchEvent(new Type(name, Object.assign({ bubbles: !/enter|leave/.test(name), cancelable: true, composed: true, view: window }, extra)));
+      // Entering an element enters its ancestors too (mouseenter doesn't bubble, so each gets its own).
+      const chain = (el) => { const out = []; for (let n = el; n && n.nodeType === 1; n = n.parentElement) out.push(n); return out; };
+      const hover = (ref) => {
+        const el = lookup(ref);
+        el.scrollIntoView({ block: "center", inline: "center" });
+        const at = centre(el);
+        const now = chain(el);
+        const before = hovered && hovered.isConnected ? chain(hovered) : [];
+        if (hovered && hovered !== el && hovered.isConnected) {
+          fire(hovered, PointerEvent, "pointerout", at); fire(hovered, MouseEvent, "mouseout", at);
+          for (const left of before.filter((n) => !now.includes(n))) {
+            fire(left, PointerEvent, "pointerleave", at); fire(left, MouseEvent, "mouseleave", at);
+          }
+        }
+        fire(el, PointerEvent, "pointerover", at); fire(el, MouseEvent, "mouseover", at);
+        for (const entered of now.filter((n) => !before.includes(n)).reverse()) {
+          fire(entered, PointerEvent, "pointerenter", at); fire(entered, MouseEvent, "mouseenter", at);
+        }
+        fire(el, PointerEvent, "pointermove", at); fire(el, MouseEvent, "mousemove", at);
+        hovered = el;
+        return `Pointed at ${describe(el)}`;
+      };
+      const drag = (fromRef, toRef) => {
+        const from = lookup(fromRef), to = lookup(toRef);
+        from.scrollIntoView({ block: "center", inline: "center" });
+        const a = centre(from), b = centre(to);
+        const data = new DataTransfer();
+        const button = { button: 0, buttons: 1 };
+        fire(from, PointerEvent, "pointerdown", Object.assign({}, a, button));
+        fire(from, MouseEvent, "mousedown", Object.assign({}, a, button));
+        fire(from, DragEvent, "dragstart", Object.assign({ dataTransfer: data }, a));
+        const steps = 5;
+        for (let i = 1; i <= steps; i++) {
+          const at = { clientX: a.clientX + (b.clientX - a.clientX) * i / steps, clientY: a.clientY + (b.clientY - a.clientY) * i / steps };
+          const over = document.elementFromPoint(at.clientX, at.clientY) || to;
+          fire(over, PointerEvent, "pointermove", Object.assign({}, at, button));
+          fire(over, MouseEvent, "mousemove", Object.assign({}, at, button));
+          fire(from, DragEvent, "drag", Object.assign({ dataTransfer: data }, at));
+        }
+        fire(to, DragEvent, "dragenter", Object.assign({ dataTransfer: data }, b));
+        fire(to, DragEvent, "dragover", Object.assign({ dataTransfer: data }, b));
+        fire(to, DragEvent, "drop", Object.assign({ dataTransfer: data }, b));
+        fire(from, DragEvent, "dragend", Object.assign({ dataTransfer: data }, b));
+        fire(to, PointerEvent, "pointerup", Object.assign({}, b, { button: 0, buttons: 0 }));
+        fire(to, MouseEvent, "mouseup", Object.assign({}, b, { button: 0, buttons: 0 }));
+        return `Dragged ${describe(from)} onto ${describe(to)}`;
       };
 
       // ---- positions, for real clicks (AgentInput) ------------------------------------------
@@ -456,7 +543,7 @@ enum PageAgentScript {
       };
 
       window.__singularityAgent = Object.freeze({ key, snapshot, find, listFrames, click, type, inspect,
-                                                  point, frameOffset, focusInfo, focusAndSelect });
+                                                  point, frameOffset, focusInfo, focusAndSelect, hover, drag });
     })();
     """##
 }

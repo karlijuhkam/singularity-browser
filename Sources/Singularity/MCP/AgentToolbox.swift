@@ -131,6 +131,28 @@ final class AgentToolbox {
                      "key": .object(["type": "string", "description": "The key, e.g. \"Escape\", \"ArrowDown\", \"Control+k\"."]),
                  ], required: ["tab_id", "key"]),
                  annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
+            Tool(name: name("hover"),
+                 description: inSpace + "point the mouse at an element (to open a menu or tooltip that appears on hover). "
+                    + "Simulated with script events; menus made with CSS :hover alone don't open this way.",
+                 inputSchema: Self.schema(["tab_id": tabID, "ref": ref], required: ["tab_id", "ref"]),
+                 annotations: .init(readOnlyHint: true)),
+            Tool(name: name("drag"),
+                 description: inSpace + "drag one element onto another (both in the same frame). Simulated with script events.",
+                 inputSchema: Self.schema(["tab_id": tabID,
+                                           "start_ref": .object(["type": ["integer", "string"], "description": "The element to drag."]),
+                                           "end_ref": .object(["type": ["integer", "string"], "description": "Where to drop it."])],
+                                          required: ["tab_id", "start_ref", "end_ref"]),
+                 annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
+            Tool(name: name("wait_for"),
+                 description: inSpace + "wait until text appears (text) or disappears (text_gone) on the page, at most 30 seconds, "
+                    + "or just wait a number of seconds. Use it when a page is still loading what you need.",
+                 inputSchema: Self.schema([
+                     "tab_id": tabID,
+                     "text": .object(["type": "string", "description": "Text to wait for."]),
+                     "text_gone": .object(["type": "string", "description": "Text to wait to disappear."]),
+                     "seconds": .object(["type": "number", "description": "How long to wait at most (1-30; default 30, or this many seconds when no text is given)."]),
+                 ], required: ["tab_id"]),
+                 annotations: .init(readOnlyHint: true)),
             Tool(name: name("handle_dialog"),
                  description: inSpace + "answer the alert, confirm or prompt dialog waiting on a tab (tool answers say when one is). "
                     + "accept=true is OK, false is Cancel; prompt_text is the answer to a prompt.",
@@ -268,6 +290,15 @@ final class AgentToolbox {
             return .init(content: [.plain(try await type(space, tabID: args.tabID(), ref: args.ref(),
                                                         text: args.string("text"), slowly: args.bool("slowly") ?? false,
                                                         submit: args.bool("submit") ?? false, record: record))])
+        case "hover":
+            return .init(content: [.plain(try await hover(space, tabID: args.tabID(), ref: args.ref(), record: record))])
+        case "drag":
+            return .init(content: [.plain(try await drag(space, tabID: args.tabID(), from: args.ref("start_ref"), to: args.ref("end_ref"),
+                                                        record: record))])
+        case "wait_for":
+            return .init(content: [.plain(try await waitFor(space, tabID: args.tabID(), text: try? args.string("text"),
+                                                           gone: try? args.string("text_gone"), seconds: args.number("seconds"),
+                                                           record: record))])
         case "handle_dialog":
             return .init(content: [.plain(try await handleDialog(space, tabID: args.tabID(), accept: args.bool("accept") ?? false,
                                                                 text: try? args.string("prompt_text"), record: record))])
@@ -583,6 +614,82 @@ final class AgentToolbox {
         try refuseIfSpaceClosed(space, record)
         let what = files.isEmpty ? "Cancelled the file chooser." : "Gave \(files.count == 1 ? "1 file" : "\(files.count) files") to the page."
         return what + "\n" + pageSummary(controller, space, record)
+    }
+
+    private func hover(_ space: Space, tabID: UUID, ref: AgentRef, record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record)
+        let target = try refTarget(ref, controller, space, record)
+        let result = try await controller.callPageAgentUnlessModal("hover(ref)", arguments: ["ref": target.local],
+                                                                   frame: target.frame, key: target.key)
+        try? await Task.sleep(for: .milliseconds(150))
+        try refuseIfNowOff(controller, space, record)
+        return UntrustedContent.wrap(target.shown(result ?? "Pointed at it") + " (simulated with script events).",
+                                     source: shownAddress(controller, space, record))
+    }
+
+    private func drag(_ space: Space, tabID: UUID, from: AgentRef, to: AgentRef, record: CallRecord) async throws -> String {
+        guard from.frame == to.frame else { throw ToolError("Both elements must be in the same frame.") }
+        let controller = try await webController(space, tabID, record)
+        let target = try refTarget(from, controller, space, record)
+        let info = try await target.inspect(controller)
+        let pageOrigin = AgentApprovalRules.origin(of: controller.webView.url)
+        try await authorize(
+            AgentActionContext(kind: .drag, pageOrigin: pageOrigin), space, record,
+            request(record, space, action: "drag an element", detail: info.description,
+                    url: controller.webView.url, tabTitle: controller.webView.title))
+        let cancellation = ApprovalCancellation()
+        installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
+                               approved: Set([pageOrigin].compactMap { $0 }), submissionApproved: false, cancellation: cancellation)
+        defer { controller.agentNavigationGuard = nil }
+        return try await whileNotCancelled(cancellation) {
+            try self.refuseIfCancelled(cancellation, record)
+            let result = try await controller.callPageAgentUnlessModal("drag(from, to)", arguments: ["from": target.local, "to": to.local],
+                                                                       frame: target.frame, key: target.key)
+            try? await Task.sleep(for: .milliseconds(200))
+            await controller.waitUntilLoaded()
+            try self.refuseIfSpaceClosed(space, record)
+            return UntrustedContent.wrap(target.shown(result ?? "Dragged it") + " (simulated with script events).",
+                                         source: self.shownAddress(controller, space, record)) + "\n" + self.pageSummary(controller, space, record)
+        }
+    }
+
+    /// Polls the page (and its frames) until `text` is there or `gone` is not, or the time is up.
+    private func waitFor(_ space: Space, tabID: UUID, text: String?, gone: String?, seconds: Double?,
+                         record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record)
+        let limit = min(max(seconds ?? 30, 0.25), 30)
+        let deadline = ContinuousClock.now + .milliseconds(Int(limit * 1000))
+        guard text != nil || gone != nil else {
+            try? await Task.sleep(until: deadline)
+            try refuseIfNowOff(controller, space, record)
+            return "Waited \(Self.secondsText(limit))."
+        }
+        let allows = frameAllowed(space, record)
+        func present(_ needle: String) async -> Bool? {
+            guard controller.pendingModal == nil,
+                  let found = try? await controller.agentFrames.find(controller, query: needle, allows: allows) else { return nil }
+            return !found.hasPrefix("No matches")
+        }
+        while true {
+            try Task.checkCancellation()
+            if controller.pendingModal != nil { throw ToolError("Stopped waiting.") }
+            var done = true
+            if let text, await present(text) != true { done = false }
+            if done, let gone, await present(gone) != false { done = false }
+            try refuseIfNowOff(controller, space, record)
+            if done {
+                return text.map { "Found “\($0)” on the page." } ?? "“\(gone ?? "")” is gone from the page."
+            }
+            guard ContinuousClock.now < deadline else {
+                let what = text.map { "“\($0)” is still not on the page" } ?? "“\(gone ?? "")” is still on the page"
+                throw ToolError("\(what) after \(Self.secondsText(limit)).")
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    private static func secondsText(_ value: Double) -> String {
+        value == value.rounded() ? "\(Int(value)) seconds" : String(format: "%.1f seconds", value)
     }
 
     private struct FocusInfo: Decodable {
@@ -1079,6 +1186,10 @@ struct Arguments {
         let text = try string("tab_id")
         guard let id = UUID(uuidString: text) else { throw AgentToolbox.ToolError("\"\(text)\" is not a valid tab_id.") }
         return id
+    }
+
+    func number(_ key: String) -> Double? {
+        values[key]?.doubleValue ?? values[key]?.intValue.map(Double.init) ?? values[key]?.stringValue.flatMap(Double.init)
     }
 
     /// A list of strings (`file_upload`'s `paths`).

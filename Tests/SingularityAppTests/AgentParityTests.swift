@@ -488,5 +488,114 @@ extension AppTests {
         #expect(controller.pendingModal == nil)
         #expect(NSApp.modalWindow == nil)
     }
+
+    // MARK: - Snapshot detail, hover, drag, wait_for
+
+    @Test(.timeLimit(.minutes(1))) func selectOptionsAreListed() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("select.html")
+        #expect(rig.lastRead.contains("option \"Tallinn\""), "\(rig.lastRead)")
+        #expect(rig.lastRead.contains("option \"Choose…\" selected"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func comboboxOptionsInReadPage() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("combobox.html")
+        await rig.call("type", ["ref": try rig.ref("Country"), "text": "Fr"])
+        try await Task.sleep(for: .milliseconds(600))
+        await rig.read()
+        let france = try rig.ref("France", role: "option")
+        await rig.call("click", ["ref": france])
+        #expect(await rig.result().contains("RESULT: France"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func tableRowsKeepTheirCells() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("spa.html")
+        await rig.call("click", ["ref": try rig.ref("Orders")])
+        await rig.call("wait_for", ["text": "Open #1042"])
+        #expect(await rig.read().contains("row: \"#1042\" | \"17.50\""), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func sliderValueShown() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("form.html")
+        await rig.call("type", ["ref": try rig.ref("Seats"), "text": "7"])
+        #expect(await rig.read().contains("slider \"Seats\" value=\"7\""), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func hoverShowsAJsMenu() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("hover.html")
+        #expect(!rig.lastRead.contains("Export"))
+        let found = await rig.call("find", ["query": "Tools"])
+        let tools = try #require(found.text.firstMatch(of: /\[(\d+)\] text/).map { Int($0.1)! }, "\(found.text)")
+        let hover = await rig.call("hover", ["ref": .int(tools)])
+        #expect(!hover.isError, "\(hover.text)")
+        #expect(hover.text.contains("simulated"), "\(hover.text)")
+        await rig.read()
+        await rig.call("click", ["ref": try rig.ref("Export")])
+        #expect(await rig.result().contains("export via js hover"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func dragReorders() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("drag.html")
+        let drag = await rig.call("drag", ["start_ref": try rig.ref("Gamma"), "end_ref": try rig.ref("Alpha")])
+        #expect(!drag.isError, "\(drag.text)")
+        #expect(await rig.result().contains("order Gamma,Alpha,Beta"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func waitForText() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("spa.html")
+        await rig.call("click", ["ref": try rig.ref("Orders")])
+        let wait = await rig.call("wait_for", ["text": "Open #1042"])
+        #expect(!wait.isError, "\(wait.text)")
+        #expect(await rig.read().contains("Open #1042"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func waitForTextGone() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("spa.html")
+        await rig.call("click", ["ref": try rig.ref("Orders")])
+        let wait = await rig.call("wait_for", ["text_gone": "Loading…"])
+        #expect(!wait.isError, "\(wait.text)")
+        #expect(await rig.read().contains("Open #1042"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func waitForTimesOut() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("spa.html")
+        let started = ContinuousClock.now
+        let wait = await rig.call("wait_for", ["text": "Never here", "seconds": .int(1)])
+        #expect(wait.isError, "\(wait.text)")
+        #expect(wait.text.contains("Never here"))
+        #expect(ContinuousClock.now - started < .seconds(4))
+        let plain = await rig.call("wait_for", ["seconds": .int(1)])
+        #expect(!plain.isError, "\(plain.text)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func lazyListLoadsOnScroll() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("lazy.html")
+        for _ in 0..<5 where !(await rig.read()).contains("Item 50") {
+            let last = rig.lastRead.split(separator: "\n").last { $0.contains("button \"Item ") }
+            let ref = try #require(last?.firstMatch(of: /\[(\d+)\]/).map { Int($0.1)! })
+            await rig.call("click", ["ref": .int(ref)])
+            try await Task.sleep(for: .milliseconds(600))
+        }
+        #expect(rig.lastRead.contains("Item 50"))
+    }
 }
 }
