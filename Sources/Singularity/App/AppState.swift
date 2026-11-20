@@ -351,6 +351,8 @@ final class AppState {
                 self?.plugins.terminateAll()
             }
         }
+        // Agents' key presses that a page hands back never reach the owner's views or menus.
+        AgentInput.installSwallower()
         // Everything is wired: tabs other windows show may load now (`loadBackgroundWindows`).
         initFinished = true
     }

@@ -253,5 +253,101 @@ extension AppTests {
         #expect(rig.lastRead.contains("Inner"), "\(rig.lastRead)")
         #expect(await rig.result().contains("RESULT: none"), "\(rig.lastRead)")
     }
+
+    // MARK: - Real clicks and keys
+
+    @Test(.timeLimit(.minutes(1))) func clickIsTrusted() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("trusted.html")
+        await rig.call("click", ["ref": try rig.ref("Check click")])
+        #expect(await rig.result().contains("click trusted=true"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func doubleClick() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("trusted.html")
+        await rig.call("click", ["ref": try rig.ref("Double me"), "double": .bool(true)])
+        #expect(await rig.result().contains("double 2"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aCoveredButtonIsNotClicked() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("overlay.html")
+        let click = await rig.call("click", ["ref": try rig.ref("Buy now")])
+        #expect(click.isError)
+        #expect(click.text.contains("covered"), "\(click.text)")
+        #expect(click.text.contains("Accept cookies"), "\(click.text)")
+        #expect(await rig.result().contains("RESULT: none"))
+        // Accepting the banner uncovers it.
+        await rig.call("click", ["ref": try rig.ref("Accept cookies")])
+        await rig.read()
+        await rig.call("click", ["ref": try rig.ref("Buy now")])
+        #expect(await rig.result().contains("buy clicked"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aHiddenMenuItemStillWorks() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("hover.html")
+        let found = await rig.call("find", ["query": "Settings"])
+        let ref = try #require(found.text.firstMatch(of: /\[(\d+)\] link/).map { Int($0.1)! })
+        let click = await rig.call("click", ["ref": .int(ref)])
+        #expect(click.text.contains("not visible"), "\(click.text)")
+        #expect(await rig.result().contains("settings via css hover"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func maskedInputGetsKeysWhenSlowly() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("inputs.html")
+        let fields = rig.lastRead.split(separator: "\n").filter { $0.contains("] textbox") }
+        try #require(fields.count >= 2)
+        let masked = try #require(fields[1].firstMatch(of: /\[(\d+)\]/).map { Int($0.1)! })
+        await rig.call("type", ["ref": .int(masked), "text": "bbb", "slowly": .bool(true)])
+        #expect(await rig.read().contains("B=bbb"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func enterSubmitsSearch() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("keys.html")
+        await rig.call("type", ["ref": try rig.ref("Search docs"), "text": "webkit", "submit": .bool(true)])
+        #expect(await rig.result().contains("searched webkit"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func pressEscapeClosesPopover() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("keys.html")
+        await rig.call("click", ["ref": try rig.ref("Open popover")])
+        let press = await rig.call("press_key", ["key": "Escape"])
+        #expect(!press.isError, "\(press.text)")
+        #expect(await rig.result().contains("popover closed with Escape"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func pressControlK() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("keys.html")
+        let press = await rig.call("press_key", ["key": "Control+k"])
+        #expect(!press.isError, "\(press.text)")
+        #expect(await rig.result().contains("ctrl+k"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func clipboardKeysAreRefused() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("keys.html")
+        for key in ["Meta+v", "Meta+c", "Meta+x", "Shift+Insert"] {
+            let press = await rig.call("press_key", ["key": .string(key)])
+            #expect(press.isError, "\(key)")
+            #expect(press.text.contains("clipboard"), "\(press.text)")
+        }
+        let bad = await rig.call("press_key", ["key": "Hyper+q"])
+        #expect(bad.isError && bad.text.contains("Unknown modifier"), "\(bad.text)")
+    }
 }
 }

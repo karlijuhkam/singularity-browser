@@ -13,6 +13,17 @@ public struct KeyChord: Equatable, Sendable {
     public let option: Bool
     public let command: Bool
 
+    public init(key: String, characters: String, keyCode: UInt16, shift: Bool = false, control: Bool = false,
+                option: Bool = false, command: Bool = false) {
+        self.key = key
+        self.characters = characters
+        self.keyCode = keyCode
+        self.shift = shift
+        self.control = control
+        self.option = option
+        self.command = command
+    }
+
     public struct ParseError: Error, CustomStringConvertible, Equatable {
         public let description: String
     }

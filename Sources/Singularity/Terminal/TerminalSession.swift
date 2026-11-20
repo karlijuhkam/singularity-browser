@@ -574,6 +574,9 @@ final class SingularityTerminalView: LocalProcessTerminalView {
         // The monitor sees keys before the menus do: ⌘-shortcuts (⌘1…9, ⌘T, Show Inbox) are
         // commands to the app, not typing in the terminal.
         guard !event.modifierFlags.contains(.command) else { return event }
+        // An agent's key press that its page handed back is not the owner typing (AgentInput).
+        let stamp = event.timestamp
+        guard !MainActor.assumeIsolated({ AgentInput.isSynthetic(timestamp: stamp) }) else { return event }
         let window = event.window
         // Local monitors run on the main thread.
         MainActor.assumeIsolated {

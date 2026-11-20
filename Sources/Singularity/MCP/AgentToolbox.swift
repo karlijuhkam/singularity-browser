@@ -105,17 +105,31 @@ final class AgentToolbox {
                                           required: ["tab_id", "query"]),
                  annotations: .init(readOnlyHint: true)),
             Tool(name: name("click"),
-                 description: inSpace + "click the element with the given ref (scrolls it into view first). Waits for any page load it causes.",
-                 inputSchema: Self.schema(["tab_id": tabID, "ref": ref], required: ["tab_id", "ref"]),
+                 description: inSpace + "click the element with the given ref with a real mouse click (scrolls it into view first). "
+                    + "Fails if another element (a banner, a dialog) covers it. Waits for any page load it causes.",
+                 inputSchema: Self.schema(["tab_id": tabID, "ref": ref,
+                                           "double": .object(["type": "boolean", "description": "Double-click. Default false."])],
+                                          required: ["tab_id", "ref"]),
                  annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
             Tool(name: name("type"),
                  description: inSpace + "replace the contents of a text field (or pick a <select> option by value or label). "
-                    + "With submit=true, also presses Enter / submits the form.",
+                    + "With slowly=true, types one real key press per character (for fields that react to each key, "
+                    + "such as masked or autocomplete inputs). With submit=true, presses Enter afterwards.",
                  inputSchema: Self.schema([
                      "tab_id": tabID, "ref": ref,
                      "text": .object(["type": "string", "description": "The text to put in the field."]),
-                     "submit": .object(["type": "boolean", "description": "Press Enter / submit the form afterwards. Default false."]),
+                     "slowly": .object(["type": "boolean", "description": "Type one key at a time. Default false."]),
+                     "submit": .object(["type": "boolean", "description": "Press Enter afterwards. Default false."]),
                  ], required: ["tab_id", "ref", "text"]),
+                 annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
+            Tool(name: name("press_key"),
+                 description: inSpace + "press a key in the page, as a real key press to the focused element: a key name "
+                    + "(Enter, Escape, Tab, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12) "
+                    + "or one character, with modifiers like Shift+Tab or Control+k. Click a field first to focus it.",
+                 inputSchema: Self.schema([
+                     "tab_id": tabID,
+                     "key": .object(["type": "string", "description": "The key, e.g. \"Escape\", \"ArrowDown\", \"Control+k\"."]),
+                 ], required: ["tab_id", "key"]),
                  annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
             Tool(name: name("screenshot"),
                  description: inSpace + "take a PNG screenshot of the visible part of the page in a tab.",
@@ -223,11 +237,15 @@ final class AgentToolbox {
         case "read_page": return .init(content: [.plain(try await readPage(space, tabID: args.tabID(), record: record))])
         case "find":
             return .init(content: [.plain(try await find(space, tabID: args.tabID(), query: args.string("query"), record: record))])
-        case "click": return .init(content: [.plain(try await click(space, tabID: args.tabID(), ref: args.ref(), record: record))])
+        case "click":
+            return .init(content: [.plain(try await click(space, tabID: args.tabID(), ref: args.ref(), double: args.bool("double") ?? false,
+                                                         record: record))])
         case "type":
             return .init(content: [.plain(try await type(space, tabID: args.tabID(), ref: args.ref(),
-                                                        text: args.string("text"), submit: args.bool("submit") ?? false,
-                                                        record: record))])
+                                                        text: args.string("text"), slowly: args.bool("slowly") ?? false,
+                                                        submit: args.bool("submit") ?? false, record: record))])
+        case "press_key":
+            return .init(content: [.plain(try await pressKey(space, tabID: args.tabID(), key: args.string("key"), record: record))])
         case "screenshot": return .init(content: [try await screenshot(space, tabID: args.tabID(), record: record)])
         case "read_console", "read_network":
             return .init(content: [.plain(try readCapture(space, tabID: args.tabID(), since: try? args.int("since"),
@@ -368,7 +386,7 @@ final class AgentToolbox {
         return UntrustedContent.wrap(matches, source: controller.webView.url?.absoluteString ?? "")
     }
 
-    private func click(_ space: Space, tabID: UUID, ref: AgentRef, record: CallRecord) async throws -> String {
+    private func click(_ space: Space, tabID: UUID, ref: AgentRef, double: Bool, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
         let target = try refTarget(ref, controller, space, record)
         // Look before acting: does this click submit a form or follow a link elsewhere?
@@ -391,8 +409,16 @@ final class AgentToolbox {
         return try await whileNotCancelled(cancellation) {
             // Stopped after it was allowed but before it acts: it doesn't act.
             try self.refuseIfCancelled(cancellation, record)
-            let result = target.shown(try await controller.callPageAgent("click(ref)", arguments: ["ref": target.local],
+            let result: String
+            if let point = try await self.clickPoint(target, controller) {
+                AgentInput.click(controller.webView, at: point, double: double)
+                result = "Clicked \(info.description)."
+            } else {
+                // No box to click (hidden, e.g. a menu that opens on hover): the old script click.
+                result = target.shown(try await controller.callPageAgent("click(ref)", arguments: ["ref": target.local],
                                                                          frame: target.frame, key: target.key))
+                    + " (The element is not visible; it was clicked with a script.)"
+            }
             // If the click started a navigation, wait for it so the next read sees the new page.
             try? await Task.sleep(for: .milliseconds(300))
             await controller.waitUntilLoaded()
@@ -402,7 +428,8 @@ final class AgentToolbox {
         }
     }
 
-    private func type(_ space: Space, tabID: UUID, ref: AgentRef, text: String, submit: Bool, record: CallRecord) async throws -> String {
+    private func type(_ space: Space, tabID: UUID, ref: AgentRef, text: String, slowly: Bool, submit: Bool,
+                      record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
         let target = try refTarget(ref, controller, space, record)
         let info = try await target.inspect(controller)
@@ -423,15 +450,112 @@ final class AgentToolbox {
 
         return try await whileNotCancelled(cancellation) {
             try self.refuseIfCancelled(cancellation, record)
-            let result = target.shown(try await controller.callPageAgent("type(ref, text, submit)",
-                                                                         arguments: ["ref": target.local, "text": text, "submit": submit],
+            var result: String
+            if slowly {
+                // Real key presses: focus the field with a real click, select what is in it, type.
+                if let point = try await self.clickPoint(target, controller) {
+                    AgentInput.click(controller.webView, at: point, double: false)
+                }
+                _ = try await controller.callPageAgent("focusAndSelect(ref)", arguments: ["ref": target.local],
+                                                       frame: target.frame, key: target.key)
+                await AgentInput.typeSlowly(text, in: controller.webView)
+                result = "Typed into \(info.description) one key at a time."
+            } else {
+                result = target.shown(try await controller.callPageAgent("type(ref, text, submit)",
+                                                                         arguments: ["ref": target.local, "text": text, "submit": false],
                                                                          frame: target.frame, key: target.key))
+            }
+            if submit {
+                // A real Enter in the field (it needs the keyboard focus a real click gives).
+                if !slowly, let point = try await self.clickPoint(target, controller) {
+                    AgentInput.click(controller.webView, at: point, double: false)
+                }
+                AgentInput.press(try KeyChord.parse("Enter"), in: controller.webView)
+                result = String(result.dropLast(result.hasSuffix(".") ? 1 : 0)) + " and pressed Enter."
+            }
             try? await Task.sleep(for: .milliseconds(submit ? 300 : 50))
             await controller.waitUntilLoaded()
             try self.refuseIfSpaceClosed(space, record)
             return UntrustedContent.wrap(result, source: self.shownAddress(controller, space, record)) + "\n"
                 + self.pageSummary(controller, space, record)
         }
+    }
+
+    private struct FocusInfo: Decodable {
+        let description: String
+        let inForm: Bool
+        let isPassword: Bool
+    }
+
+    private func pressKey(_ space: Space, tabID: UUID, key: String, record: CallRecord) async throws -> String {
+        let chord: KeyChord
+        do { chord = try KeyChord.parse(key) } catch let error as KeyChord.ParseError { throw ToolError(error.description) }
+        guard !chord.isClipboard else {
+            throw ToolError("\(key) would use the clipboard, which agents can't reach. Use type to put text in a field.")
+        }
+        let controller = try await webController(space, tabID, record)
+        let focusJSON = try await controller.callPageAgent("focusInfo()", arguments: [:])
+        let focus = try JSONDecoder().decode(FocusInfo.self, from: Data(focusJSON.utf8))
+        // Never show or log which key goes into a password field.
+        let shownKey = focus.isPassword && chord.characters.count == 1 && !chord.control && !chord.command ? "a key" : key
+        record.args["key"] = shownKey
+        let submits = chord.key == "Enter" && focus.inForm
+        let pageOrigin = AgentApprovalRules.origin(of: controller.webView.url)
+        try await authorize(
+            AgentActionContext(kind: .pressKey, pageOrigin: pageOrigin, isFormSubmission: submits), space, record,
+            request(record, space, action: submits ? "press Enter in a form (it may submit it)" : "press \(shownKey)",
+                    detail: focus.description, url: controller.webView.url, tabTitle: controller.webView.title))
+
+        let cancellation = ApprovalCancellation()
+        installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
+                               approved: Set([pageOrigin].compactMap { $0 }), submissionApproved: submits,
+                               cancellation: cancellation)
+        defer { controller.agentNavigationGuard = nil }
+
+        return try await whileNotCancelled(cancellation) {
+            try self.refuseIfCancelled(cancellation, record)
+            AgentInput.press(chord, in: controller.webView)
+            try? await Task.sleep(for: .milliseconds(chord.key == "Enter" ? 300 : 100))
+            await controller.waitUntilLoaded()
+            try self.refuseIfSpaceClosed(space, record)
+            return "Pressed \(shownKey).\n" + self.pageSummary(controller, space, record)
+        }
+    }
+
+    private struct PointInfo: Decodable {
+        let visible: Bool
+        let x: Double?
+        let y: Double?
+        let covered: String?
+    }
+
+    /// Where to click an element with a real click: its centre in the main frame's CSS px, with
+    /// each frame's offset added. Nil when it has no box (hidden). Throws when something else
+    /// covers it there (a banner, a dialog), as Playwright does.
+    func clickPoint(_ target: RefTarget, _ controller: WebTabController) async throws -> CGPoint? {
+        let json = try await controller.callPageAgent("point(ref)", arguments: ["ref": target.local], frame: target.frame, key: target.key)
+        let info = try JSONDecoder().decode(PointInfo.self, from: Data(json.utf8))
+        guard info.visible, let x = info.x, let y = info.y else { return nil }
+        if let covered = info.covered { throw Self.covered(target.shown(covered)) }
+        var point = CGPoint(x: x, y: y)
+        var number = target.number
+        while let current = number, let entry = controller.agentFrames.entry(current) {
+            let parent = entry.parent.flatMap { controller.agentFrames.entry($0) }
+            let json = try await controller.callPageAgent("frameOffset(token, x, y)",
+                                                          arguments: ["token": entry.token, "x": point.x, "y": point.y],
+                                                          frame: parent?.frame, key: parent?.key)
+            let offset = try JSONDecoder().decode(PointInfo.self, from: Data(json.utf8))
+            if let covered = offset.covered {
+                throw Self.covered(parent.map { AgentFrames.prefixRefs(covered, frame: $0.number) } ?? covered)
+            }
+            point = CGPoint(x: offset.x ?? point.x, y: offset.y ?? point.y)
+            number = entry.parent
+        }
+        return point
+    }
+
+    private static func covered(_ what: String) -> ToolError {
+        ToolError("The element is covered by \(what), which would get the click. Close or answer that first, then click again.")
     }
 
     /// Runs a click's or type's action and wait. Cancelling the call (Stop, or the connection

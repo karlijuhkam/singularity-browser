@@ -9,7 +9,8 @@ public enum AgentToolName {
 
     /// The per-Space tools, in the order they are listed.
     public static let spaceTools = [
-        "list_tabs", "open", "navigate", "close", "read_page", "find", "click", "type", "screenshot", "read_console", "read_network"]
+        "list_tabs", "open", "navigate", "close", "read_page", "find", "click", "type", "screenshot", "read_console", "read_network",
+        "press_key", "wait_for", "handle_dialog", "file_upload", "hover", "drag"]
 
     /// The one tool name a plugin's connection is told about next to `list_spaces` etc.: it lists terminals.
     public static let terminals = "terminals"

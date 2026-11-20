@@ -368,6 +368,73 @@ enum PageAgentScript {
         return `Typed into ${describe(el)}${submitted}.`;
       };
 
+      // ---- positions, for real clicks (AgentInput) ------------------------------------------
+      // The element of a point, looking into open shadow roots.
+      const deepElementFromPoint = (x, y) => {
+        let el = document.elementFromPoint(x, y);
+        while (el && el.shadowRoot) {
+          const inner = el.shadowRoot.elementFromPoint(x, y);
+          if (!inner || inner === el) break;
+          el = inner;
+        }
+        return el;
+      };
+      const reaches = (target, hit) => {
+        for (let node = hit; node; node = node.parentNode || node.host) if (node === target) return true;
+        return false;
+      };
+      // The centre of an element in this frame's viewport, scrolled into view, and what is on top
+      // of it there. `visible` false: it has no box to click (hidden, e.g. a CSS-hover submenu).
+      const point = (ref) => {
+        const el = lookup(ref);
+        if (isHidden(el)) return JSON.stringify({ visible: false });
+        el.scrollIntoView({ block: "center", inline: "center" });
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return JSON.stringify({ visible: false });
+        const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+        const hit = deepElementFromPoint(x, y);
+        const label = el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA" ? Array.from(el.labels || []) : [];
+        const covered = !hit || reaches(el, hit) || label.some((l) => reaches(l, hit)) ? null : describe(hit);
+        return JSON.stringify({ visible: true, x, y, covered });
+      };
+      // Where a point of a child frame (frame-relative CSS px) is in this frame's viewport, and what
+      // is on top of it there. The iframe's border and padding are its content box's offset.
+      const frameOffset = (token, x, y) => {
+        const el = frameByToken.get(token)?.deref();
+        if (!el || !el.isConnected) throw new Error("That frame is gone from the page. Call read_page again.");
+        const at = () => {
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          return [rect.left + el.clientLeft + parseFloat(style.paddingLeft || "0") + x,
+                  rect.top + el.clientTop + parseFloat(style.paddingTop || "0") + y];
+        };
+        let [ax, ay] = at();
+        if (ax < 0 || ay < 0 || ax > innerWidth || ay > innerHeight) {
+          el.scrollIntoView({ block: "center", inline: "center" });
+          [ax, ay] = at();
+        }
+        const hit = deepElementFromPoint(ax, ay);
+        return JSON.stringify({ visible: true, x: ax, y: ay, covered: hit === el ? null : (hit ? describe(hit) : "nothing") });
+      };
+      // The focused element, for press_key's approval: is Enter a form submission? a password?
+      const focusInfo = () => {
+        const el = document.activeElement;
+        if (!el || el === document.body) return JSON.stringify({ description: "the page", inForm: false, isPassword: false });
+        return JSON.stringify({
+          description: describe(el),
+          inForm: !!(el.form || el.closest("form")),
+          isPassword: el.tagName === "INPUT" && (el.getAttribute("type") || "").toLowerCase() === "password",
+        });
+      };
+      // Before real keystrokes into a field: focus it and select what is in it, so typing replaces it.
+      const focusAndSelect = (ref) => {
+        const el = lookup(ref);
+        el.focus();
+        if (el.isContentEditable) document.execCommand("selectAll", false);
+        else if (typeof el.select === "function") { try { el.select(); } catch (e) {} }
+        return describe(el);
+      };
+
       // ---- inspect (for approvals: what would acting on this element do?) -------------------
       const inspect = (ref) => {
         const el = lookup(ref);
@@ -388,7 +455,8 @@ enum PageAgentScript {
         });
       };
 
-      window.__singularityAgent = Object.freeze({ key, snapshot, find, listFrames, click, type, inspect });
+      window.__singularityAgent = Object.freeze({ key, snapshot, find, listFrames, click, type, inspect,
+                                                  point, frameOffset, focusInfo, focusAndSelect });
     })();
     """##
 }
