@@ -27,10 +27,14 @@ public enum AgentActionKind: String, Sendable {
     case artifactPrompt
     /// Text pasted into a terminal, or an answer to a held question (the Assistant's terminal tools).
     case terminalSend
+    /// The Playwright-parity tools: a key press, answering a page's dialog, dragging (acting on the
+    /// page, like a click); choosing files for a page's file chooser (always asks); pointing at an
+    /// element and waiting for text (reads: they change nothing the owner keeps).
+    case pressKey, dialog, drag, fileUpload, hover, waitFor
 
     public var isRead: Bool {
         switch self {
-        case .listTabs, .readPage, .find, .screenshot: return true
+        case .listTabs, .readPage, .find, .screenshot, .hover, .waitFor: return true
         default: return false
         }
     }
@@ -78,7 +82,8 @@ public enum AgentApprovalRules {
     public static func decide(_ context: AgentActionContext, policy: AgentPolicy, allowedOrigins: Set<String>) -> AgentDecision {
         if context.kind.isRead { return .allow }
         // Typing into a terminal always asks the owner (never remembered per site), unless read-only.
-        if context.kind == .terminalSend {
+        // Handing local files to a page always asks the owner too (never remembered per site).
+        if context.kind == .terminalSend || context.kind == .fileUpload {
             return policy == .readOnly ? .deny(readOnlyReason) : .ask(siteOrigin: nil)
         }
         switch policy {

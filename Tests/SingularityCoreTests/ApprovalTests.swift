@@ -54,6 +54,37 @@ import Testing
         #expect(decide(.open, target: shop, .ask, allowed: [shop]) == .allow)
     }
 
+    @Test func fileUploadAsksInAllowAll() {
+        #expect(decide(.fileUpload, page: shop, .allowAll) == .ask(siteOrigin: nil))
+    }
+
+    @Test func fileUploadRefusedReadOnly() {
+        #expect(decide(.fileUpload, page: shop, .readOnly) == .deny(AgentApprovalRules.readOnlyReason))
+    }
+
+    @Test func fileUploadNeverOffersTheSite() {
+        #expect(decide(.fileUpload, page: shop, .ask, allowed: [shop]) == .ask(siteOrigin: nil))
+        #expect(decide(.fileUpload, page: shop, .ask) == .ask(siteOrigin: nil))
+    }
+
+    @Test func hoverAndWaitForAreReads() {
+        for policy in AgentPolicy.allCases {
+            #expect(decide(.hover, page: shop, policy) == .allow)
+            #expect(decide(.waitFor, page: shop, policy) == .allow)
+        }
+    }
+
+    @Test func pressKeyAndDialogAndDragFollowClick() {
+        for kind in [AgentActionKind.pressKey, .dialog, .drag] {
+            #expect(decide(kind, page: shop, .ask) == .ask(siteOrigin: shop))
+            #expect(decide(kind, page: shop, .ask, allowed: [shop]) == .allow)
+            #expect(decide(kind, page: shop, .allowAll) == .allow)
+            #expect(decide(kind, page: shop, .readOnly) == .deny(AgentApprovalRules.readOnlyReason))
+        }
+        // Enter in a form is a form submission.
+        #expect(decide(.pressKey, page: shop, submit: true, .ask, allowed: [shop]) == .ask(siteOrigin: nil))
+    }
+
     @Test func origins() {
         #expect(AgentApprovalRules.origin(of: URL(string: "https://Shop.Example.com/a?b")) == "https://shop.example.com")
         #expect(AgentApprovalRules.origin(of: URL(string: "https://x.com:443/")) == "https://x.com")
