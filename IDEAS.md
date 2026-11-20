@@ -27,6 +27,8 @@ Things that came up while building but were not in the v1 brief.
 
 Nothing here gets built without an explicit decision from the owner.
 
+- **`evaluate` for agents (run JavaScript in a page).** Playwright MCP has it (`browser_evaluate`, `browser_run_code_unsafe`); the parity work of 2026-11-20 left it out because arbitrary page JavaScript would bypass the door's per-element checks (does this click submit a form? leave the site?) and the per-site plugin switches. If wanted: always ask, show the code on the card, never "Allow on <site>".
+
 - **Extensions, round 2.** Round 1 (2026-11-17, `docs/superpowers/specs/2026-11-17-extensions-design.md`) left out: extensions' items in the page's right-click menu (`WKWebExtensionContext.menuItems(for:)`, needs a `WKWebView` subclass for `willOpenMenu`), their keyboard shortcuts (`commands`), new-tab-page overrides, and shims for Chrome-only APIs (what 1Password's Chrome extension needs; the Nov 2026 spike said shims weren't enough). An options or extension page tab restored at launch may open before its extension is loaded and show an error until reopened.
 
 - **Setup export and import (the browser's setup in the owner's own git repository).** Raised 2026-11-13: the owner changes laptops often and wants Spaces, pinned tabs, folders, projects, settings and plugins back in minutes, also on two Macs side by side; open tabs stay per machine. Parked by the owner 2026-11-13 as a future idea. Draft design, not approved, with open questions for the owner: `docs/superpowers/specs/2026-11-13-setup-export-design.md` (export and import by menu into a folder, the owner runs git). It is sync, so approving it is a scope change.
