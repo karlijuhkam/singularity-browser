@@ -475,15 +475,7 @@ struct LittleFixtureServer {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = ["-c", script]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        try process.run()
-        var line = ""
-        while !line.hasSuffix("\n") {
-            let data = pipe.fileHandleForReading.availableData
-            if data.isEmpty { break }
-            line += String(decoding: data, as: UTF8.self)
-        }
+        let line = try startFixtureServer(process)
         let port = Int(line.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
         return LittleFixtureServer(process: process, url: URL(string: "http://127.0.0.1:\(port)/")!)
     }

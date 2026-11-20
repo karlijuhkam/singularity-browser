@@ -38,15 +38,7 @@ struct BenchServer {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = ["-c", script, folder.path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        try process.run()
-        var line = ""
-        while !line.hasSuffix("\n") {
-            let data = pipe.fileHandleForReading.availableData
-            if data.isEmpty { break }
-            line += String(decoding: data, as: UTF8.self)
-        }
+        let line = try startFixtureServer(process)
         let ports = line.split(separator: " ").compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         guard ports.count == 2 else {
             process.terminate()

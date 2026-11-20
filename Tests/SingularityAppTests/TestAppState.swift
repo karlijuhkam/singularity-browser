@@ -79,3 +79,23 @@ func waitUntil(_ what: String, limit: Duration = .seconds(5), _ condition: () ->
         try await Task.sleep(for: .milliseconds(20))
     }
 }
+
+/// Starts a fixture server whose first line on stdout is its port (or ports), and returns that line.
+/// This process's ends of the pipe are closed again: kept open, each server would cost the test
+/// process two files for the rest of the run, and past 256 open files (launchd's default limit)
+/// WebKit can't load pages any more. The servers print nothing after that first line.
+func startFixtureServer(_ process: Process) throws -> String {
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    try process.run()
+    // The server has its own copy of the write end.
+    try? pipe.fileHandleForWriting.close()
+    var line = ""
+    while !line.hasSuffix("\n") {
+        let data = pipe.fileHandleForReading.availableData
+        if data.isEmpty { break }
+        line += String(decoding: data, as: UTF8.self)
+    }
+    try? pipe.fileHandleForReading.close()
+    return line
+}
