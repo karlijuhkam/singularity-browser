@@ -118,6 +118,12 @@ final class WebViewRegistry {
         return controller
     }
 
+    /// Answers every dialog or file chooser held for an agent (quitting, or a test ending): a page
+    /// blocked by a dialog blocks its web process, which WebKit reuses for other pages of the site.
+    func answerHeldModals() {
+        for controller in controllers.values { controller.answerPendingModal(.dismiss) }
+    }
+
     /// The live web views of a Space's tabs.
     func controllers(in spaceID: UUID) -> [WebTabController] {
         controllers.values.filter { $0.spaceID == spaceID }

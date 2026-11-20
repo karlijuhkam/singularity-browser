@@ -342,6 +342,7 @@ final class AppState {
                 self?.inbox.denyAllApprovals()
                 self?.inbox.handBackAllHeld()
                 self?.hookSocket?.stop()
+                self?.web.answerHeldModals()
                 self?.flushSaves()
                 self?.artifacts.stopAll()
                 self?.terminals.tearDownAll()
@@ -1542,11 +1543,11 @@ final class AppState {
     /// return a new web view built from the configuration it hands us (that keeps the
     /// `window.opener` link working, which OAuth pop-ups rely on). We show it as a new tab.
     ///
-    /// A pop-up an agent's action caused (a call is running on the source tab) opens in the
+    /// A pop-up an agent's action caused (a click or key press is running on the source tab) opens in the
     /// background, marked as the agent's, like `agentOpenTab`: the owner's view doesn't jump. Its
     /// first load goes through the same navigation check as the agent's action.
     func openPopup(from sourceTabID: UUID, spaceID: UUID, configuration: WKWebViewConfiguration, url: URL?) -> WKWebView {
-        let fromAgent = isAgentBusy(sourceTabID)
+        let fromAgent = (web.existingController(sourceTabID)?.agentActions ?? 0) > 0
         var tab = BrowserTab.web(url ?? URL(string: "about:blank")!)
         tab.openedByAgent = fromAgent
         mutateSpace(spaceID) {

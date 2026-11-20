@@ -231,7 +231,7 @@ final class AgentToolbox {
         if let tabID = record.tabID { state?.endAgentWork(on: tabID) }
         if let spaceID = record.spaceID { log(name, record: record, result: result, spaceID: spaceID) }
         // A dialog or file chooser waiting for the agent on this tab: every answer starts with it.
-        if let tabID = record.tabID, let spaceID = record.spaceID, let line = modalLine(tabID, spaceID: spaceID),
+        if let tabID = record.tabID, let spaceID = record.spaceID, let line = modalLine(tabID, spaceID: spaceID, record: record),
            !(result.isError == true && result.content.contains { if case .text(let text, _, _) = $0 { return text.hasPrefix(line) }; return false }) {
             return .init(content: [.plain(line)] + result.content, isError: result.isError)
         }
@@ -470,15 +470,19 @@ final class AgentToolbox {
         return try await whileNotCancelled(cancellation) {
             // Stopped after it was allowed but before it acts: it doesn't act.
             try self.refuseIfCancelled(cancellation, record)
+            controller.agentActions += 1
+            defer { controller.agentActions -= 1 }
             let result: String
-            if let point = try await self.clickPoint(target, controller) {
+            switch try await self.clickTarget(target, controller) {
+            case .point(let point):
                 AgentInput.click(controller.webView, at: point, double: double)
                 result = "Clicked \(info.description)."
-            } else {
-                // No box to click (hidden, e.g. a menu that opens on hover): the old script click.
+            case .script(let why):
+                // No real click there (hidden, off screen, or a control whose real click opens a
+                // native menu in front of the user): the old script click.
                 let clicked = try await controller.callPageAgentUnlessModal("click(ref)", arguments: ["ref": target.local],
                                                                              frame: target.frame, key: target.key)
-                result = target.shown(clicked ?? "Clicked \(info.description).") + " (The element is not visible; it was clicked with a script.)"
+                result = target.shown(clicked ?? "Clicked \(info.description).") + " (\(why); it was clicked with a script.)"
             }
             // If the click started a navigation, wait for it so the next read sees the new page.
             try? await Task.sleep(for: .milliseconds(300))
@@ -499,6 +503,10 @@ final class AgentToolbox {
 
     private func type(_ space: Space, tabID: UUID, ref: AgentRef, text: String, slowly: Bool, submit: Bool,
                       record: CallRecord) async throws -> String {
+        if slowly, text.contains(where: { $0 == "\n" || $0 == "\r" || $0 == "\t" }) {
+            throw ToolError("With slowly, newlines and tabs are not typed (they would press Enter or Tab). "
+                + "Type each line separately and use press_key for Enter or Tab, or submit=true.")
+        }
         let controller = try await webController(space, tabID, record)
         let target = try refTarget(ref, controller, space, record)
         let info = try await target.inspect(controller)
@@ -519,10 +527,12 @@ final class AgentToolbox {
 
         return try await whileNotCancelled(cancellation) {
             try self.refuseIfCancelled(cancellation, record)
+            controller.agentActions += 1
+            defer { controller.agentActions -= 1 }
             var result: String
             if slowly {
                 // Real key presses: focus the field with a real click, select what is in it, type.
-                if let point = try await self.clickPoint(target, controller) {
+                if case .point(let point) = try await self.clickTarget(target, controller) {
                     AgentInput.click(controller.webView, at: point, double: false)
                 }
                 _ = try await controller.callPageAgent("focusAndSelect(ref)", arguments: ["ref": target.local],
@@ -537,7 +547,7 @@ final class AgentToolbox {
             }
             if submit {
                 // A real Enter in the field (it needs the keyboard focus a real click gives).
-                if !slowly, let point = try await self.clickPoint(target, controller) {
+                if !slowly, case .point(let point) = try await self.clickTarget(target, controller) {
                     AgentInput.click(controller.webView, at: point, double: false)
                 }
                 AgentInput.press(try KeyChord.parse("Enter"), in: controller.webView)
@@ -552,8 +562,17 @@ final class AgentToolbox {
     }
 
     /// "A dialog is waiting on this tab: …" for a tab with a dialog or chooser held for agents.
-    private func modalLine(_ tabID: UUID, spaceID: UUID) -> String? {
+    ///
+    /// Never for a plugin's connection that may not know of it now: its Space switched off (the
+    /// answer is then the plain "Unknown tool", which must carry nothing from the page), the tab on a
+    /// site switched off for it, or the dialog from a frame of such a site.
+    private func modalLine(_ tabID: UUID, spaceID: UUID, record: CallRecord) -> String? {
         guard let state, let space = state.space(spaceID), let modal = state.web.existingController(tabID)?.pendingModal else { return nil }
+        if case .plugin = record.caller {
+            guard isOpen(space, for: record.caller, program: record.program),
+                  let tab = space.tab(tabID), !tabIsOff(tab, space, record.caller),
+                  !siteIsOff(modal.origin, space, record.caller) else { return nil }
+        }
         let tool = { AgentToolName.make(slug: space.slug, tool: $0) }
         let source = state.web.existingController(tabID)?.webView.url?.absoluteString ?? ""
         func dialog(_ kind: String, _ message: String) -> String {
@@ -573,6 +592,7 @@ final class AgentToolbox {
     private func handleDialog(_ space: Space, tabID: UUID, accept: Bool, text: String?, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record, allowModal: true)
         guard let modal = controller.pendingModal, modal.kind.isDialog else { throw ToolError("No dialog is waiting on this tab.") }
+        try refuseModalSite(modal, space, record)
         let message: String
         switch modal.kind {
         case .alert(let m), .confirm(let m), .prompt(let m, _): message = m
@@ -583,7 +603,7 @@ final class AgentToolbox {
         try await authorize(
             AgentActionContext(kind: .dialog, pageOrigin: pageOrigin), space, record,
             request(record, space, action: accept ? "answer OK to a page's dialog" : "answer Cancel to a page's dialog",
-                    detail: message, url: controller.webView.url, tabTitle: controller.webView.title, text: text))
+                    detail: message, url: modal.origin ?? controller.webView.url, tabTitle: controller.webView.title, text: text))
         guard controller.pendingModal === modal else { throw ToolError("The dialog is gone (the page moved on or it timed out).") }
 
         let cancellation = ApprovalCancellation()
@@ -592,6 +612,8 @@ final class AgentToolbox {
         defer { controller.agentNavigationGuard = nil }
         return try await whileNotCancelled(cancellation) {
             try self.refuseIfCancelled(cancellation, record)
+            controller.agentActions += 1
+            defer { controller.agentActions -= 1 }
             modal.answer(accept ? .accept(text: text) : .dismiss)
             try? await Task.sleep(for: .milliseconds(300))
             await controller.waitUntilLoaded()
@@ -605,6 +627,7 @@ final class AgentToolbox {
         guard let modal = controller.pendingModal, case .fileChooser(let multiple, _) = modal.kind else {
             throw ToolError("No file chooser is waiting on this tab. Click the page's file field first.")
         }
+        try refuseModalSite(modal, space, record)
         let files: [URL]
         do { files = try UploadFiles.check(paths, multiple: multiple) } catch let refusal as UploadFiles.Refusal {
             throw ToolError(refusal.description)
@@ -615,19 +638,31 @@ final class AgentToolbox {
             AgentActionContext(kind: .fileUpload, pageOrigin: pageOrigin), space, record,
             request(record, space, action: files.isEmpty ? "cancel a page's file chooser" : "give files from this Mac to a page",
                     detail: files.isEmpty ? "No files." : files.map(\.path).joined(separator: "\n"),
-                    url: controller.webView.url, tabTitle: controller.webView.title))
+                    url: modal.origin ?? controller.webView.url, tabTitle: controller.webView.title))
         guard controller.pendingModal === modal else { throw ToolError("The file chooser is gone (the page moved on or it timed out).") }
-        modal.answer(files.isEmpty ? .dismiss : .files(files))
-        try? await Task.sleep(for: .milliseconds(200))
-        await controller.waitUntilLoaded()
-        try refuseIfSpaceClosed(space, record)
-        let what = files.isEmpty ? "Cancelled the file chooser." : "Gave \(files.count == 1 ? "1 file" : "\(files.count) files") to the page."
-        return what + "\n" + pageSummary(controller, space, record)
+        // A page may submit its form as soon as the files arrive: checked like a click's navigations.
+        let cancellation = ApprovalCancellation()
+        installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
+                               approved: Set([pageOrigin].compactMap { $0 }), submissionApproved: false, cancellation: cancellation)
+        defer { controller.agentNavigationGuard = nil }
+        return try await whileNotCancelled(cancellation) {
+            try self.refuseIfCancelled(cancellation, record)
+            controller.agentActions += 1
+            defer { controller.agentActions -= 1 }
+            modal.answer(files.isEmpty ? .dismiss : .files(files))
+            try? await Task.sleep(for: .milliseconds(200))
+            await controller.waitUntilLoaded()
+            try self.refuseIfSpaceClosed(space, record)
+            let what = files.isEmpty ? "Cancelled the file chooser." : "Gave \(files.count == 1 ? "1 file" : "\(files.count) files") to the page."
+            return what + "\n" + self.pageSummary(controller, space, record)
+        }
     }
 
     private func hover(_ space: Space, tabID: UUID, ref: AgentRef, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
         let target = try refTarget(ref, controller, space, record)
+        controller.agentActions += 1
+        defer { controller.agentActions -= 1 }
         let result = try await controller.callPageAgentUnlessModal("hover(ref)", arguments: ["ref": target.local],
                                                                    frame: target.frame, key: target.key)
         try? await Task.sleep(for: .milliseconds(150))
@@ -652,6 +687,8 @@ final class AgentToolbox {
         defer { controller.agentNavigationGuard = nil }
         return try await whileNotCancelled(cancellation) {
             try self.refuseIfCancelled(cancellation, record)
+            controller.agentActions += 1
+            defer { controller.agentActions -= 1 }
             let result = try await controller.callPageAgentUnlessModal("drag(from, to)", arguments: ["from": target.local, "to": to.local],
                                                                        frame: target.frame, key: target.key)
             try? await Task.sleep(for: .milliseconds(200))
@@ -701,10 +738,51 @@ final class AgentToolbox {
         value == value.rounded() ? "\(Int(value)) seconds" : String(format: "%.1f seconds", value)
     }
 
+    /// A plugin never sees or answers a dialog or chooser from a frame of a site switched off for it.
+    private func refuseModalSite(_ modal: PendingModal, _ space: Space, _ record: CallRecord) throws {
+        guard case .plugin(_, let title) = record.caller, siteIsOff(modal.origin, space, record.caller) else { return }
+        throw ToolError(AgentCaller.siteOff(title: title))
+    }
+
     private struct FocusInfo: Decodable {
         let description: String
         let inForm: Bool
         let isPassword: Bool
+        let frameToken: String?
+    }
+
+    /// The focused element, looked for inside frames (focus in a frame shows as the iframe in its
+    /// parent). A plugin is refused when focus is in a frame of a site switched off for it. A frame
+    /// that doesn't answer counts as a password field in a form: masked, and Enter asks.
+    private func focusedElement(_ controller: WebTabController, _ space: Space, _ record: CallRecord) async throws -> FocusInfo {
+        // The introductions answer the focusInfo calls themselves: the whole search is one read.
+        try await controller.agentFrames.reading { try await focusedElementInFrames(controller, space, record) }
+    }
+
+    private func focusedElementInFrames(_ controller: WebTabController, _ space: Space, _ record: CallRecord) async throws -> FocusInfo {
+        var info = try JSONDecoder().decode(FocusInfo.self, from: Data(try await controller.callPageAgent("focusInfo()", arguments: [:]).utf8))
+        var parent: AgentFrames.Entry?
+        var depth = 0
+        while let token = info.frameToken {
+            depth += 1
+            let found = await controller.agentFrames.resolve([token], parent: parent?.number)
+            guard depth <= AgentFrames.maxDepth + 1, let entry = found[token] else {
+                // A plugin can't be shown to stay off switched-off sites here: refused.
+                if case .plugin = record.caller {
+                    throw ToolError("The keyboard focus is in a frame that can't be checked. Click a field first, then press the key.")
+                }
+                return FocusInfo(description: info.description, inForm: true, isPassword: true, frameToken: nil)
+            }
+            if case .plugin(_, let title) = record.caller, siteIsOff(AgentFrames.origin(of: entry.frame), space, record.caller) {
+                throw ToolError(AgentCaller.siteOff(title: title))
+            }
+            let json = try await controller.callPageAgent("focusInfo()", arguments: [:], frame: entry.frame, key: entry.key)
+            let inner = try JSONDecoder().decode(FocusInfo.self, from: Data(json.utf8))
+            info = FocusInfo(description: AgentFrames.prefixRefs(inner.description, frame: entry.number), inForm: inner.inForm,
+                             isPassword: inner.isPassword, frameToken: inner.frameToken)
+            parent = entry
+        }
+        return info
     }
 
     private func pressKey(_ space: Space, tabID: UUID, key: String, record: CallRecord) async throws -> String {
@@ -714,8 +792,7 @@ final class AgentToolbox {
             throw ToolError("\(key) would use the clipboard, which agents can't reach. Use type to put text in a field.")
         }
         let controller = try await webController(space, tabID, record)
-        let focusJSON = try await controller.callPageAgent("focusInfo()", arguments: [:])
-        let focus = try JSONDecoder().decode(FocusInfo.self, from: Data(focusJSON.utf8))
+        let focus = try await focusedElement(controller, space, record)
         // Never show or log which key goes into a password field.
         let shownKey = focus.isPassword && chord.characters.count == 1 && !chord.control && !chord.command ? "a key" : key
         record.args["key"] = shownKey
@@ -735,6 +812,8 @@ final class AgentToolbox {
         let tabsBefore = Set(state?.space(space.id)?.tabs.map(\.id) ?? [])
         return try await whileNotCancelled(cancellation) {
             try self.refuseIfCancelled(cancellation, record)
+            controller.agentActions += 1
+            defer { controller.agentActions -= 1 }
             AgentInput.press(chord, in: controller.webView)
             try? await Task.sleep(for: .milliseconds(chord.key == "Enter" ? 300 : 100))
             await controller.waitUntilLoaded()
@@ -749,15 +828,30 @@ final class AgentToolbox {
         let x: Double?
         let y: Double?
         let covered: String?
+        let reason: String?
+    }
+
+    enum ClickTarget {
+        /// A real click there (main frame CSS px).
+        case point(CGPoint)
+        /// A script click, and why (said in the answer).
+        case script(String)
     }
 
     /// Where to click an element with a real click: its centre in the main frame's CSS px, with
-    /// each frame's offset added. Nil when it has no box (hidden). Throws when something else
-    /// covers it there (a banner, a dialog), as Playwright does.
-    func clickPoint(_ target: RefTarget, _ controller: WebTabController) async throws -> CGPoint? {
+    /// each frame's offset added; or a script click when it has no box, is off screen, or is a
+    /// control whose real click opens a native menu or picker. Throws when something else covers
+    /// it there (a banner, a dialog), as Playwright does.
+    func clickTarget(_ target: RefTarget, _ controller: WebTabController) async throws -> ClickTarget {
         let json = try await controller.callPageAgent("point(ref)", arguments: ["ref": target.local], frame: target.frame, key: target.key)
         let info = try JSONDecoder().decode(PointInfo.self, from: Data(json.utf8))
-        guard info.visible, let x = info.x, let y = info.y else { return nil }
+        guard info.visible, let x = info.x, let y = info.y else {
+            switch info.reason {
+            case "menu": return .script("a real click would open a menu in front of the user")
+            case "offscreen": return .script("The element is not on screen")
+            default: return .script("The element is not visible")
+            }
+        }
         if let covered = info.covered { throw Self.covered(target.shown(covered)) }
         var point = CGPoint(x: x, y: y)
         var number = target.number
@@ -773,7 +867,7 @@ final class AgentToolbox {
             point = CGPoint(x: offset.x ?? point.x, y: offset.y ?? point.y)
             number = entry.parent
         }
-        return point
+        return .point(point)
     }
 
     private static func covered(_ what: String) -> ToolError {

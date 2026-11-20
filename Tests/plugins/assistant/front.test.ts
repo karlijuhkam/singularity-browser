@@ -88,6 +88,8 @@ test("every tool line, exactly", () => {
   expect(f("work.press_key", { tab_id: "T1", key: "Escape" })).toBe("Pressed Escape on Invoice 42");
   // A single character could be part of a password: never named in a saved line.
   expect(f("work.press_key", { tab_id: "T1", key: "x" })).toBe("Pressed a key on Invoice 42");
+  expect(f("work.press_key", { tab_id: "T1", key: "Shift+a" })).toBe("Pressed a key on Invoice 42");
+  expect(f("work.press_key", { tab_id: "T1", key: "Shift+Tab" })).toBe("Pressed Shift+Tab on Invoice 42");
   expect(f("work.wait_for", { tab_id: "T1", text: "Done" })).toBe("Waited on Invoice 42");
   expect(f("work.handle_dialog", { tab_id: "T1", accept: true })).toBe("Answered a dialog on Invoice 42");
   expect(f("work.file_upload", { tab_id: "T1", paths: ["/a.pdf"] })).toBe("Chose files on Invoice 42");

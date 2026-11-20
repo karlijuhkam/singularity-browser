@@ -134,7 +134,9 @@ export function toolLine(
     // A single character could be part of a password: the saved line never names it.
     case "press_key": {
       const key = typeof input.key === "string" ? input.key : "";
-      text = key.length > 1 && !/^.\+?$/u.test(key) && /^[A-Za-z0-9+]+$/.test(key) ? `Pressed ${shown(key)} on ${title}` : `Pressed a key on ${title}`;
+      // Only a named key (Escape, ArrowDown, Shift+Tab) is named; "Shift+a" is a capital letter.
+      const last = key.split("+").pop() ?? "";
+      text = last.length > 1 && /^[A-Za-z0-9+]+$/.test(key) ? `Pressed ${shown(key)} on ${title}` : `Pressed a key on ${title}`;
       break;
     }
     case "wait_for": text = `Waited on ${title}`; break;

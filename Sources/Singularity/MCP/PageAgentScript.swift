@@ -49,9 +49,10 @@ enum PageAgentScript {
       const frameByToken = new Map(); // token -> WeakRef(iframe element)
       const newToken = () => ((crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2));
       // Asks a child frame to introduce itself to the app under a fresh token.
+      const tokenOfFrame = new WeakMap(); // iframe element -> its token (one per element, so the map stays small)
       const announce = (el) => {
-        const token = newToken();
-        frameByToken.set(token, new WeakRef(el));
+        let token = tokenOfFrame.get(el);
+        if (!token) { token = newToken(); tokenOfFrame.set(el, token); frameByToken.set(token, new WeakRef(el)); }
         try { el.contentWindow && el.contentWindow.postMessage({ __singularityAgentFrame: token }, "*"); } catch (e) {}
         return token;
       };
@@ -472,16 +473,23 @@ enum PageAgentScript {
       };
       // The centre of an element in this frame's viewport, scrolled into view, and what is on top
       // of it there. `visible` false: it has no box to click (hidden, e.g. a CSS-hover submenu).
+      // A real mouse down on these opens a native menu or picker in front of the owner.
+      const NATIVE_POPUP_INPUTS = new Set(["color", "date", "datetime-local", "month", "week", "time"]);
       const point = (ref) => {
         const el = lookup(ref);
-        if (isHidden(el)) return JSON.stringify({ visible: false });
+        if (el.tagName === "SELECT" || (el.tagName === "INPUT" && NATIVE_POPUP_INPUTS.has((el.getAttribute("type") || "").toLowerCase()))) {
+          return JSON.stringify({ visible: false, reason: "menu" });
+        }
+        if (isHidden(el)) return JSON.stringify({ visible: false, reason: "hidden" });
         el.scrollIntoView({ block: "center", inline: "center" });
         const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return JSON.stringify({ visible: false });
+        if (rect.width === 0 || rect.height === 0) return JSON.stringify({ visible: false, reason: "hidden" });
         const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
         const hit = deepElementFromPoint(x, y);
+        // Nothing there: the point is outside the viewport (a skip link at left:-10000px).
+        if (!hit) return JSON.stringify({ visible: false, reason: "offscreen" });
         const label = el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA" ? Array.from(el.labels || []) : [];
-        const covered = !hit || reaches(el, hit) || label.some((l) => reaches(l, hit)) ? null : describe(hit);
+        const covered = reaches(el, hit) || label.some((l) => reaches(l, hit)) ? null : describe(hit);
         return JSON.stringify({ visible: true, x, y, covered });
       };
       // Where a point of a child frame (frame-relative CSS px) is in this frame's viewport, and what
@@ -507,6 +515,8 @@ enum PageAgentScript {
       const focusInfo = () => {
         const el = document.activeElement;
         if (!el || el === document.body) return JSON.stringify({ description: "the page", inForm: false, isPassword: false });
+        // Focus is inside a frame: the app asks that frame (AgentToolbox.focusedElement).
+        if (isFrame(el)) return JSON.stringify({ description: describe(el), inForm: false, isPassword: false, frameToken: announce(el) });
         return JSON.stringify({
           description: describe(el),
           inForm: !!(el.form || el.closest("form")),

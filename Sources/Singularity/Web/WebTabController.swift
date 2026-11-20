@@ -69,6 +69,9 @@ final class WebTabController: NSObject {
     /// whether it may go ahead (it may ask the user first). Catches JavaScript-driven submits and
     /// redirects that couldn't be predicted before the click.
     @ObservationIgnored var agentNavigationGuard: (@MainActor (URL, Bool) async -> Bool)?
+    /// Agent actions (click, type, press_key, …) running on this tab now: while one runs, a dialog
+    /// or file chooser the page opens is the agent's (`shouldHoldForAgent`), and so is a pop-up.
+    @ObservationIgnored var agentActions = 0
     /// A dialog or file chooser an agent caused, waiting for the agent's answer (`PendingModal`).
     @ObservationIgnored private(set) var pendingModal: PendingModal?
     /// How long an agent's dialog or file chooser waits before it gets the off-screen answer.
@@ -236,20 +239,10 @@ final class WebTabController: NSObject {
     /// waits the page's JavaScript is blocked, so the call would only end once it is answered.
     func callPageAgentUnlessModal(_ call: String, arguments: [String: Any], frame: WKFrameInfo? = nil,
                                   key: String? = nil) async throws -> String? {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
-            var done = false
-            Task { @MainActor in
-                do {
-                    let result = try await self.callPageAgent(call, arguments: arguments, frame: frame, key: key)
-                    if !done { done = true; continuation.resume(returning: result) }
-                } catch {
-                    if !done { done = true; continuation.resume(throwing: error) }
-                }
-            }
-            Task { @MainActor in
-                while !done, self.pendingModal == nil { try? await Task.sleep(for: .milliseconds(30)) }
-                if !done { done = true; continuation.resume(returning: nil) }
-            }
+        do {
+            return try await callPageAgent(call, arguments: arguments, frame: frame, key: key)
+        } catch is PageBlocked {
+            return nil
         }
     }
 
@@ -270,7 +263,34 @@ final class WebTabController: NSObject {
     /// `callPageAgent("click(ref)", arguments: ["ref": 12])`. Returns its string result.
     /// `frame` and `key`: in that frame (`AgentFrames`), and only while it still shows the document
     /// with that key (else the refs belong to a page that is gone).
+    ///
+    /// While a dialog waits the page's scripts are blocked, so a call would only end when it is
+    /// answered: it fails with `PageBlocked` as soon as one is waiting.
     func callPageAgent(_ call: String, arguments: [String: Any], frame: WKFrameInfo? = nil, key: String? = nil) async throws -> String {
+        if pendingModal?.kind.isDialog == true { throw PageBlocked() }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+            var done = false
+            Task { @MainActor in
+                do {
+                    let result = try await self.rawPageAgentCall(call, arguments: arguments, frame: frame, key: key)
+                    if !done { done = true; continuation.resume(returning: result) }
+                } catch {
+                    if !done { done = true; continuation.resume(throwing: error) }
+                }
+            }
+            Task { @MainActor in
+                while !done, self.pendingModal?.kind.isDialog != true { try? await Task.sleep(for: .milliseconds(30)) }
+                if !done { done = true; continuation.resume(throwing: PageBlocked()) }
+            }
+        }
+    }
+
+    /// A dialog opened on the page (its scripts wait until it is answered).
+    struct PageBlocked: LocalizedError {
+        var errorDescription: String? { "A dialog opened on this tab; the page waits for it to be answered." }
+    }
+
+    private func rawPageAgentCall(_ call: String, arguments: [String: Any], frame: WKFrameInfo?, key: String?) async throws -> String {
         let body = """
         if (!window.__singularityAgent) throw new Error("This page can't be read (it is not an HTML document, or is still loading).");
         if (expectedKey !== null && window.__singularityAgent.key !== expectedKey) throw new Error("That frame shows another page now. Call read_page again.");
@@ -688,7 +708,7 @@ extension WebTabController: WKUIDelegate {
     // Otherwise a tab that isn't on screen gets the "cancelled" answer at once: a dialog from a page
     // you can't see would block the whole app, and a page could repeat it.
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async {
-        if shouldHoldForAgent { _ = await holdForAgent(.alert(message: message)); return }
+        if shouldHoldForAgent { _ = await holdForAgent(.alert(message: message), from: frame); return }
         guard webView.window != nil else { return }
         let alert = NSAlert()
         alert.messageText = frame.request.url?.host() ?? "This page says"
@@ -699,7 +719,7 @@ extension WebTabController: WKUIDelegate {
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo) async -> Bool {
         if shouldHoldForAgent {
-            if case .accept = await holdForAgent(.confirm(message: message)) { return true }
+            if case .accept = await holdForAgent(.confirm(message: message), from: frame) { return true }
             return false
         }
         guard webView.window != nil else { return false }
@@ -718,7 +738,7 @@ extension WebTabController: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo
     ) async -> String? {
         if shouldHoldForAgent {
-            if case .accept(let text) = await holdForAgent(.prompt(message: prompt, defaultText: defaultText)) { return text ?? defaultText ?? "" }
+            if case .accept(let text) = await holdForAgent(.prompt(message: prompt, defaultText: defaultText), from: frame) { return text ?? defaultText ?? "" }
             return nil
         }
         guard webView.window != nil else { return nil }
@@ -762,7 +782,7 @@ extension WebTabController: WKUIDelegate {
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters, initiatedByFrame frame: WKFrameInfo) async -> [URL]? {
         if shouldHoldForAgent {
             let kind = PendingModal.Kind.fileChooser(multiple: parameters.allowsMultipleSelection, directories: parameters.allowsDirectories)
-            if case .files(let urls) = await holdForAgent(kind), !urls.isEmpty { return urls }
+            if case .files(let urls) = await holdForAgent(kind, from: frame), !urls.isEmpty { return urls }
             return nil
         }
         // A tab that isn't on screen never puts a panel in front of the owner.
@@ -784,17 +804,18 @@ extension WebTabController: WKUIDelegate {
     /// it isn't on screen. Then the dialog or chooser waits for the agent, not the owner.
     fileprivate var shouldHoldForAgent: Bool {
         guard let state, !isPrivate, !isLittle else { return false }
-        if state.isAgentBusy(tabID) { return true }
+        // An agent's action runs (a read doesn't count: the owner's own dialog stays the owner's).
+        if agentActions > 0 { return true }
         return webView.window == nil && state.space(spaceID)?.tab(tabID)?.openedByAgent == true
     }
 
     /// Holds the dialog or chooser until the agent answers, the tab closes or navigates, or
     /// `modalHoldLimit` passes (then: the off-screen answer). One at a time: the page is blocked
     /// while one waits, so a second can only come from another frame; it is dismissed at once.
-    fileprivate func holdForAgent(_ kind: PendingModal.Kind) async -> PendingModal.Answer {
+    fileprivate func holdForAgent(_ kind: PendingModal.Kind, from frame: WKFrameInfo) async -> PendingModal.Answer {
         guard pendingModal == nil else { return .dismiss }
         return await withCheckedContinuation { continuation in
-            let modal = PendingModal(kind: kind) { [weak self] answer in
+            let modal = PendingModal(kind: kind, origin: AgentFrames.origin(of: frame)) { [weak self] answer in
                 self?.pendingModal = nil
                 continuation.resume(returning: answer)
             }

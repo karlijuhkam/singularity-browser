@@ -610,6 +610,75 @@ struct PluginDoorTests {
         #expect(text(typed) == "Door Helper is switched off for this site.", "\(text(typed))")
     }
 
+    /// A dialog that arrived while a plugin's call waited for its card is not told when the Space
+    /// went off for the plugin meanwhile: the refusal carries nothing from the page (C1).
+    @Test(.timeLimit(.minutes(1))) func aWaitingDialogIsNotToldToAPluginThatLostTheSpace() async throws {
+        MainRunLoopGuard.start
+        let bench = try BenchServer.start()
+        defer { bench.stop() }
+        let rig = try await makeRig(mode: "child")
+        defer { tearDown(rig) }
+        let caller = AgentCaller.plugin(id: DoorWorkspace.id, title: DoorWorkspace.title)
+        let program = try #require(rig.manager.programPID(of: DoorWorkspace.id))
+        let toolbox = AgentToolbox(state: rig.state)
+        rig.state.approvals.presenter = { _ in .approved }
+        let opened = text(await toolbox.call(rig.tool("open"), arguments: ["url": .string(bench.url("auto-dialog.html").absoluteString)],
+                                             client: "x", caller: caller, program: program))
+        let id = try #require(opened.firstMatch(of: /tab_id ([0-9a-f-]{36})/).map { String($0.1) })
+        let page = text(await toolbox.call(rig.tool("read_page"), arguments: ["tab_id": .string(id)], client: "x", caller: caller, program: program))
+        let ref = try #require(page.firstMatch(of: /\[(\d+)\] button "Go"/).map { Int($0.1)! })
+        // The card: while it waits the page's dialog arrives; then the owner switches the Space off.
+        rig.state.approvals.presenter = { [rig] _ in
+            try? await Task.sleep(for: .milliseconds(2500))
+            rig.manager.setEnabled(DoorWorkspace.id, space: rig.space.id, false)
+            return .approved
+        }
+        let click = text(await toolbox.call(rig.tool("click"), arguments: ["tab_id": .string(id), "ref": .int(ref)],
+                                            client: "x", caller: caller, program: program))
+        #expect(!click.contains("Late page question"), "\(click)")
+        #expect(!click.contains("dialog"), "\(click)")
+    }
+
+    /// A dialog from a frame on a site switched off for the plugin: never shown to it, not answerable
+    /// by it; a key pressed while focus is in such a frame is refused (C2, C3).
+    @Test(.timeLimit(.minutes(1))) func aSwitchedOffFramesDialogAndKeysStayAway() async throws {
+        MainRunLoopGuard.start
+        let bench = try BenchServer.start()
+        defer { bench.stop() }
+        let rig = try await makeRig(mode: "child")
+        defer { tearDown(rig) }
+        let caller = AgentCaller.plugin(id: DoorWorkspace.id, title: DoorWorkspace.title)
+        let program = try #require(rig.manager.programPID(of: DoorWorkspace.id))
+        let toolbox = AgentToolbox(state: rig.state)
+        rig.state.approvals.presenter = { _ in .approved }
+        rig.state.updateSiteSettings(spaceID: rig.space.id, site: "http://127.0.0.1:\(bench.otherPort)") {
+            $0.disabledPlugins.insert(DoorWorkspace.id)
+        }
+        let opened = text(await toolbox.call(rig.tool("open"), arguments: ["url": .string(bench.url("frame-dialog.html").absoluteString)],
+                                             client: "x", caller: caller, program: program))
+        let id = try #require(opened.firstMatch(of: /tab_id ([0-9a-f-]{36})/).map { String($0.1) })
+        try await Task.sleep(for: .milliseconds(1200))
+        let tab = try #require(UUID(uuidString: id))
+        let read = text(await toolbox.call(rig.tool("read_page"), arguments: ["tab_id": .string(id)], client: "x", caller: caller, program: program))
+        #expect(!read.contains("Secret frame question"), "\(read)")
+        let answer = await toolbox.call(rig.tool("handle_dialog"), arguments: ["tab_id": .string(id), "accept": .bool(true)],
+                                        client: "x", caller: caller, program: program)
+        #expect(answer.isError == true && !text(answer).contains("Secret frame question"), "\(text(answer))")
+        rig.state.web.existingController(tab)?.answerPendingModal(.dismiss)
+
+        // Keys: focus moved into the switched-off frame (by the page), then a key from the plugin.
+        let other = text(await toolbox.call(rig.tool("open"), arguments: ["url": .string(bench.url("iframe.html").absoluteString)],
+                                            client: "x", caller: caller, program: program))
+        let id2 = try #require(other.firstMatch(of: /tab_id ([0-9a-f-]{36})/).map { String($0.1) })
+        let tab2 = try #require(UUID(uuidString: id2))
+        let controller = try #require(rig.state.web.existingController(tab2))
+        try await Task.sleep(for: .milliseconds(800)) // the frames load
+        _ = try await controller.webView.evaluateJavaScript("document.getElementById('x').focus(); 1")
+        let press = await toolbox.call(rig.tool("press_key"), arguments: ["tab_id": .string(id2), "key": "a"],
+                                       client: "x", caller: caller, program: program)
+        #expect(press.isError == true && text(press) == "Door Helper is switched off for this site.", "\(text(press))")
+    }
+
     /// Item of the final review: a plugin's `read_page` that was in flight (its page loading) when
     /// the owner switched the Space off for the plugin ends refused, as a call to a closed Space,
     /// with nothing from the page.

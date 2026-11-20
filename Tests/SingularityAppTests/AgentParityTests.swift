@@ -629,5 +629,149 @@ extension AppTests {
         #expect(space.selectedTabID == popup.id)
         #expect(!popup.openedByAgent)
     }
+
+    // MARK: - Final review fixes
+
+    /// Keys pressed into a frame's password field are masked; Enter in a frame's form counts as a
+    /// form submission (C2).
+    @Test(.timeLimit(.minutes(1))) func pressKeyLooksIntoTheFocusedFrame() async throws {
+        let rig = try Rig(policy: .ask)
+        defer { rig.tearDown() }
+        var actions: [String] = []
+        rig.state.approvals.presenter = { pending in actions.append(pending.request.action); return .approved }
+        try await rig.open("frame-login.html")
+        await rig.call("click", ["ref": try rig.ref("Password")])
+        actions.removeAll()
+        let x = await rig.call("press_key", ["key": "x"])
+        #expect(!x.isError, "\(x.text)")
+        #expect(actions == ["press a key"], "\(actions)")
+        let log = try String(contentsOf: rig.state.paths.agentLogFile("bench"), encoding: .utf8)
+        #expect(!log.contains("\"key\":\"x\""), "the log names the key: \(log.suffix(400))")
+        actions.removeAll()
+        _ = await rig.call("press_key", ["key": "Enter"])
+        #expect(actions.first?.contains("Enter in a form") == true, "\(actions)")
+    }
+
+    /// `slowly` would turn a newline into Enter and a tab into Tab: refused (I1).
+    @Test(.timeLimit(.minutes(1))) func slowlyRefusesNewlinesAndTabs() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("keys.html")
+        for text in ["a\nb", "a\tb"] {
+            let typed = await rig.call("type", ["ref": try rig.ref("Search docs"), "text": .string(text), "slowly": .bool(true)])
+            #expect(typed.isError && typed.text.contains("press_key"), "\(typed.text)")
+        }
+    }
+
+    /// A real mouse down on a <select> would open a native menu in front of the owner (I2).
+    @Test(.timeLimit(.minutes(1))) func clickingASelectUsesAScript() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("select.html")
+        let started = ContinuousClock.now
+        let click = await rig.call("click", ["ref": try rig.ref("City")])
+        #expect(!click.isError, "\(click.text)")
+        #expect(click.text.contains("script"), "\(click.text)")
+        #expect(ContinuousClock.now - started < .seconds(5))
+    }
+
+    /// A dialog that opens during an action ends the call at once with the dialog line (I5).
+    @Test(.timeLimit(.minutes(1))) func aDialogDuringAnActionDoesNotHang() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("change-alert.html")
+        let started = ContinuousClock.now
+        let typed = await rig.call("type", ["ref": try rig.ref("Nick"), "text": "Ann", "submit": .bool(true)])
+        #expect(ContinuousClock.now - started < .seconds(8))
+        #expect(typed.text.hasPrefix("A dialog is waiting"), "\(typed.text)")
+        #expect(typed.text.contains("changed to Ann"))
+    }
+
+    /// The file card names the site of the frame that asked for files (C3).
+    @Test(.timeLimit(.minutes(1))) func fileUploadCardNamesTheFrameSite() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        var shown: [String] = []
+        rig.state.approvals.presenter = { pending in shown.append(pending.request.detail + " " + (pending.request.url ?? "")); return .denied }
+        try await rig.open("upload-frame.html")
+        let click = await rig.call("click", ["ref": try rig.ref("Invoice PDF")])
+        #expect(click.text.hasPrefix("A file chooser is waiting"), "\(click.text)")
+        let file = BenchServer.folder.appending(path: "invoice.pdf").path
+        _ = await rig.call("file_upload", ["paths": .array([.string(file)])])
+        #expect(shown.count == 1 && shown[0].contains("127.0.0.1:\(rig.server.otherPort)"), "\(shown)")
+    }
+
+    /// Frames that never introduce themselves cost one short wait, not one per frame (I4).
+    @Test(.timeLimit(.minutes(1))) func readPageHasAnOverallDeadline() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        AgentFrames.silentForTests = "silent-leaf"
+        defer { AgentFrames.silentForTests = nil }
+        try await rig.open("frames-deep.html")
+        let started = ContinuousClock.now
+        let page = await rig.read()
+        #expect(ContinuousClock.now - started < .milliseconds(2500), "took \(ContinuousClock.now - started)")
+        #expect(page.contains("\"Mid\""), "\(page.prefix(1500))")
+    }
+
+    /// A page can't fill the app with forged introductions (I3).
+    @Test(.timeLimit(.minutes(1))) func forgedIntroductionsAreNotKept() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("flood.html")
+        try await Task.sleep(for: .seconds(2))
+        let tabID = try #require(UUID(uuidString: rig.tab))
+        let controller = try #require(rig.state.web.existingController(tabID))
+        #expect(controller.agentFrames.waitingIntroductions <= AgentFrames.maxWaitingIntroductions)
+        #expect(await rig.read().contains("Code"))
+    }
+
+    /// A pop-up whose first load the guard refused doesn't keep the agent's guard (I6).
+    @Test(.timeLimit(.minutes(1))) func aRefusedPopupDropsTheAgentsGuard() async throws {
+        let rig = try Rig(policy: .ask)
+        defer { rig.tearDown() }
+        rig.state.approvals.presenter = { pending in pending.request.action == "go to another site" ? .denied : .approved }
+        try await rig.open("newtab-other.html")
+        await rig.call("click", ["ref": try rig.ref("Open elsewhere")])
+        try await Task.sleep(for: .milliseconds(800))
+        let popup = try #require(rig.state.space(rig.spaceID)?.tabs.first { $0.id.uuidString.lowercased() != rig.tab })
+        let controller = try #require(rig.state.web.existingController(popup.id))
+        #expect(controller.agentNavigationGuard == nil)
+    }
+
+    /// The owner's own dialog in a tab an agent only reads is the owner's, not held (M5).
+    @Test(.timeLimit(.minutes(1))) func aReadDoesNotHoldTheOwnersDialog() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        rig.state.openInNewTab(rig.server.url("auto-dialog.html"), spaceID: rig.spaceID, target: .nowhere)
+        let tab = try #require(rig.state.space(rig.spaceID)?.tabs.last)
+        rig.tab = tab.id.uuidString.lowercased()
+        _ = await rig.call("wait_for", ["seconds": .int(3)])
+        #expect(rig.state.web.existingController(tab.id)?.pendingModal == nil)
+    }
+
+    /// An off-screen point (a skip link) is not reported as clicked by a real click (M2).
+    @Test(.timeLimit(.minutes(1))) func anOffscreenElementIsClickedWithAScript() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("offscreen.html")
+        let click = await rig.call("click", ["ref": try rig.ref("Skip to content")])
+        #expect(click.text.contains("script"), "\(click.text)")
+        #expect(await rig.result().contains("skipped"))
+    }
+
+    /// Shutting down answers a dialog held for an agent: a page blocked by it would block its web
+    /// process, which WebKit reuses for other pages of the site.
+    @Test(.timeLimit(.minutes(1))) func shuttingDownAnswersHeldDialogs() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("dialogs.html")
+        await rig.call("click", ["ref": try rig.ref("Delete item")])
+        let tabID = try #require(UUID(uuidString: rig.tab))
+        let controller = try #require(rig.state.web.existingController(tabID))
+        #expect(controller.pendingModal != nil)
+        TestAppState.shutDown(rig.state)
+        #expect(controller.pendingModal == nil)
+    }
 }
 }

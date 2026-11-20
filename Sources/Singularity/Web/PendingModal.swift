@@ -25,10 +25,14 @@ final class PendingModal {
     }
 
     let kind: Kind
+    /// The origin of the frame that asked ("https://pay.example"): what the card shows, and what a
+    /// plugin's per-site switch is checked against.
+    let origin: URL?
     private var finish: ((Answer) -> Void)?
 
-    init(kind: Kind, finish: @escaping (Answer) -> Void) {
+    init(kind: Kind, origin: URL?, finish: @escaping (Answer) -> Void) {
         self.kind = kind
+        self.origin = origin
         self.finish = finish
     }
 

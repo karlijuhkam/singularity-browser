@@ -17,7 +17,7 @@ import WebKit
 /// Hover and drag are not here: `mouseMoved` and `mouseDragged` sent this way reach no page.
 @MainActor
 enum AgentInput {
-    /// Timestamps of the events made here, kept for a few seconds (`isSynthetic`).
+    /// Timestamps of the events made here, kept for ten minutes (`isSynthetic`).
     private static var stamps: [TimeInterval: Date] = [:]
     private static var lastStamp: TimeInterval = 0
     private static var swallower: Any?
@@ -42,7 +42,9 @@ enum AgentInput {
     /// A timestamp no other event has (the system clock, nudged forward if two calls collide).
     private static func stamp() -> TimeInterval {
         let now = Date()
-        stamps = stamps.filter { now.timeIntervalSince($0.value) < 5 }
+        // Kept for minutes: WebKit can hand a key back late (the page's handler opened a dialog
+        // that waited for an answer), and it must still be recognised then.
+        if stamps.count > 500 { stamps = stamps.filter { now.timeIntervalSince($0.value) < 600 } }
         var value = ProcessInfo.processInfo.systemUptime
         if value <= lastStamp { value = lastStamp + 0.000_001 }
         lastStamp = value

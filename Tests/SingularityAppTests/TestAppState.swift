@@ -39,6 +39,7 @@ enum TestAppState {
     /// data folder after the test has removed it (the debounced save and a queued server start both
     /// run later on the main actor).
     static func shutDown(_ state: AppState) {
+        state.web.answerHeldModals()
         state.flushSaves()
         state.mcp?.stop()
         state.hookSocket?.stop()
