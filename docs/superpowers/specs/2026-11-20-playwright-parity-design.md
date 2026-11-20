@@ -218,3 +218,47 @@ step counts for synthetic drag, and how the frame handshake is cached between ca
 
 `CLAUDE.md` (Page agent, approvals, the Assistant), `IDEAS.md` (`evaluate` under "New, not yet
 decided"), `docs/plugins/AUTHORING.md` only if it lists door tools.
+
+## As built (2026-11-20)
+
+Built on branch `playwright-parity` in nine tasks plus one fix pass after a whole-branch review.
+Where this section and the design above differ, this section is right.
+
+- **Tools.** New per-Space tools: `press_key`, `wait_for`, `handle_dialog`, `file_upload`, `hover`,
+  `drag`; `click` has `double`, `type` has `slowly`. Refs accept integers or strings (`"f2:5"`).
+- **Frames.** As designed. Unanswered or late frames read as `iframe "…" (not read)` (one wording).
+  A whole `read_page` or `find` across frames has one deadline, 1.2 s (`AgentFrames.readLimit`);
+  frame calls are raced against it. Introductions are only taken while a read runs, at most 200
+  waiting. One token per iframe element. An iframe inside a plain block is now read (it was
+  skipped as text before).
+- **Real input.** As designed, plus: `<select>` and date/time/color inputs, hidden and off-screen
+  elements get the script click (said in the answer); `slowly` refuses newlines and tabs; keys go
+  through a real click on the field first (keys reach a page only after a trusted click);
+  `submit` presses a real Enter only (no `requestSubmit`). Synthesized key stamps are kept 10
+  minutes, not 2 s.
+- **Waiting states.** Held when an agent *action* runs on the tab (`agentActions`: click, type,
+  press_key, hover, drag, handle_dialog, file_upload) or the tab is an agent's and off screen —
+  not during reads, so the owner's own dialog stays the owner's. The held modal records its
+  frame's origin: the card shows it, and a plugin never sees or answers a modal from a frame of a
+  site switched off for it. The "A dialog is waiting" line is never added to a plugin's refusal.
+  Every page call fails at once while a dialog waits (`PageBlocked`). Quitting answers held
+  dialogs. A cancelled call doesn't dismiss its dialog (the next call sees it; 120 s limit).
+  `file_upload` answers any chooser on the tab, not only one its own connection opened (calls
+  carry no connection id); it always asks and checks navigations afterwards.
+- **press_key** follows the keyboard focus into frames: masked for a password field there, Enter
+  in a frame's form asks as a submission, a plugin is refused in a switched-off frame or when the
+  focused frame can't be identified.
+- **Snapshot.** Select options (20), listbox/menu options, table rows (`row: "a" | "b"`), slider
+  values, `clickable` (onclick or own pointer cursor) and `draggable` refs; `find` gives text
+  matches a ref (for `hover`).
+- **Pop-ups** from an agent action open in the background, marked, named in the answer; their
+  first load is checked by the action's navigation guard.
+- **Assistant 0.5.0:** tool names and lines; a saved `press_key` line names only named keys.
+- **Known limits.** A trusted click gives the page user activation: it may write the clipboard or
+  ask for full screen; WebKit has no public way to refuse these per call. CSS `:hover` menus don't
+  open with `hover` (their items still get the script click). Not tried by hand: a tab on screen
+  in the owner's window (it would take focus), and the Assistant using the new tools.
+- **Deferred minors (owner may decide):** reads are refused while a file chooser waits (a chooser
+  doesn't block the page); switching a Space off doesn't dismiss its held dialog (the 120 s limit
+  does); a page could read a frame token through an `about:blank` child it controls.
+- **Bench.** 17 of 17 bench cases pass through the door on a built bundle (background agent tabs).
