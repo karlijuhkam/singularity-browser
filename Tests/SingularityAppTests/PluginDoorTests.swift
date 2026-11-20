@@ -572,6 +572,44 @@ struct PluginDoorTests {
         #expect(rig.state.space(rig.space.id)?.tab(tab.id) != nil)
     }
 
+    /// A frame on a site the plugin is switched off for: listed as switched off, its content and
+    /// refs never shown, and a guessed frame ref refused.
+    @Test(.timeLimit(.minutes(1))) func aSwitchedOffFrameIsHiddenFromAPlugin() async throws {
+        MainRunLoopGuard.start
+        let bench = try BenchServer.start()
+        defer { bench.stop() }
+        let rig = try await makeRig(mode: "child")
+        defer { tearDown(rig) }
+        let caller = AgentCaller.plugin(id: DoorWorkspace.id, title: DoorWorkspace.title)
+        let program = try #require(rig.manager.programPID(of: DoorWorkspace.id))
+        let toolbox = AgentToolbox(state: rig.state)
+        rig.state.openInNewTab(bench.url("iframe.html"))
+        let tab = try #require(rig.state.selectedSpace?.tabs.last)
+        let id = tab.id.uuidString.lowercased()
+        rig.state.updateSiteSettings(spaceID: rig.space.id, site: "http://127.0.0.1:\(bench.otherPort)") {
+            $0.disabledPlugins.insert(DoorWorkspace.id)
+        }
+        var page = ""
+        for _ in 0..<20 {
+            page = text(await toolbox.call(rig.tool("read_page"), arguments: ["tab_id": .string(id)], client: "x", caller: caller, program: program))
+            if page.contains("switched off") { break }
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        #expect(page.components(separatedBy: "textbox \"Code").count == 2, "only the allowed frame's field: \(page)")
+        #expect(page.contains("iframe (switched off)"), "\(page)")
+        #expect(!page.contains("\(bench.otherPort)/frame-inner"), "\(page)")
+        // The outside agent's view of the same page shows both frames' fields.
+        rig.state.setAgentsEnabled(true, spaceID: rig.space.id)
+        let outside = text(await toolbox.call(rig.tool("read_page"), arguments: ["tab_id": .string(id)], client: "x", caller: .outside))
+        let refs = outside.matches(of: /\[(f\d+:\d+)\] textbox "Code"/).map { String($0.1) }
+        try #require(refs.count == 2, "\(outside)")
+        // The switched-off frame's field (the second), by the outside agent's ref: refused for the plugin.
+        let typed = await toolbox.call(rig.tool("type"), arguments: ["tab_id": .string(id), "ref": .string(refs[1]), "text": "x"],
+                                       client: "x", caller: caller, program: program)
+        #expect(typed.isError == true)
+        #expect(text(typed) == "Door Helper is switched off for this site.", "\(text(typed))")
+    }
+
     /// Item of the final review: a plugin's `read_page` that was in flight (its page loading) when
     /// the owner switched the Space off for the plugin ends refused, as a call to a closed Space,
     /// with nothing from the page.

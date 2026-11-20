@@ -69,6 +69,8 @@ final class WebTabController: NSObject {
     /// whether it may go ahead (it may ask the user first). Catches JavaScript-driven submits and
     /// redirects that couldn't be predicted before the click.
     @ObservationIgnored var agentNavigationGuard: (@MainActor (URL, Bool) async -> Bool)?
+    /// The frames agents have seen in this tab's page (refs `f<N>:`); see `AgentFrames`.
+    @ObservationIgnored let agentFrames = AgentFrames()
     /// Navigations currently waiting for the user's answer (the agent's call waits for these).
     @ObservationIgnored private(set) var pendingNavigationApprovals = 0
 
@@ -120,6 +122,7 @@ final class WebTabController: NSObject {
         webView.isInspectable = true                         // right-click → Inspect Element
 
         observeWebView()
+        AgentFrameRelay.shared.attach(agentFrames, to: webView)
     }
 
     func load(_ url: URL) {
@@ -213,19 +216,24 @@ final class WebTabController: NSObject {
         let isPassword: Bool
     }
 
-    func inspect(ref: Int) async throws -> ElementInfo {
-        let json = try await callPageAgent("inspect(ref)", arguments: ["ref": ref])
+    func inspect(ref: Int, frame: WKFrameInfo? = nil, key: String? = nil) async throws -> ElementInfo {
+        let json = try await callPageAgent("inspect(ref)", arguments: ["ref": ref], frame: frame, key: key)
         return try JSONDecoder().decode(ElementInfo.self, from: Data(json.utf8))
     }
 
     /// Calls a function of the page agent (PageAgentScript) in its isolated world, e.g.
     /// `callPageAgent("click(ref)", arguments: ["ref": 12])`. Returns its string result.
-    func callPageAgent(_ call: String, arguments: [String: Any]) async throws -> String {
+    /// `frame` and `key`: in that frame (`AgentFrames`), and only while it still shows the document
+    /// with that key (else the refs belong to a page that is gone).
+    func callPageAgent(_ call: String, arguments: [String: Any], frame: WKFrameInfo? = nil, key: String? = nil) async throws -> String {
         let body = """
         if (!window.__singularityAgent) throw new Error("This page can't be read (it is not an HTML document, or is still loading).");
+        if (expectedKey !== null && window.__singularityAgent.key !== expectedKey) throw new Error("That frame shows another page now. Call read_page again.");
         return window.__singularityAgent.\(call);
         """
-        let result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: PageAgentScript.world)
+        var arguments = arguments
+        arguments["expectedKey"] = key ?? NSNull()
+        let result = try await webView.callAsyncJavaScript(body, arguments: arguments, in: frame, contentWorld: PageAgentScript.world)
         return result as? String ?? ""
     }
 
@@ -491,6 +499,7 @@ extension WebTabController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if navigation !== errorNavigation { failedURL = nil }
         hasCommittedPage = true
+        agentFrames.reset() // a new main-frame page: frame refs from before mean nothing
         pageCommitted()
         // The tab left the site its console and network entries belong to: they go.
         if captureSite != nil, SiteInfo.site(of: webView.url) != captureSite { clearCapture() }

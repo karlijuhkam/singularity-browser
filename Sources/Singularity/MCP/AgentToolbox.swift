@@ -56,7 +56,7 @@ final class AgentToolbox {
         let name = { (tool: String) in AgentToolName.make(slug: space.slug, tool: tool) }
         let inSpace = "In the “\(space.name)” Space: "
         let tabID: Value = .object(["type": "string", "description": "A tab_id from list_tabs or open."])
-        let ref: Value = .object(["type": "integer", "description": "An element ref from read_page or find, e.g. 12 for [12]."])
+        let ref: Value = .object(["type": ["integer", "string"], "description": "An element ref from read_page or find: 12 for [12], or \"f2:5\" for [f2:5] (inside a frame)."])
         let url: Value = .object(["type": "string", "description": "An absolute http(s) URL."])
 
         // Console and network: only listed while the Space's switch is on (a site needs its own as well).
@@ -223,9 +223,9 @@ final class AgentToolbox {
         case "read_page": return .init(content: [.plain(try await readPage(space, tabID: args.tabID(), record: record))])
         case "find":
             return .init(content: [.plain(try await find(space, tabID: args.tabID(), query: args.string("query"), record: record))])
-        case "click": return .init(content: [.plain(try await click(space, tabID: args.tabID(), ref: args.int("ref"), record: record))])
+        case "click": return .init(content: [.plain(try await click(space, tabID: args.tabID(), ref: args.ref(), record: record))])
         case "type":
-            return .init(content: [.plain(try await type(space, tabID: args.tabID(), ref: args.int("ref"),
+            return .init(content: [.plain(try await type(space, tabID: args.tabID(), ref: args.ref(),
                                                         text: args.string("text"), submit: args.bool("submit") ?? false,
                                                         record: record))])
         case "screenshot": return .init(content: [try await screenshot(space, tabID: args.tabID(), record: record)])
@@ -356,22 +356,23 @@ final class AgentToolbox {
 
     private func readPage(_ space: Space, tabID: UUID, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
-        let outline = try await controller.callPageAgent("snapshot(maxChars)", arguments: ["maxChars": 15_000])
+        let outline = try await controller.agentFrames.snapshot(controller, maxChars: 15_000, allows: frameAllowed(space, record))
         try refuseIfNowOff(controller, space, record) // the page may have moved while it was read
         return UntrustedContent.wrap(outline, source: controller.webView.url?.absoluteString ?? "")
     }
 
     private func find(_ space: Space, tabID: UUID, query: String, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
-        let matches = try await controller.callPageAgent("find(query, 25)", arguments: ["query": query])
+        let matches = try await controller.agentFrames.find(controller, query: query, allows: frameAllowed(space, record))
         try refuseIfNowOff(controller, space, record)
         return UntrustedContent.wrap(matches, source: controller.webView.url?.absoluteString ?? "")
     }
 
-    private func click(_ space: Space, tabID: UUID, ref: Int, record: CallRecord) async throws -> String {
+    private func click(_ space: Space, tabID: UUID, ref: AgentRef, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
+        let target = try refTarget(ref, controller, space, record)
         // Look before acting: does this click submit a form or follow a link elsewhere?
-        let info = try await controller.inspect(ref: ref)
+        let info = try await target.inspect(controller)
         let pageOrigin = AgentApprovalRules.origin(of: controller.webView.url)
         let linkOrigin = AgentApprovalRules.origin(of: info.href.flatMap { URL(string: $0) })
         try await authorize(
@@ -390,7 +391,8 @@ final class AgentToolbox {
         return try await whileNotCancelled(cancellation) {
             // Stopped after it was allowed but before it acts: it doesn't act.
             try self.refuseIfCancelled(cancellation, record)
-            let result = try await controller.callPageAgent("click(ref)", arguments: ["ref": ref])
+            let result = target.shown(try await controller.callPageAgent("click(ref)", arguments: ["ref": target.local],
+                                                                         frame: target.frame, key: target.key))
             // If the click started a navigation, wait for it so the next read sees the new page.
             try? await Task.sleep(for: .milliseconds(300))
             await controller.waitUntilLoaded()
@@ -400,9 +402,10 @@ final class AgentToolbox {
         }
     }
 
-    private func type(_ space: Space, tabID: UUID, ref: Int, text: String, submit: Bool, record: CallRecord) async throws -> String {
+    private func type(_ space: Space, tabID: UUID, ref: AgentRef, text: String, submit: Bool, record: CallRecord) async throws -> String {
         let controller = try await webController(space, tabID, record)
-        let info = try await controller.inspect(ref: ref)
+        let target = try refTarget(ref, controller, space, record)
+        let info = try await target.inspect(controller)
         // Never show or log what goes into a password field.
         let shownText = info.isPassword ? "•••• (\(text.count) characters, password field)" : text
         record.args["text"] = info.isPassword ? "•••• (\(text.count) characters)" : AgentLogStore.clip(text)
@@ -420,8 +423,9 @@ final class AgentToolbox {
 
         return try await whileNotCancelled(cancellation) {
             try self.refuseIfCancelled(cancellation, record)
-            let result = try await controller.callPageAgent("type(ref, text, submit)",
-                                                            arguments: ["ref": ref, "text": text, "submit": submit])
+            let result = target.shown(try await controller.callPageAgent("type(ref, text, submit)",
+                                                                         arguments: ["ref": target.local, "text": text, "submit": submit],
+                                                                         frame: target.frame, key: target.key))
             try? await Task.sleep(for: .milliseconds(submit ? 300 : 50))
             await controller.waitUntilLoaded()
             try self.refuseIfSpaceClosed(space, record)
@@ -613,6 +617,48 @@ final class AgentToolbox {
         return controller
     }
 
+    // MARK: - Frames
+
+    /// Where a ref points: the main frame, or a frame of this tab's page that was introduced
+    /// (`AgentFrames`). Results from a frame show its refs as `[f<N>:<ref>]`.
+    struct RefTarget {
+        let frame: WKFrameInfo?
+        let key: String?
+        let number: Int?
+        let local: Int
+
+        func inspect(_ controller: WebTabController) async throws -> WebTabController.ElementInfo {
+            let info = try await controller.inspect(ref: local, frame: frame, key: key)
+            return WebTabController.ElementInfo(description: shown(info.description), submits: info.submits,
+                                                href: info.href, isPassword: info.isPassword)
+        }
+
+        func shown(_ text: String) -> String {
+            number.map { AgentFrames.prefixRefs(text, frame: $0) } ?? text
+        }
+    }
+
+    func refTarget(_ ref: AgentRef, _ controller: WebTabController, _ space: Space, _ record: CallRecord) throws -> RefTarget {
+        guard let number = ref.frame else { return RefTarget(frame: nil, key: nil, number: nil, local: ref.local) }
+        guard let entry = controller.agentFrames.entry(number) else {
+            throw ToolError("No element with ref \(ref.text) on the current page (it may have changed). Call read_page again.")
+        }
+        // A plugin never acts in a frame of a site the owner switched it off for.
+        if case .plugin(_, let title) = record.caller, siteIsOff(AgentFrames.origin(of: entry.frame), space, record.caller) {
+            throw ToolError(AgentCaller.siteOff(title: title))
+        }
+        return RefTarget(frame: entry.frame, key: entry.key, number: number, local: ref.local)
+    }
+
+    /// For reads across frames: a plugin's connection doesn't see into frames of sites the owner
+    /// switched it off for; an outside agent sees every frame.
+    private func frameAllowed(_ space: Space, _ record: CallRecord) -> (WKFrameInfo) -> Bool {
+        { [weak self] frame in
+            guard let self else { return false }
+            return !self.siteIsOff(AgentFrames.origin(of: frame), space, record.caller)
+        }
+    }
+
     // MARK: - Who may see what
 
     /// The Spaces `caller` gets tools for: agents on (outside), or switched on for the plugin now.
@@ -789,6 +835,11 @@ struct Arguments {
             default: return AgentLogStore.clip(String(describing: value))
             }
         }
+    }
+
+    /// The `ref` argument: `12`, `"12"`, `"[12]"` or a frame ref `"f2:5"`.
+    func ref(_ key: String = "ref") throws -> AgentRef {
+        try AgentRef.parse(values[key])
     }
 
     func tabID() throws -> UUID {

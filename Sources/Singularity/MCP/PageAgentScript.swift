@@ -9,18 +9,69 @@ import WebKit
 /// Refs: each element gets a number the first time it is reported, remembered in a WeakMap for
 /// the life of the page. The same element keeps its ref across calls, even as other parts of the
 /// DOM change. An element that was removed (e.g. re-rendered) gets a new ref when seen again.
+///
+/// Frames: the script runs in every frame (each document has its own refs and a random `key`).
+/// WebKit has no public list of a page's frames, so a parent introduces each child: it posts
+/// `{__singularityAgentFrame: <token>}` to the iframe's window, and the child's listener (added
+/// at document start, so before any of the page's own) swallows that message and reports the
+/// token and its key to the app's `singularityAgentFrame` handler, which only exists in this
+/// world. The handler's `WKScriptMessage.frameInfo` is what `callAsyncJavaScript(in:)` needs to
+/// reach that frame later (`AgentFrames`). The page's own listeners never see the message.
 @MainActor
 enum PageAgentScript {
     static let world = WKContentWorld.world(name: "singularity-agent")
+    /// The message handler, in `world` only, through which frames introduce themselves.
+    static let frameHandlerName = "singularityAgentFrame"
 
     static func install(in configuration: WKWebViewConfiguration) {
-        let script = WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world)
+        let script = WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world)
         configuration.userContentController.addUserScript(script)
+        configuration.userContentController.add(AgentFrameRelay.shared, contentWorld: world, name: frameHandlerName)
     }
 
     static let source = ##"""
     (() => {
       if (window.__singularityAgent) return;
+
+      // ---- frames -------------------------------------------------------------------------
+      // This document's key: refs are only valid in the document that handed them out.
+      const key = (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2) + String(Date.now());
+      // A parent's introduction (see the Swift comment above). Capture phase, added first.
+      window.addEventListener("message", (event) => {
+        const data = event.data;
+        if (!data || typeof data !== "object" || typeof data.__singularityAgentFrame !== "string") return;
+        event.stopImmediatePropagation();
+        try {
+          window.webkit.messageHandlers.singularityAgentFrame.postMessage({ token: data.__singularityAgentFrame, key });
+        } catch (e) {}
+      }, true);
+      const MAX_FRAMES = 50;
+      const frameByToken = new Map(); // token -> WeakRef(iframe element)
+      const newToken = () => ((crypto.randomUUID && crypto.randomUUID()) || String(Math.random()).slice(2));
+      // Asks a child frame to introduce itself to the app under a fresh token.
+      const announce = (el) => {
+        const token = newToken();
+        frameByToken.set(token, new WeakRef(el));
+        try { el.contentWindow && el.contentWindow.postMessage({ __singularityAgentFrame: token }, "*"); } catch (e) {}
+        return token;
+      };
+      const frameLabel = (el) => clean(el.getAttribute("title") || el.getAttribute("aria-label") || el.getAttribute("name")
+        || el.getAttribute("src") || "", 80);
+      const isFrame = (el) => el.tagName === "IFRAME" || el.tagName === "FRAME";
+      // The iframe elements of this document (open shadow roots included), in order.
+      const frameElements = () => {
+        const out = [];
+        const visit = (root) => {
+          for (const el of root.querySelectorAll("*")) {
+            if (isFrame(el)) out.push(el);
+            if (el.shadowRoot) visit(el.shadowRoot);
+          }
+        };
+        if (document.documentElement) visit(document);
+        return out;
+      };
+      // For `find`: introduces this document's visible frames; returns their tokens.
+      const listFrames = () => JSON.stringify(frameElements().filter((el) => !isHidden(el)).slice(0, MAX_FRAMES).map(announce));
 
       // ---- refs ---------------------------------------------------------------------------
       const refToElement = new Map();   // number -> WeakRef(element)
@@ -45,7 +96,7 @@ enum PageAgentScript {
 
       // ---- helpers ------------------------------------------------------------------------
       const SKIP_TAGS = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "META", "LINK", "SVG", "CANVAS"]);
-      const MEANINGFUL = "a[href],button,input,select,textarea,summary,[role],[tabindex],[contenteditable],h1,h2,h3,h4,h5,h6,img[alt]";
+      const MEANINGFUL = "a[href],button,input,select,textarea,summary,[role],[tabindex],[contenteditable],h1,h2,h3,h4,h5,h6,img[alt],iframe,frame";
       const INTERACTIVE_ROLES = new Set(["link", "button", "textbox", "searchbox", "combobox", "listbox", "checkbox",
         "radio", "slider", "switch", "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "spinbutton"]);
       const TEXT_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
@@ -153,6 +204,7 @@ enum PageAgentScript {
       const snapshot = (maxChars) => {
         const lines = [];
         let visited = 0;
+        let framesSeen = 0;
         const LIMIT = 8000;
 
         const walk = (node, depth) => {
@@ -170,6 +222,12 @@ enum PageAgentScript {
 
             const role = roleOf(el);
             const indent = "  ".repeat(depth);
+            if (isFrame(el)) {
+              // The app replaces this line with the frame's own outline (AgentFrames).
+              if (framesSeen++ < MAX_FRAMES) lines.push(`${indent}@@frame ${announce(el)}@@ ${quote(frameLabel(el))}`);
+              else lines.push(`${indent}iframe ${quote(frameLabel(el))} (not read: too many frames)`);
+              continue;
+            }
             if (isInteractive(role)) {
               lines.push(`${indent}[${refFor(el)}] ${role} ${quote(nameOf(el, role))}${extrasOf(el, role)}`);
               continue; // the name already covers the contents
@@ -330,7 +388,7 @@ enum PageAgentScript {
         });
       };
 
-      window.__singularityAgent = Object.freeze({ snapshot, find, click, type, inspect });
+      window.__singularityAgent = Object.freeze({ key, snapshot, find, listFrames, click, type, inspect });
     })();
     """##
 }

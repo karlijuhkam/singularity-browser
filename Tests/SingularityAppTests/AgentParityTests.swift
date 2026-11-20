@@ -80,6 +80,15 @@ extension AppTests {
             throw CancellationError()
         }
 
+        /// Every ref whose line mentions `name`, in page order.
+        func refs(_ name: String) -> [Value] {
+            lastRead.split(separator: "\n").filter { $0.contains("\"\(name)") }.compactMap { line in
+                guard let match = line.firstMatch(of: /\[((?:f\d+:)?\d+)\]/) else { return nil }
+                let text = String(match.1)
+                return Int(text).map { .int($0) } ?? .string(text)
+            }
+        }
+
         /// The page's `RESULT:` line (main frame), read fresh.
         func result() async -> String {
             let page = await read()
@@ -164,6 +173,85 @@ extension AppTests {
         }
         await rig.call("click", ["ref": try rig.ref("Open #1042")])
         #expect(await rig.result().contains("order 1042 opened"))
+    }
+
+    // MARK: - Frames
+
+    @Test(.timeLimit(.minutes(1))) func sameOriginFrameIsReadAndClicked() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("iframe.html")
+        let codes = rig.refs("Code")
+        try #require(codes.count == 2, "\(rig.lastRead)")
+        let type = await rig.call("type", ["ref": codes[0], "text": "XO"])
+        #expect(!type.isError, "\(type.text)")
+        let apply = rig.refs("Apply")
+        try #require(apply.count == 2)
+        await rig.call("click", ["ref": apply[0]])
+        #expect(await rig.read().contains("frame got XO at \(rig.server.port)"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func crossOriginFrameIsReadAndClicked() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("iframe.html")
+        let codes = rig.refs("Code")
+        try #require(codes.count == 2, "\(rig.lastRead)")
+        await rig.call("type", ["ref": codes[1], "text": "XO"])
+        await rig.call("click", ["ref": rig.refs("Apply")[1]])
+        #expect(await rig.read().contains("frame got XO at \(rig.server.otherPort)"), "\(rig.lastRead)")
+        #expect(rig.lastRead.contains("iframe"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func nestedFramesTwoDeep() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("nested.html")
+        let click = await rig.call("click", ["ref": try rig.ref("Leaf button")])
+        #expect(!click.isError, "\(click.text)")
+        #expect(await rig.read().contains("leaf clicked"), "\(rig.lastRead)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func findSearchesFrames() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("iframe.html")
+        let found = await rig.call("find", ["query": "Apply"])
+        #expect(found.text.contains("[f"), "\(found.text)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func manyFramesStayBounded() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("frames-many.html")
+        let started = ContinuousClock.now
+        let page = await rig.read()
+        #expect(ContinuousClock.now - started < .seconds(3))
+        #expect(page.contains("not read"), "\(page.prefix(2000))")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aStaleFrameRefIsRefused() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("iframe.html")
+        let code = rig.refs("Code")[0]
+        let tabID = try #require(UUID(uuidString: rig.tab))
+        let controller = try #require(rig.state.web.existingController(tabID))
+        _ = try await controller.webView.evaluateJavaScript("document.querySelector('iframe').src = 'frame-inner.html?again=1'; 1")
+        try await Task.sleep(for: .milliseconds(800))
+        let type = await rig.call("type", ["ref": code, "text": "late"])
+        #expect(type.isError)
+        #expect(type.text.contains("read_page again"), "\(type.text)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func pageScriptsNeverSeeTheHandshake() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("messages.html")
+        await rig.read()
+        await rig.read()
+        #expect(rig.lastRead.contains("Inner"), "\(rig.lastRead)")
+        #expect(await rig.result().contains("RESULT: none"), "\(rig.lastRead)")
     }
 }
 }
