@@ -1,7 +1,7 @@
 {
   "id": "assistant",
   "name": "Assistant",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A built-in helper you can chat with, running on your own Claude sign-in.",
   "author": "Karli Juhkam",
   "background": "background.ts",

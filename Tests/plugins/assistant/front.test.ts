@@ -61,6 +61,10 @@ test("door names: the last known tool, whatever the slug holds", () => {
   expect(doorName("mcp__singularity__my_work_read_terminal")).toBe("my_work.read_terminal");
   expect(doorName("mcp__singularity__work_answer_question")).toBe("work.answer_question");
   expect(doorName("mcp__singularity__terminals")).toBe("terminals");
+  for (const tool of ["press_key", "wait_for", "handle_dialog", "file_upload", "hover", "drag"]) {
+    expect(doorName(`mcp__singularity__my-work_${tool}`)).toBe(`my-work.${tool}`);
+    expect(doorName(`mcp__singularity__my_work_${tool}`)).toBe(`my_work.${tool}`);
+  }
   // Not ours, or not a tool we know: not guessed at.
   expect(doorName("Bash")).toBeNull();
   expect(doorName("mcp__other__work_read_page")).toBeNull();
@@ -81,6 +85,23 @@ test("every tool line, exactly", () => {
   expect(f("list_spaces", {})).toBe("Looked at your Spaces");
   expect(f("work.read_console", { tab_id: "T1" })).toBe("Read the console of Invoice 42");
   expect(f("work.read_network", { tab_id: "T1" })).toBe("Read the network log of Invoice 42");
+  expect(f("work.press_key", { tab_id: "T1", key: "Escape" })).toBe("Pressed Escape on Invoice 42");
+  // A single character could be part of a password: never named in a saved line.
+  expect(f("work.press_key", { tab_id: "T1", key: "x" })).toBe("Pressed a key on Invoice 42");
+  expect(f("work.wait_for", { tab_id: "T1", text: "Done" })).toBe("Waited on Invoice 42");
+  expect(f("work.handle_dialog", { tab_id: "T1", accept: true })).toBe("Answered a dialog on Invoice 42");
+  expect(f("work.file_upload", { tab_id: "T1", paths: ["/a.pdf"] })).toBe("Chose files on Invoice 42");
+  expect(f("work.hover", { tab_id: "T1", ref: 2 })).toBe("Pointed at something on Invoice 42");
+  expect(f("work.drag", { tab_id: "T1", start_ref: 2, end_ref: 3 })).toBe("Dragged on Invoice 42");
+});
+
+test("the new acting tools may wait for an OK; waiting and pointing don't", () => {
+  for (const line of ["Pressed Escape on Invoice 42", "Answered a dialog on Invoice 42", "Chose files on Invoice 42", "Dragged on Invoice 42"]) {
+    expect(mayWaitForOK(line)).toBe(true);
+  }
+  for (const line of ["Waited on Invoice 42", "Pointed at something on Invoice 42"]) {
+    expect(mayWaitForOK(line)).toBe(false);
+  }
 });
 
 test("another tab is 'a tab'; another Space is named", () => {

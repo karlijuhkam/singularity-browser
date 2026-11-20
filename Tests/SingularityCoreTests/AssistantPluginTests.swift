@@ -19,7 +19,7 @@ private let assistantFolder = URL(filePath: #filePath)
         #expect(manifest.permissions.programs == ["claude"])
         #expect(manifest.permissions.programEnv == ["CLAUDE_CONFIG_DIR", "CLAUDE_AGENT_SDK_VERSION",
                                                     "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SDK_READS_SESSION_STATE"])
-        #expect(manifest.version == "0.4.0")
+        #expect(manifest.version == "0.5.0")
         #expect(manifest.permissions.frontTab && manifest.permissions.browser && manifest.permissions.terminals)
         #expect(manifest.permissions.ask)
         #expect(manifest.permissions.commands.isEmpty && manifest.permissions.network.isEmpty)

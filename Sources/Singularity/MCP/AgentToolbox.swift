@@ -341,7 +341,7 @@ final class AgentToolbox {
             if case .plugin(_, let title) = caller { return AgentCaller.noSpaces(title: title) }
             return "No Spaces are open to agents. The user can allow agents per Space in the Space's settings (right-click the Space → Edit Space…)."
         }
-        var note = "policy: readOnly = you may only look; ask = the user confirms each action (open, navigate, close, click, type) in a dialog; allowAll = no confirmation."
+        var note = "policy: readOnly = you may only look; ask = the user confirms each action (open, navigate, close, click, type, press_key, handle_dialog, drag) in a dialog; allowAll = no confirmation. file_upload always asks."
         // Where an agent learns to build an app (an artifact with a Worker and a database).
         if caller == .outside, let guide = ArtifactApps.guideFile(resources: Self.appGuideResources) {
             note += "\napp_guide: \(guide.path) (read it before building an app; a starter is in the template folder next to it)"

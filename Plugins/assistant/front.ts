@@ -76,7 +76,8 @@ export function chipText(front: FrontTab | null): string {
  */
 const TOOLS = [
   "send_to_terminal", "answer_question", "read_terminal", "read_console", "read_network", "list_spaces",
-  "screenshot", "read_page", "list_tabs", "navigate", "terminals", "click", "close", "find", "open", "type",
+  "handle_dialog", "file_upload", "press_key", "wait_for",
+  "screenshot", "read_page", "list_tabs", "navigate", "terminals", "click", "close", "find", "open", "type", "hover", "drag",
 ];
 const PREFIX = "mcp__singularity__";
 
@@ -130,6 +131,17 @@ export function toolLine(
     case "list_spaces": text = "Looked at your Spaces"; break;
     case "read_console": text = `Read the console of ${title}`; break;
     case "read_network": text = `Read the network log of ${title}`; break;
+    // A single character could be part of a password: the saved line never names it.
+    case "press_key": {
+      const key = typeof input.key === "string" ? input.key : "";
+      text = key.length > 1 && !/^.\+?$/u.test(key) && /^[A-Za-z0-9+]+$/.test(key) ? `Pressed ${shown(key)} on ${title}` : `Pressed a key on ${title}`;
+      break;
+    }
+    case "wait_for": text = `Waited on ${title}`; break;
+    case "handle_dialog": text = `Answered a dialog on ${title}`; break;
+    case "file_upload": text = `Chose files on ${title}`; break;
+    case "hover": text = `Pointed at something on ${title}`; break;
+    case "drag": text = `Dragged on ${title}`; break;
     // Terminal lines never carry a terminal's title, even for the tab in front.
     case "terminals": text = "Looked at the terminals"; break;
     case "read_terminal": text = "Read a terminal's screen"; break;
@@ -146,9 +158,9 @@ export function toolLine(
 
 /**
  * Whether a line may be waiting for the user's OK when it runs long: only the acting tools ask
- * (open, navigate, close, click, type, send to a terminal, answer a question). A slow read is just slow. Judged by the line's own
+ * (open, navigate, close, click, type, press a key, answer a dialog, choose files, drag, send to a terminal, answer a question). A slow read is just slow. Judged by the line's own
  * text, which toolLine writes.
  */
 export function mayWaitForOK(lineText: string): boolean {
-  return /^(Opened |Went to |Closed |Clicked on |Typed on |Sent text to a terminal|Answered a terminal's question)/.test(lineText);
+  return /^(Opened |Went to |Closed |Clicked on |Typed on |Pressed |Answered a dialog |Chose files |Dragged |Sent text to a terminal|Answered a terminal's question)/.test(lineText);
 }
