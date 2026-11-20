@@ -260,7 +260,8 @@ extension AppTests {
         rig.state.setAgentsEnabled(true, spaceID: rig.work.id)
         let outside = rig.toolbox.listTools(for: .outside).map(\.name)
         #expect(outside == [AgentToolName.listSpaces] + ["list_tabs", "open", "navigate", "close", "read_page", "find", "click",
-                                                        "type", "screenshot"].map { "work.\($0)" })
+                                                        "type", "press_key", "hover", "drag", "wait_for", "handle_dialog",
+                                                        "file_upload", "screenshot"].map { "work.\($0)" })
     }
 
     @Test func aPluginWithoutTheTerminalsPermissionGetsNoTerminalTools() async throws {
