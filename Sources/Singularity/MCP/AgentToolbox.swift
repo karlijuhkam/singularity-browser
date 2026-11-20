@@ -131,6 +131,25 @@ final class AgentToolbox {
                      "key": .object(["type": "string", "description": "The key, e.g. \"Escape\", \"ArrowDown\", \"Control+k\"."]),
                  ], required: ["tab_id", "key"]),
                  annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
+            Tool(name: name("handle_dialog"),
+                 description: inSpace + "answer the alert, confirm or prompt dialog waiting on a tab (tool answers say when one is). "
+                    + "accept=true is OK, false is Cancel; prompt_text is the answer to a prompt.",
+                 inputSchema: Self.schema([
+                     "tab_id": tabID,
+                     "accept": .object(["type": "boolean", "description": "OK (true) or Cancel (false)."]),
+                     "prompt_text": .object(["type": "string", "description": "For a prompt dialog: the text to answer with."]),
+                 ], required: ["tab_id", "accept"]),
+                 annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
+            Tool(name: name("file_upload"),
+                 description: inSpace + "give files to the file chooser waiting on a tab (click the page's file field first; tool answers "
+                    + "say when a chooser is waiting). Absolute paths of files on this Mac; an empty list cancels the chooser. "
+                    + "The user always confirms which files go to the page.",
+                 inputSchema: Self.schema([
+                     "tab_id": tabID,
+                     "paths": .object(["type": "array", "items": .object(["type": "string"]),
+                                       "description": "Absolute file paths, at most \(UploadFiles.maxFiles)."]),
+                 ], required: ["tab_id", "paths"]),
+                 annotations: .init(readOnlyHint: false, destructiveHint: true, openWorldHint: true)),
             Tool(name: name("screenshot"),
                  description: inSpace + "take a PNG screenshot of the visible part of the page in a tab.",
                  inputSchema: Self.schema(["tab_id": tabID], required: ["tab_id"]),
@@ -189,6 +208,11 @@ final class AgentToolbox {
         }
         if let tabID = record.tabID { state?.endAgentWork(on: tabID) }
         if let spaceID = record.spaceID { log(name, record: record, result: result, spaceID: spaceID) }
+        // A dialog or file chooser waiting for the agent on this tab: every answer starts with it.
+        if let tabID = record.tabID, let spaceID = record.spaceID, let line = modalLine(tabID, spaceID: spaceID),
+           !(result.isError == true && result.content.contains { if case .text(let text, _, _) = $0 { return text.hasPrefix(line) }; return false }) {
+            return .init(content: [.plain(line)] + result.content, isError: result.isError)
+        }
         return result
     }
 
@@ -244,6 +268,11 @@ final class AgentToolbox {
             return .init(content: [.plain(try await type(space, tabID: args.tabID(), ref: args.ref(),
                                                         text: args.string("text"), slowly: args.bool("slowly") ?? false,
                                                         submit: args.bool("submit") ?? false, record: record))])
+        case "handle_dialog":
+            return .init(content: [.plain(try await handleDialog(space, tabID: args.tabID(), accept: args.bool("accept") ?? false,
+                                                                text: try? args.string("prompt_text"), record: record))])
+        case "file_upload":
+            return .init(content: [.plain(try await fileUpload(space, tabID: args.tabID(), paths: args.strings("paths"), record: record))])
         case "press_key":
             return .init(content: [.plain(try await pressKey(space, tabID: args.tabID(), key: args.string("key"), record: record))])
         case "screenshot": return .init(content: [try await screenshot(space, tabID: args.tabID(), record: record)])
@@ -415,9 +444,9 @@ final class AgentToolbox {
                 result = "Clicked \(info.description)."
             } else {
                 // No box to click (hidden, e.g. a menu that opens on hover): the old script click.
-                result = target.shown(try await controller.callPageAgent("click(ref)", arguments: ["ref": target.local],
-                                                                         frame: target.frame, key: target.key))
-                    + " (The element is not visible; it was clicked with a script.)"
+                let clicked = try await controller.callPageAgentUnlessModal("click(ref)", arguments: ["ref": target.local],
+                                                                             frame: target.frame, key: target.key)
+                result = target.shown(clicked ?? "Clicked \(info.description).") + " (The element is not visible; it was clicked with a script.)"
             }
             // If the click started a navigation, wait for it so the next read sees the new page.
             try? await Task.sleep(for: .milliseconds(300))
@@ -461,9 +490,10 @@ final class AgentToolbox {
                 await AgentInput.typeSlowly(text, in: controller.webView)
                 result = "Typed into \(info.description) one key at a time."
             } else {
-                result = target.shown(try await controller.callPageAgent("type(ref, text, submit)",
-                                                                         arguments: ["ref": target.local, "text": text, "submit": false],
-                                                                         frame: target.frame, key: target.key))
+                let typed = try await controller.callPageAgentUnlessModal("type(ref, text, submit)",
+                                                                           arguments: ["ref": target.local, "text": text, "submit": false],
+                                                                           frame: target.frame, key: target.key)
+                result = target.shown(typed ?? "Typed into \(info.description).")
             }
             if submit {
                 // A real Enter in the field (it needs the keyboard focus a real click gives).
@@ -479,6 +509,80 @@ final class AgentToolbox {
             return UntrustedContent.wrap(result, source: self.shownAddress(controller, space, record)) + "\n"
                 + self.pageSummary(controller, space, record)
         }
+    }
+
+    /// "A dialog is waiting on this tab: …" for a tab with a dialog or chooser held for agents.
+    private func modalLine(_ tabID: UUID, spaceID: UUID) -> String? {
+        guard let state, let space = state.space(spaceID), let modal = state.web.existingController(tabID)?.pendingModal else { return nil }
+        let tool = { AgentToolName.make(slug: space.slug, tool: $0) }
+        let source = state.web.existingController(tabID)?.webView.url?.absoluteString ?? ""
+        func dialog(_ kind: String, _ message: String) -> String {
+            "A dialog is waiting on this tab: \(kind). Answer it with \(tool("handle_dialog")) before anything else on this tab.\n"
+                + UntrustedContent.wrap("Dialog message: \(message)", source: source)
+        }
+        switch modal.kind {
+        case .alert(let message): return dialog("alert", message)
+        case .confirm(let message): return dialog("confirm", message)
+        case .prompt(let message, _): return dialog("prompt", message)
+        case .fileChooser(let multiple, _):
+            return "A file chooser is waiting on this tab (\(multiple ? "several files" : "one file")). "
+                + "Answer it with \(tool("file_upload")) (an empty list cancels it) before anything else on this tab."
+        }
+    }
+
+    private func handleDialog(_ space: Space, tabID: UUID, accept: Bool, text: String?, record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record, allowModal: true)
+        guard let modal = controller.pendingModal, modal.kind.isDialog else { throw ToolError("No dialog is waiting on this tab.") }
+        let message: String
+        switch modal.kind {
+        case .alert(let m), .confirm(let m), .prompt(let m, _): message = m
+        case .fileChooser: message = ""
+        }
+        if let text { record.args["prompt_text"] = AgentLogStore.clip(text) }
+        let pageOrigin = AgentApprovalRules.origin(of: controller.webView.url)
+        try await authorize(
+            AgentActionContext(kind: .dialog, pageOrigin: pageOrigin), space, record,
+            request(record, space, action: accept ? "answer OK to a page's dialog" : "answer Cancel to a page's dialog",
+                    detail: message, url: controller.webView.url, tabTitle: controller.webView.title, text: text))
+        guard controller.pendingModal === modal else { throw ToolError("The dialog is gone (the page moved on or it timed out).") }
+
+        let cancellation = ApprovalCancellation()
+        installNavigationGuard(on: controller, space: space, record: record, pageOrigin: pageOrigin,
+                               approved: Set([pageOrigin].compactMap { $0 }), submissionApproved: false, cancellation: cancellation)
+        defer { controller.agentNavigationGuard = nil }
+        return try await whileNotCancelled(cancellation) {
+            try self.refuseIfCancelled(cancellation, record)
+            modal.answer(accept ? .accept(text: text) : .dismiss)
+            try? await Task.sleep(for: .milliseconds(300))
+            await controller.waitUntilLoaded()
+            try self.refuseIfSpaceClosed(space, record)
+            return (accept ? "Answered OK to the dialog.\n" : "Answered Cancel to the dialog.\n") + self.pageSummary(controller, space, record)
+        }
+    }
+
+    private func fileUpload(_ space: Space, tabID: UUID, paths: [String], record: CallRecord) async throws -> String {
+        let controller = try await webController(space, tabID, record, allowModal: true)
+        guard let modal = controller.pendingModal, case .fileChooser(let multiple, _) = modal.kind else {
+            throw ToolError("No file chooser is waiting on this tab. Click the page's file field first.")
+        }
+        let files: [URL]
+        do { files = try UploadFiles.check(paths, multiple: multiple) } catch let refusal as UploadFiles.Refusal {
+            throw ToolError(refusal.description)
+        }
+        record.args["paths"] = AgentLogStore.clip(files.map(\.path).joined(separator: ", "))
+        let pageOrigin = AgentApprovalRules.origin(of: controller.webView.url)
+        try await authorize(
+            AgentActionContext(kind: .fileUpload, pageOrigin: pageOrigin), space, record,
+            request(record, space, action: files.isEmpty ? "cancel a page's file chooser" : "give files from this Mac to a page",
+                    detail: files.isEmpty ? "No files." : files.map(\.path).joined(separator: "\n"),
+                    url: controller.webView.url, tabTitle: controller.webView.title))
+        guard controller.pendingModal === modal else { throw ToolError("The file chooser is gone (the page moved on or it timed out).") }
+        modal.answer(files.isEmpty ? .dismiss : .files(files))
+        try? await Task.sleep(for: .milliseconds(200))
+        await controller.waitUntilLoaded()
+        try refuseIfSpaceClosed(space, record)
+        let what = files.isEmpty ? "Cancelled the file chooser." : "Gave \(files.count == 1 ? "1 file" : "\(files.count) files") to the page."
+        return what + "\n" + pageSummary(controller, space, record)
     }
 
     private struct FocusInfo: Decodable {
@@ -719,7 +823,7 @@ final class AgentToolbox {
 
     /// A live web view for a web or artifact tab, loading it first if it hasn't been shown yet.
     /// Marks the tab as "agent at work" until the call ends.
-    private func webController(_ space: Space, _ tabID: UUID, _ record: CallRecord) async throws -> WebTabController {
+    private func webController(_ space: Space, _ tabID: UUID, _ record: CallRecord, allowModal: Bool = false) async throws -> WebTabController {
         guard let state else { throw ToolError("Browser is shutting down.") }
         guard let tab = space.tab(tabID) else {
             throw ToolError("No tab \(tabID.uuidString.lowercased()) in this Space. Call \(AgentToolName.make(slug: space.slug, tool: "list_tabs")).")
@@ -734,6 +838,11 @@ final class AgentToolbox {
         }
         guard let controller = await state.liveWebController(tabID: tabID, spaceID: space.id) else {
             throw ToolError("Could not load tab \(tabID.uuidString.lowercased()).")
+        }
+        // A dialog or file chooser waits for the agent: only its answer may touch the page (while a
+        // dialog waits, the page's scripts are blocked). The answer starts with what waits (`call`).
+        if controller.pendingModal != nil, !allowModal {
+            throw ToolError("This tab can't be used until that is answered.")
         }
         await controller.waitUntilLoaded()
         // And again once loaded: the page may have ended up elsewhere (a redirect).
@@ -970,6 +1079,15 @@ struct Arguments {
         let text = try string("tab_id")
         guard let id = UUID(uuidString: text) else { throw AgentToolbox.ToolError("\"\(text)\" is not a valid tab_id.") }
         return id
+    }
+
+    /// A list of strings (`file_upload`'s `paths`).
+    func strings(_ key: String) throws -> [String] {
+        guard case .array(let items)? = values[key] else { throw AgentToolbox.ToolError("Missing list argument \"\(key)\".") }
+        return try items.map {
+            guard let text = $0.stringValue else { throw AgentToolbox.ToolError("\"\(key)\" must be a list of strings.") }
+            return text
+        }
     }
 
     func url(_ key: String) throws -> URL {

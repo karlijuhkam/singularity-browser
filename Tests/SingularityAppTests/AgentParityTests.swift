@@ -349,5 +349,144 @@ extension AppTests {
         let bad = await rig.call("press_key", ["key": "Hyper+q"])
         #expect(bad.isError && bad.text.contains("Unknown modifier"), "\(bad.text)")
     }
+
+    // MARK: - Dialogs and file choosers
+
+    @Test(.timeLimit(.minutes(1))) func confirmIsReportedAndAccepted() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("dialogs.html")
+        let click = await rig.call("click", ["ref": try rig.ref("Delete item")])
+        #expect(click.text.hasPrefix("A dialog is waiting on this tab: confirm"), "\(click.text)")
+        #expect(click.text.contains("Delete item?"))
+        let answer = await rig.call("handle_dialog", ["accept": .bool(true)])
+        #expect(!answer.isError, "\(answer.text)")
+        #expect(await rig.result().contains("confirmed"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func alertAndPromptAnswers() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("dialogs.html")
+        await rig.call("click", ["ref": try rig.ref("Show alert")])
+        await rig.call("handle_dialog", ["accept": .bool(true)])
+        #expect(await rig.result().contains("alert closed"))
+        await rig.call("click", ["ref": try rig.ref("Ask name")])
+        await rig.call("handle_dialog", ["accept": .bool(true), "prompt_text": "Ann"])
+        #expect(await rig.result().contains("prompt: Ann"))
+        await rig.call("click", ["ref": try rig.ref("Delete item")])
+        await rig.call("handle_dialog", ["accept": .bool(false)])
+        #expect(await rig.result().contains("cancelled"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func otherActionsWaitForTheDialog() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("dialogs.html")
+        let ref = try rig.ref("Delete item")
+        await rig.call("click", ["ref": ref])
+        let again = await rig.call("click", ["ref": ref])
+        #expect(again.isError)
+        #expect(again.text.contains("A dialog is waiting"), "\(again.text)")
+        let read = await rig.call("read_page")
+        #expect(read.isError && read.text.contains("handle_dialog"), "\(read.text)")
+        let none = await rig.call("file_upload", ["paths": .array([])])
+        #expect(none.isError && none.text.contains("No file chooser"), "\(none.text)")
+        await rig.call("handle_dialog", ["accept": .bool(true)])
+        let stray = await rig.call("handle_dialog", ["accept": .bool(true)])
+        #expect(stray.isError && stray.text.contains("No dialog"), "\(stray.text)")
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aLateDialogIsReportedOnTheNextCall() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("late-dialog.html")
+        await rig.call("click", ["ref": try rig.ref("Leave later")])
+        try await Task.sleep(for: .milliseconds(700))
+        let next = await rig.call("screenshot")
+        #expect(next.text.contains("Really leave?"), "\(next.text)")
+        await rig.call("handle_dialog", ["accept": .bool(true)])
+        #expect(await rig.result().contains("left"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func anUnansweredDialogTimesOut() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        WebTabController.modalHoldLimit = .seconds(1)
+        defer { WebTabController.modalHoldLimit = .seconds(120) }
+        try await rig.open("dialogs.html")
+        await rig.call("click", ["ref": try rig.ref("Delete item")])
+        try await Task.sleep(for: .milliseconds(1500))
+        #expect(await rig.result().contains("cancelled"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func closingTheTabAnswersTheDialog() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("dialogs.html")
+        await rig.call("click", ["ref": try rig.ref("Delete item")])
+        let tabID = try #require(UUID(uuidString: rig.tab))
+        let controller = try #require(rig.state.web.existingController(tabID))
+        #expect(controller.pendingModal != nil)
+        let close = await rig.call("close")
+        #expect(!close.isError, "\(close.text)")
+        #expect(controller.pendingModal == nil)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func fileUploadAfterClick() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        var shown: [String] = []
+        rig.state.approvals.presenter = { pending in shown.append(pending.request.detail); return .approved }
+        try await rig.open("upload.html")
+        let click = await rig.call("click", ["ref": try rig.ref("Invoice PDF")])
+        #expect(click.text.hasPrefix("A file chooser is waiting on this tab"), "\(click.text)")
+        let file = BenchServer.folder.appending(path: "invoice.pdf").resolvingSymlinksInPath().path
+        let upload = await rig.call("file_upload", ["paths": .array([.string(file)])])
+        #expect(!upload.isError, "\(upload.text)")
+        #expect(shown.count == 1 && shown[0].contains(file), "the card names the file: \(shown)")
+        #expect(await rig.waitForResult("file invoice.pdf").contains("bytes"))
+    }
+
+    @Test(.timeLimit(.minutes(1))) func fileUploadDeniedLeavesNothing() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        rig.state.approvals.presenter = { _ in .denied }
+        try await rig.open("upload.html")
+        await rig.call("click", ["ref": try rig.ref("Invoice PDF")])
+        let file = BenchServer.folder.appending(path: "invoice.pdf").path
+        let upload = await rig.call("file_upload", ["paths": .array([.string(file)])])
+        #expect(upload.isError, "\(upload.text)")
+        let tabID = try #require(UUID(uuidString: rig.tab))
+        #expect(rig.state.web.existingController(tabID)?.pendingModal != nil, "still waiting for an answer")
+        await rig.call("file_upload", ["paths": .array([])]) // cancels: asks too
+    }
+
+    @Test(.timeLimit(.minutes(1))) func fileUploadWithoutChooserIsRefused() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("upload.html")
+        let upload = await rig.call("file_upload", ["paths": .array([.string("/etc/hosts")])])
+        #expect(upload.isError && upload.text.contains("No file chooser"), "\(upload.text)")
+    }
+
+    /// The owner's own tab, not on screen and not an agent's: its file chooser is cancelled at once,
+    /// never an app-modal panel (that would block the whole app; a test would hang here).
+    @Test(.timeLimit(.minutes(1))) func aChooserForATabWithNoWindowNeverOpensAPanel() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        rig.state.openInNewTab(rig.server.url("upload.html"), spaceID: rig.spaceID, target: .nowhere)
+        let tab = try #require(rig.state.space(rig.spaceID)?.tabs.last)
+        #expect(!tab.openedByAgent)
+        let controller = try #require(await rig.state.liveWebController(tabID: tab.id, spaceID: rig.spaceID))
+        try await waitUntil("the page", limit: .seconds(10)) { !controller.webView.isLoading && controller.webView.url != nil }
+        _ = try await controller.callPageAgent("snapshot(maxChars)", arguments: ["maxChars": 2000]) // ref 1: the file field
+        struct Point: Decodable { let x: Double; let y: Double }
+        let point = try JSONDecoder().decode(Point.self, from: Data(try await controller.callPageAgent("point(ref)", arguments: ["ref": 1]).utf8))
+        AgentInput.click(controller.webView, at: CGPoint(x: point.x, y: point.y), double: false)
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(controller.pendingModal == nil)
+        #expect(NSApp.modalWindow == nil)
+    }
 }
 }
