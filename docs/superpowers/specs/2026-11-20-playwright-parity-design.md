@@ -261,4 +261,5 @@ Where this section and the design above differ, this section is right.
 - **Deferred minors (owner may decide):** reads are refused while a file chooser waits (a chooser
   doesn't block the page); switching a Space off doesn't dismiss its held dialog (the 120 s limit
   does); a page could read a frame token through an `about:blank` child it controls.
-- **Bench.** 17 of 17 bench cases pass through the door on a built bundle (background agent tabs).
+- **Bench.** 19 of 19 bench cases (the 17, plus a `<select>` click and a key into a frame's password field) pass through the door on a bundle built from the final commit (background agent tabs).
+- **Tests.** `scripts/test.sh` was red on 2026-11-20 on this branch and on `main` alike: late in a full run every WebKit load in the test process hangs (any data store; no request reaches the server), so 8–9 page-load checks in `PrivateWindowTests` and `WebTabTests` time out. They pass when run on their own. Not caused by this branch; not solved.
