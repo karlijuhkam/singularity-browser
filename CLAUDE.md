@@ -127,7 +127,9 @@ Sources/
                      Space rail, tab list (pinned / folders / open), editors; SpaceFields (name, colour, folder:
                      shared by Edit Space and the welcome flow), ProjectsEditor (Edit Space's project list; ProjectTag),
                      EmojiField, LauncherViews (bottom-row buttons, the two logos as SVG text, the Settings editor),
-                     SidebarChrome (SidebarPeekController, the edge strip, the width strip)
+                     SidebarChrome (SidebarPeekController, the edge strip, the width strip), SidebarDragHandle (click + drag
+                     for rows that select by their own tap: split chips, a terminal with child terminals; never
+                     `.onTapGesture` on a List row, it takes the mouse-down and the row can't be dragged)
     Onboarding/      OnboardingView (the frame: orb, header, footer, layout), OnboardingSteps (the four steps)
     Orb/             OrbShader (the site's orb shader in Metal, compiled at run time), OrbView (MTKView; PNG fallback;
                      OrbAnimation: when it moves)

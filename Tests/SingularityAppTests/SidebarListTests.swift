@@ -241,6 +241,45 @@ extension AppTests {
         #expect(f.space.splitGroup(containing: f.open) != nil)
     }
 
+    /// 0.18.1 could not drag a split's row with the mouse: each chip's `.onTapGesture` took the
+    /// mouse-down from the List. Now each chip carries a `SidebarDragHandle` on top: a left click
+    /// lands in it and selects that chip's tab, a drag carries the whole split.
+    @Test func aSplitsChipsTakeTheClickAndTheDrag() async throws {
+        let f = try await make()
+        defer { finish(f) }
+        let open2 = f.space.sidebarItems(in: .open)[1].tabIDs[0]
+        f.state.mutateSpace(f.state.selectedSpaceID!) { _ = $0.split(open2, beside: f.open, edge: .right) }
+        let groupID = try #require(f.space.splitGroup(containing: f.open)?.id)
+        var handles: [SidebarDragHandleView] = []
+        for _ in 0..<30 {
+            handles = SidebarDragHandleProbe.handles(in: f.window.contentView!)
+            if handles.count == 2 { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(handles.count == 2) // one per chip
+        for handle in handles {
+            // Nothing SwiftUI put on top takes the click first.
+            #expect(SidebarDragHandleProbe.hitView(at: handle) === handle)
+            #expect(SidebarDragHandleProbe.drag(handle) == .split(groupID: groupID))
+        }
+        // A plain click selects that chip's tab (the right-hand chip is the second pane).
+        let right = try #require(handles.max { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX })
+        SidebarDragHandleProbe.click(right)
+        #expect(f.space.selectedTabID == open2)
+        // A drag is not a click as well.
+        f.state.selectTab(f.open)
+        _ = SidebarDragHandleProbe.drag(right)
+        #expect(f.space.selectedTabID == f.open)
+        // Right-clicks and control-clicks are left to the chip's SwiftUI context menu.
+        let rightClick = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                            windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        let controlClick = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: .control, timestamp: 0,
+                                              windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        #expect(!SidebarDragHandleView.takes(rightClick))
+        #expect(!SidebarDragHandleView.takes(controlClick))
+        #expect(SidebarDragHandleView.takes(nil))
+    }
+
     @Test func aSplitsRowDragLeavesThePanesDropLayersDown() async throws {
         MainRunLoopGuard.start
         let pane = PaneContainerView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))

@@ -288,6 +288,36 @@ extension AppTests {
         }
 
         /// The rows and the pane draw, off screen, in a window that never becomes key.
+        /// 0.18.1 could not drag a terminal tab that has child terminals: its row's
+        /// `.onTapGesture` took the mouse-down from the List. Its own line now has a
+        /// `SidebarDragHandle`: a click brings back its own terminal, a drag carries the tab.
+        @Test func aTabWithChildrenCanBeClickedAndDragged() async throws {
+            let f = try makeFixture()
+            defer { tearDown(f) }
+            feedBot(f)
+            f.state.showChild("t3", under: f.bot.id)
+            let window = NSWindow(contentRect: NSRect(x: -5000, y: -5000, width: 270, height: 420),
+                                  styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: SidebarView().environment(f.state).frame(width: 270, height: 420))
+            window.orderFront(nil) // in front of nothing on screen; never made key or active
+            defer { window.orderOut(nil) }
+            var handles: [SidebarDragHandleView] = []
+            for _ in 0..<30 {
+                handles = SidebarDragHandleProbe.handles(in: window.contentView!)
+                if !handles.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            let handle = try #require(handles.first)
+            #expect(handles.count == 1) // the Bot's own line only, not its children's lines
+            #expect(SidebarDragHandleProbe.hitView(at: handle) === handle)
+            #expect(SidebarDragHandleProbe.drag(handle) == .tab(f.bot.id))
+            #expect(f.state.shownChild[f.bot.id] == "t3") // a drag is not a click
+            SidebarDragHandleProbe.click(handle)
+            #expect(f.state.shownChild[f.bot.id] == nil)
+            #expect(f.state.selectedSpace?.selectedTabID == f.bot.id)
+        }
+
         @Test func theRowsAndThePaneDraw() async throws {
             let f = try makeFixture()
             defer { tearDown(f) }

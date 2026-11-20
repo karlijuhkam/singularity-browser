@@ -349,7 +349,7 @@ private struct SidebarItemRow: View {
             // Not tagged: the chips handle selection themselves, so a click on one chip isn't
             // overridden by the List selecting "the row".
             VStack(alignment: .leading, spacing: 1) {
-                SplitRow(tabIDs: tabIDs, space: space)
+                SplitRow(groupID: groupID, tabIDs: tabIDs, space: space)
                 // The child terminals of the split's terminal tabs hang under its row. A child is
                 // on screen whenever its split is, also in a pane that isn't focused.
                 let splitIsShown = space.selectedTabID.map(tabIDs.contains) ?? false
@@ -371,6 +371,7 @@ private struct SidebarItemRow: View {
 /// shows the split with that pane focused.
 private struct SplitRow: View {
     @Environment(AppState.self) private var state
+    let groupID: UUID
     let tabIDs: [UUID]
     let space: Space
 
@@ -415,12 +416,16 @@ private struct SplitRow: View {
                     )
                     .agentBusyBackground(id, cornerRadius: 5)
                     .contentShape(Rectangle())
-                    // Like a tab's own row: brings back its own terminal when its pane shows a
-                    // child terminal (for any other tab it is just selecting it).
-                    .onTapGesture { state.showOwnTerminal(id) }
+                    // A click is like a tab's own row: it brings back its own terminal when its
+                    // pane shows a child terminal (for any other tab it is just selecting it).
+                    // A drag moves the whole split in the sidebar (panes are rearranged by
+                    // dragging their header on the page). Not `.onTapGesture`: it takes the
+                    // mouse-down from the List, and the row could not be dragged at all.
+                    .overlay {
+                        SidebarDragHandle(payload: .split(groupID: groupID), title: tab.displayTitle,
+                                          onClick: { [state] in state.showOwnTerminal(id) })
+                    }
                     .contextMenu { TabContextMenu(tab: tab, space: space) }
-                    // No drag source on a chip: dragging the row moves the whole split in the
-                    // sidebar. Panes are rearranged by dragging their header on the page.
                     // No room for a project tag on a chip, so the tooltip names it.
                     .help(tab.displayTitle + (space.projectName(of: tab).map { " (\($0))" } ?? ""))
                 }

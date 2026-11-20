@@ -124,7 +124,7 @@ final class PaneDragHandleView: NSView, NSDraggingSource {
     }
 
     /// A small rounded label with the tab's title, shown under the cursor while dragging.
-    private static func dragImage(title: String) -> NSImage {
+    static func dragImage(title: String) -> NSImage {
         let text = (title.count > 40 ? String(title.prefix(39)) + "…" : title) as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),

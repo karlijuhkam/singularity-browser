@@ -24,6 +24,15 @@ struct TabWithChildrenRow: View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 4) {
                 TabRow(tab: tab, space: space)
+                    // A click shows the tab's own terminal; a drag moves the tab (onto the page
+                    // for a split, or elsewhere in the sidebar). Not `.onTapGesture`: it takes the
+                    // mouse-down from the List, and the row could not be dragged at all. The
+                    // handle leaves the row's end free for its close button.
+                    .overlay {
+                        SidebarDragHandle(payload: .tab(tab.id), title: tab.displayTitle,
+                                          onClick: { [state, id = tab.id] in state.showOwnTerminal(id) })
+                            .padding(.trailing, 22)
+                    }
                 // Folded away, the tab's row says when something under it waits for the owner.
                 if isCollapsed, children.needsYou { HerdrMarkView(mark: .needsYou) }
                 // Inside the row, at its end: a view hung outside the row's bounds may get no clicks.
@@ -44,8 +53,6 @@ struct TabWithChildrenRow: View {
             // the icons of the rows above and below.
             .background(HerdrRowHighlight(isOn: HerdrShown.ownIsHighlighted(isSelected: isSelected, shownChild: state.shownChild[tab.id]))
                 .padding(.horizontal, -4))
-            .contentShape(Rectangle())
-            .onTapGesture { state.showOwnTerminal(tab.id) }
             if !isCollapsed {
                 HerdrChildList(tab: tab, children: children, tabIsOnScreen: isSelected)
             }
