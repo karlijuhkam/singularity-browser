@@ -597,5 +597,37 @@ extension AppTests {
         }
         #expect(rig.lastRead.contains("Item 50"))
     }
+
+    // MARK: - Pop-ups
+
+    @Test(.timeLimit(.minutes(1))) func agentPopupIsNotSelected() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("newtab.html")
+        let selectedBefore = rig.state.space(rig.spaceID)?.selectedTabID
+        let link = await rig.call("click", ["ref": try rig.ref("Open report in new tab")])
+        #expect(link.text.contains("Opened a new tab tab_id"), "\(link.text)")
+        let button = await rig.call("click", ["ref": try rig.ref("Popup report")])
+        #expect(button.text.contains("Opened a new tab tab_id"), "\(button.text)")
+        let space = try #require(rig.state.space(rig.spaceID))
+        #expect(space.selectedTabID == selectedBefore)
+        let popups = space.tabs.filter { $0.id.uuidString.lowercased() != rig.tab }
+        #expect(popups.count == 2)
+        #expect(popups.allSatisfy { $0.openedByAgent })
+    }
+
+    @Test(.timeLimit(.minutes(1))) func ownerPopupIsStillSelected() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await rig.open("newtab.html")
+        let source = try #require(UUID(uuidString: rig.tab))
+        let controller = try #require(rig.state.web.existingController(source))
+        _ = rig.state.openPopup(from: source, spaceID: rig.spaceID, configuration: controller.webView.configuration,
+                                url: rig.server.url("target.html"))
+        let space = try #require(rig.state.space(rig.spaceID))
+        let popup = try #require(space.tabs.last)
+        #expect(space.selectedTabID == popup.id)
+        #expect(!popup.openedByAgent)
+    }
 }
 }

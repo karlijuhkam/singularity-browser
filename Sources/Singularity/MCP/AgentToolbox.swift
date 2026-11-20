@@ -466,6 +466,7 @@ final class AgentToolbox {
                                cancellation: cancellation)
         defer { controller.agentNavigationGuard = nil }
 
+        let tabsBefore = Set(state?.space(space.id)?.tabs.map(\.id) ?? [])
         return try await whileNotCancelled(cancellation) {
             // Stopped after it was allowed but before it acts: it doesn't act.
             try self.refuseIfCancelled(cancellation, record)
@@ -484,8 +485,16 @@ final class AgentToolbox {
             await controller.waitUntilLoaded()
             try self.refuseIfSpaceClosed(space, record)
             return UntrustedContent.wrap(result, source: self.shownAddress(controller, space, record)) + "\n"
-                + self.pageSummary(controller, space, record)
+                + self.pageSummary(controller, space, record) + self.newTabsNote(space, before: tabsBefore, record: record)
         }
+    }
+
+    /// "Opened a new tab tab_id …" for each tab an action opened (a link with target=_blank, a
+    /// `window.open`): they open in the background, so the agent must be told where they are.
+    private func newTabsNote(_ space: Space, before: Set<UUID>, record: CallRecord) -> String {
+        guard let tabs = state?.space(space.id)?.tabs else { return "" }
+        let new = tabs.filter { !before.contains($0.id) && tabIsVisible($0, in: space, to: record.caller) }
+        return new.map { "\nOpened a new tab tab_id \($0.id.uuidString.lowercased()) (\($0.url?.absoluteString ?? "loading"))." }.joined()
     }
 
     private func type(_ space: Space, tabID: UUID, ref: AgentRef, text: String, slowly: Bool, submit: Bool,
@@ -723,6 +732,7 @@ final class AgentToolbox {
                                cancellation: cancellation)
         defer { controller.agentNavigationGuard = nil }
 
+        let tabsBefore = Set(state?.space(space.id)?.tabs.map(\.id) ?? [])
         return try await whileNotCancelled(cancellation) {
             try self.refuseIfCancelled(cancellation, record)
             AgentInput.press(chord, in: controller.webView)
@@ -730,6 +740,7 @@ final class AgentToolbox {
             await controller.waitUntilLoaded()
             try self.refuseIfSpaceClosed(space, record)
             return "Pressed \(shownKey).\n" + self.pageSummary(controller, space, record)
+                + self.newTabsNote(space, before: tabsBefore, record: record)
         }
     }
 

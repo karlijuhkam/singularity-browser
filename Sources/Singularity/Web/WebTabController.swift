@@ -75,6 +75,8 @@ final class WebTabController: NSObject {
     nonisolated(unsafe) static var modalHoldLimit: Duration = .seconds(120)
     /// The frames agents have seen in this tab's page (refs `f<N>:`); see `AgentFrames`.
     @ObservationIgnored let agentFrames = AgentFrames()
+    /// Set by `guardFirstLoad`: `agentNavigationGuard` is dropped when the first load ends.
+    @ObservationIgnored private var guardsFirstLoadOnly = false
     /// Navigations currently waiting for the user's answer (the agent's call waits for these).
     @ObservationIgnored private(set) var pendingNavigationApprovals = 0
 
@@ -210,6 +212,19 @@ final class WebTabController: NSObject {
                 guard await pause() else { return }
             }
         }
+    }
+
+    /// A pop-up an agent's action opened: its first load is checked like the action's own
+    /// navigations (`AgentToolbox.installNavigationGuard`), then the tab is the owner's as usual.
+    func guardFirstLoad(with check: @escaping @MainActor (URL, Bool) async -> Bool) {
+        agentNavigationGuard = check
+        guardsFirstLoadOnly = true
+    }
+
+    private func firstLoadEnded() {
+        guard guardsFirstLoadOnly else { return }
+        guardsFirstLoadOnly = false
+        agentNavigationGuard = nil
     }
 
     /// Answers the dialog or file chooser waiting for an agent, if there is one.
@@ -503,6 +518,7 @@ extension WebTabController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        firstLoadEnded()
         if let page = Self.page(webView.url) { committedPage = page }
         pageFinished()
         // The error page finishing is not a visit: keep it out of history.
@@ -520,11 +536,13 @@ extension WebTabController: WKNavigationDelegate {
 
     /// The load failed before any content arrived (no connection, unknown host, bad certificate…).
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        firstLoadEnded()
         if navigation === errorNavigation { errorNavigation = nil; return } // never loop on our own page
         showLoadError(error)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        firstLoadEnded()
         if navigation === errorNavigation { errorNavigation = nil }
     }
 
