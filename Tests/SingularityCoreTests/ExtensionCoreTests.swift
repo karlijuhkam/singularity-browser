@@ -199,6 +199,52 @@ enum CRXFixture {
         #expect(!ExtensionRules.isExtensionFile(URL(fileURLWithPath: "/d/a.zip")))
     }
 
+    @Test func adaptationFieldsRoundTrip() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "sg-ext-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ExtensionStateStore(file: dir.appending(path: "extensions-state.json"))
+        var record = ExtensionRecord(id: "local-0123abcd", name: "X", version: "1", source: .file, fingerprint: "f",
+                                     permissions: [], patterns: [], enabledSpaces: [], installedAt: Date(timeIntervalSince1970: 1))
+        record.adaptation = 1
+        record.adaptedFingerprint = "g"
+        record.adaptationSummary = CompatSummary(standIns: ["storage.managed"], backgroundPage: true, recipe: "1Password")
+        var plain = record
+        plain.adaptation = nil
+        plain.adaptedFingerprint = nil
+        plain.adaptationSummary = nil
+        try store.save(["a": record, "b": plain])
+        let loaded = store.loadSettingAsideCorrupt().records
+        #expect(loaded["a"] == record)
+        #expect(loaded["b"] == plain)
+        let text = try String(contentsOf: store.file, encoding: .utf8)
+        #expect(text.components(separatedBy: "adaptedFingerprint").count == 2)
+        let broken = #"{"x": {"id": "local-0123abcd", "fingerprint": "f", "adaptation": 1, "adaptationSummary": 5}}"#
+        try Data(broken.utf8).write(to: store.file)
+        let tolerant = try #require(store.loadSettingAsideCorrupt().records["x"])
+        #expect(tolerant.adaptation == 1)
+        #expect(tolerant.adaptationSummary == nil)
+        #expect(tolerant.adaptedFingerprint == nil)
+    }
+
+    @Test func adaptationSteps() {
+        var record = ExtensionRecord(id: "local-0123abcd", name: "X", version: "1", source: .file, fingerprint: "f",
+                                     permissions: [], patterns: [], enabledSpaces: [])
+        #expect(ExtensionRules.adaptationStep(record, adaptedFingerprintNow: nil, adapterVersion: 2) == .rebuild)
+        record.adaptation = 1
+        #expect(ExtensionRules.adaptationStep(record, adaptedFingerprintNow: nil, adapterVersion: 2) == .rebuild)
+        record.adaptation = 2
+        #expect(ExtensionRules.adaptationStep(record, adaptedFingerprintNow: nil, adapterVersion: 2) == .original)
+        record.adaptedFingerprint = "g"
+        #expect(ExtensionRules.adaptationStep(record, adaptedFingerprintNow: "g", adapterVersion: 2) == .adapted)
+        #expect(ExtensionRules.adaptationStep(record, adaptedFingerprintNow: "h", adapterVersion: 2) == .rebuild)
+        #expect(ExtensionRules.adaptationStep(record, adaptedFingerprintNow: nil, adapterVersion: 2) == .rebuild)
+        #expect(ExtensionRules.afterFailedRebuild(record, adaptedFingerprintNow: "g") == .adapted)
+        #expect(ExtensionRules.afterFailedRebuild(record, adaptedFingerprintNow: "h") == nil)
+        #expect(ExtensionRules.afterFailedRebuild(record, adaptedFingerprintNow: nil) == nil)
+        record.adaptedFingerprint = nil
+        #expect(ExtensionRules.afterFailedRebuild(record, adaptedFingerprintNow: nil) == nil)
+    }
+
     @Test func versionsAndWidening() {
         #expect(ExtensionRules.isNewer("4.9.136", than: "4.9.135"))
         #expect(ExtensionRules.isNewer("2026.1117.1", than: "2026.1116.1650"))

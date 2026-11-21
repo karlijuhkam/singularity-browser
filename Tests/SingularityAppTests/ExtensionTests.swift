@@ -35,11 +35,67 @@ extension AppTests {
     ]
 
     static func writeExtension(to folder: URL, changing: Bool = false) throws {
+        try write(files, to: folder)
+    }
+
+    static func write(_ files: [String: String], to folder: URL) throws {
         for (name, text) in files {
             let url = folder.appending(path: name)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try text.write(to: url, atomically: true, encoding: .utf8)
         }
+    }
+
+    static let webSocketID = "local-0f0f0f0f"
+
+    /// A fixture that needs adapting: its module service worker opens a WebSocket in a file it
+    /// imports (hangs WebKit's service-worker background) and reads `storage.managed` (a member
+    /// WebKit lacks). Its content script asks the background until the socket is open.
+    static func webSocketFiles(port: Int) -> [String: String] {
+        [
+            "manifest.json": """
+            {"manifest_version":3,"name":"SG WS Fixture","version":"1.0",
+             "background":{"service_worker":"bg.js","type":"module"},
+             "content_scripts":[{"matches":["http://127.0.0.1/*"],"js":["cs.js"],"run_at":"document_end"}],
+             "permissions":["storage"]}
+            """,
+            "net.js": """
+            let socketState = "none";
+            export function state() { return socketState; }
+            export function open() {
+              const socket = new WebSocket("ws://127.0.0.1:\(port)/ws");
+              socketState = "connecting";
+              socket.onopen = () => { socketState = "open"; };
+              socket.onerror = () => { socketState = "error"; };
+              globalThis.keepSocket = socket;
+            }
+            """,
+            "bg.js": """
+            import { open, state } from "./net.js";
+            open();
+            chrome.runtime.onMessage.addListener((m, sender, reply) => {
+              (async () => {
+                let managed;
+                try { managed = typeof (await chrome.storage.managed.get()); } catch (e) { managed = "err:" + e; }
+                reply({ ws: state(), managed });
+              })();
+              return true;
+            });
+            """,
+            "cs.js": """
+            (async () => {
+              for (let i = 0; i < 60; i++) {
+                try {
+                  const r = await chrome.runtime.sendMessage({ q: 1 });
+                  document.documentElement.dataset.sgWs = r.ws;
+                  document.documentElement.dataset.sgManaged = r.managed;
+                  if (r.ws === "open") return;
+                } catch (e) { document.documentElement.dataset.sgWs = "err:" + e; }
+                await new Promise(done => setTimeout(done, 250));
+              }
+            })();
+            """,
+        ]
     }
 
     /// A local site: `/` is a page that loads `/blocked.js` (which the extension's rule blocks).
@@ -55,7 +111,21 @@ extension AppTests {
                 os._exit(0)
             threading.Thread(target=watch, daemon=True).start()
             class H(http.server.BaseHTTPRequestHandler):
+                protocol_version = "HTTP/1.1"
                 def do_GET(self):
+                    if self.path.startswith("/ws"):
+                        # A WebSocket that completes its handshake and stays open.
+                        import base64, hashlib
+                        key = self.headers.get("Sec-WebSocket-Key", "") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                        self.send_response(101)
+                        self.send_header("Upgrade", "websocket"); self.send_header("Connection", "Upgrade")
+                        self.send_header("Sec-WebSocket-Accept", base64.b64encode(hashlib.sha1(key.encode()).digest()).decode())
+                        self.end_headers(); self.wfile.flush()
+                        try:
+                            while self.rfile.read(1): pass
+                        except Exception: pass
+                        self.close_connection = True
+                        return
                     if self.path.startswith("/blocked.js"): body, ct = "window.blockedLoaded = true;", "text/javascript"
                     else: body, ct = "<!doctype html><title>page</title><p>hello</p><script src='/blocked.js'></script><script>document.documentElement.dataset.blocked = window.blockedLoaded ? 'loaded' : 'blocked'</script>", "text/html"
                     data = body.encode()
@@ -78,7 +148,7 @@ extension AppTests {
     @MainActor final class Rig {
         let root = TestAppState.makeRoot()
         let site: Site
-        let state: AppState
+        var state: AppState
         let work: UUID
         let home: UUID
         let workTab: UUID
@@ -87,7 +157,7 @@ extension AppTests {
         /// Two Spaces, a web tab of the fixture site in each; the extension installed and switched
         /// on in "Work" only (unless `installed` is false). `changeAfterApproval` edits a file after
         /// the fingerprint was taken.
-        init(installed: Bool = true, changeAfterApproval: Bool = false) throws {
+        init(installed: Bool = true, changeAfterApproval: Bool = false, webSocketFixture: Bool = false) throws {
             MainRunLoopGuard.start
             site = try Site()
             let paths = Paths(root: root)
@@ -101,7 +171,14 @@ extension AppTests {
             try store.save(workSpace)
             try store.save(homeSpace)
             try store.save(AppStateFile(spaceOrder: [workSpace.id, homeSpace.id], selectedSpaceID: workSpace.id))
-            if installed {
+            if webSocketFixture {
+                let folder = paths.extensionsDirectory.appending(path: ExtensionTests.webSocketID)
+                try ExtensionTests.write(ExtensionTests.webSocketFiles(port: site.port), to: folder)
+                let record = ExtensionRecord(id: ExtensionTests.webSocketID, name: "SG WS Fixture", version: "1.0", source: .file,
+                                             fingerprint: try PluginFingerprint.compute(folder: folder), permissions: ["storage"],
+                                             patterns: ["http://127.0.0.1/*"], enabledSpaces: [workSpace.id])
+                try ExtensionStateStore(file: paths.extensionStateFile).save([record.id: record])
+            } else if installed {
                 let folder = paths.extensionsDirectory.appending(path: ExtensionTests.extensionID)
                 try ExtensionTests.writeExtension(to: folder)
                 let fingerprint = try PluginFingerprint.compute(folder: folder)
@@ -128,6 +205,15 @@ extension AppTests {
             controller.reload()
             try await Task.sleep(for: .milliseconds(200))
             try await waitUntil("the reload", limit: .seconds(10)) { !controller.webView.isLoading }
+        }
+
+        /// Quits this app state, makes `change` while nothing runs, and starts a new one on the same
+        /// folder (a relaunch).
+        func relaunchAfter(_ change: () throws -> Void) async throws {
+            TestAppState.shutDown(state)
+            try change()
+            state = TestAppState.make(root: root)
+            try await waitUntil("extensions ready", limit: .seconds(20)) { state.extensions.isReady }
         }
 
         func tearDown() {
@@ -354,6 +440,157 @@ extension AppTests {
         rig.state.deleteSpace(rig.work)
         try await waitUntil("the controller to go", limit: .seconds(10)) { !rig.state.extensions.hasController(rig.work) }
         #expect(rig.state.extensions.records[Self.extensionID]?.enabledSpaces.isEmpty == true)
+    }
+
+    // MARK: - Chrome compatibility (spec 2026-11-21)
+
+    /// An extension whose service worker opens a WebSocket and reads a member WebKit lacks: adapted
+    /// at launch (no sheet), its background runs as a page, connects, and answers its content script.
+    @Test(.timeLimit(.minutes(1))) func webSocketExtensionIsAdaptedAndConnects() async throws {
+        let rig = try Rig(webSocketFixture: true)
+        defer { rig.tearDown() }
+        try await waitUntil("extensions ready", limit: .seconds(20)) { rig.state.extensions.isReady }
+        #expect(rig.state.extensions.statuses[Self.webSocketID] == .ready)
+        let record = try #require(rig.state.extensions.records[Self.webSocketID])
+        #expect(record.adaptation == CompatAdapter.version)
+        #expect(record.adaptationSummary == CompatSummary(standIns: ["storage.managed"], backgroundPage: true, recipe: nil))
+        let adapted = rig.state.extensions.adaptedFolder(of: Self.webSocketID)
+        #expect(record.adaptedFingerprint == (try? PluginFingerprint.compute(folder: adapted)))
+        #expect(FileManager.default.fileExists(atPath: adapted.appending(path: CompatAdapter.backgroundPageName).path))
+        #expect(rig.state.extensions.loadFolder(of: Self.webSocketID) == adapted)
+        // The original is untouched and still the approved one.
+        let original = rig.state.extensions.folder(of: Self.webSocketID)
+        #expect(record.fingerprint == (try? PluginFingerprint.compute(folder: original)))
+
+        let page = try await rig.page(rig.workTab, rig.work)
+        _ = await Self.eventually("the background's socket", limit: .seconds(20)) { await Self.attribute(page, "sgWs") == "open" }
+        #expect(await Self.attribute(page, "sgManaged") == "object")
+    }
+
+    /// An extension that needs nothing is checked once and loads from its original folder.
+    @Test(.timeLimit(.minutes(1))) func plainExtensionLoadsFromOriginal() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await waitUntil("extensions ready", limit: .seconds(10)) { rig.state.extensions.isReady }
+        let record = try #require(rig.state.extensions.records[Self.extensionID])
+        #expect(record.adaptation == CompatAdapter.version)
+        #expect(record.adaptedFingerprint == nil)
+        #expect(record.adaptationSummary == nil)
+        #expect(!FileManager.default.fileExists(atPath: rig.state.extensions.adaptedFolder(of: Self.extensionID).path))
+        #expect(rig.state.extensions.loadFolder(of: Self.extensionID) == rig.state.extensions.folder(of: Self.extensionID))
+    }
+
+    /// A file of the adapted copy changed on disk: never loaded, rebuilt from the original at launch.
+    @Test(.timeLimit(.minutes(1))) func changedAdaptedCopyIsRebuilt() async throws {
+        let rig = try Rig(webSocketFixture: true)
+        defer { rig.tearDown() }
+        try await waitUntil("extensions ready", limit: .seconds(20)) { rig.state.extensions.isReady }
+        let fingerprint = try #require(rig.state.extensions.records[Self.webSocketID]?.adaptedFingerprint)
+        let file = rig.state.extensions.adaptedFolder(of: Self.webSocketID).appending(path: "bg.js")
+        let good = try String(contentsOf: file, encoding: .utf8)
+        try await rig.relaunchAfter { try "/* other code */".write(to: file, atomically: true, encoding: .utf8) }
+        #expect(try String(contentsOf: file, encoding: .utf8) == good)
+        #expect(rig.state.extensions.records[Self.webSocketID]?.adaptedFingerprint == fingerprint)
+        #expect(rig.state.extensions.statuses[Self.webSocketID] == .ready)
+        _ = try await rig.page(rig.workTab, rig.work)
+        #expect(rig.state.extensions.loadedIDs(in: rig.work) == [Self.webSocketID])
+    }
+
+    /// A newer adapter that fails: the old copy keeps running (and Settings says so); with no usable
+    /// copy the extension is paused.
+    @Test(.timeLimit(.minutes(1))) func failedRebuildKeepsTheOldCopy() async throws {
+        let rig = try Rig(webSocketFixture: true)
+        defer { rig.tearDown(); ExtensionCenter.testAdapter = nil }
+        try await waitUntil("extensions ready", limit: .seconds(20)) { rig.state.extensions.isReady }
+        ExtensionCenter.testAdapter = { _, _, _ in throw CompatAdapter.Failure.permissionsChanged }
+        let stateFile = Paths(root: rig.root).extensionStateFile
+        try await rig.relaunchAfter {
+            var records = ExtensionStateStore(file: stateFile).loadSettingAsideCorrupt().records
+            records[Self.webSocketID]?.adaptation = 0
+            try ExtensionStateStore(file: stateFile).save(records)
+        }
+        #expect(rig.state.extensions.statuses[Self.webSocketID] == .ready)
+        #expect(rig.state.extensions.adaptNotes[Self.webSocketID] == "Couldn't be adapted by this version of Singularity; the previous adaptation is running.")
+        _ = try await rig.page(rig.workTab, rig.work)
+        #expect(rig.state.extensions.loadedIDs(in: rig.work) == [Self.webSocketID])
+
+        let adapted = rig.state.extensions.adaptedFolder(of: Self.webSocketID)
+        try await rig.relaunchAfter { try FileManager.default.removeItem(at: adapted) }
+        #expect(rig.state.extensions.statuses[Self.webSocketID] == .cannotAdapt)
+        _ = try await rig.page(rig.workTab, rig.work)
+        #expect(rig.state.extensions.loadedIDs(in: rig.work).isEmpty)
+    }
+
+    /// An automatic update whose new version can't be adapted is dropped; the old one keeps running.
+    @Test(.timeLimit(.minutes(1))) func failedUpdateKeepsTheOldVersion() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        try await waitUntil("extensions ready", limit: .seconds(10)) { rig.state.extensions.isReady }
+        let source = rig.root.appending(path: "v2")
+        var files = Self.files
+        files["manifest.json"] = files["manifest.json"]!.replacingOccurrences(of: #""version":"1.0""#, with: #""version":"2.0""#)
+        try Self.write(files, to: source)
+        let install = Paths(root: rig.root).extensionInstallDirectory
+        let staged = try ExtensionInstaller.stage(source, installDirectory: install)
+        rig.state.extensions.adapter = { _, _, _ in throw CompatAdapter.Failure.permissionsChanged }
+        let current = try #require(rig.state.extensions.records[Self.extensionID])
+        try await rig.state.extensions.installUpdate(staged, current: current)
+        #expect(rig.state.extensions.records[Self.extensionID]?.version == "1.0")
+        #expect(rig.state.extensions.adaptNotes[Self.extensionID] == "Version 2.0 couldn't be adapted; version 1.0 is running.")
+        #expect(!FileManager.default.fileExists(atPath: staged.stage.path))
+        #expect(rig.state.extensions.pending == nil)
+        _ = try await rig.page(rig.workTab, rig.work)
+        #expect(rig.state.extensions.loadedIDs(in: rig.work) == [Self.extensionID])
+    }
+
+    /// Opt-in (`SG_REAL_CRX=<path to 1Password's .crx>:aeblfdkhhhdcdjpifhhbdiojplfjncoa`; no network):
+    /// the real 1Password goes through Add Extension…, is adapted with its recipe, installs into a
+    /// Space, and its background page loads without errors and answers its popup.
+    @Test(.timeLimit(.minutes(2))) func realOnePasswordAdapts() async throws {
+        guard let spec = ProcessInfo.processInfo.environment["SG_REAL_CRX"] else { return }
+        let parts = spec.split(separator: ":").map(String.init)
+        guard parts.count == 2, parts[1] == CompatRecipe.onePassword.id else { return }
+        let rig = try Rig(installed: false)
+        defer { rig.tearDown() }
+        try await waitUntil("extensions ready", limit: .seconds(10)) { rig.state.extensions.isReady }
+        rig.state.extensions.add(file: URL(fileURLWithPath: parts[0]), fromSpace: rig.work)
+        try await waitUntil("the sheet", limit: .seconds(60)) { rig.state.extensions.pending != nil }
+        let pending = try #require(rig.state.extensions.pending)
+        guard case .adapted(_, let summary) = pending.adaptation else {
+            Issue.record("not adapted: \(pending.adaptation)")
+            return
+        }
+        #expect(summary.recipe == "1Password")
+        #expect(summary.backgroundPage)
+        let spikeMembers: Set<String> = ["action.getUserSettings", "permissions.addHostAccessRequest", "permissions.removeHostAccessRequest",
+                                         "runtime.onMessageExternal", "runtime.onSuspend", "runtime.requestUpdateCheck", "storage.managed",
+                                         "webNavigation.onCreatedNavigationTarget", "webRequest.onAuthRequired", "webRequest.onBeforeRedirect",
+                                         "windows.onCreated", "windows.onFocusChanged"]
+        #expect(spikeMembers.isSubset(of: Set(summary.standIns)))
+        let staticErrors = Set(pending.webExtension.errors.map(\.localizedDescription))
+        await rig.state.extensions.approve(pending, spaces: [rig.work])
+        let id = CompatRecipe.onePassword.id
+        #expect(rig.state.extensions.statuses[id] == .ready)
+        _ = try await rig.page(rig.workTab, rig.work)
+        let context = try #require(rig.state.extensions.context(id, in: rig.work))
+        let loadError: Error? = await withCheckedContinuation { done in context.loadBackgroundContent { done.resume(returning: $0) } }
+        #expect(loadError == nil)
+        try await Task.sleep(for: .seconds(5))
+        // What the spike's working copy also reports (checked 2026-11-21: same list, and sign-in,
+        // fill and passkeys worked with it): the test page's port in a match pattern, native
+        // messaging refused, and core calls made before its WASM finished loading. What must not be
+        // there are the errors of a missing API.
+        let runtimeErrors = context.errors.map(\.localizedDescription).filter { !staticErrors.contains($0) }
+        let missingAPI = runtimeErrors.filter { ["TypeError", "ReferenceError", "is not a function", "undefined is not an object", "clients"].contains(where: $0.contains) }
+        #expect(missingAPI.isEmpty, "\(missingAPI)")
+
+        // The popup renders from its bundle (without an account it stays at its first screen).
+        let configuration = try #require(context.webViewConfiguration)
+        let popup = WKWebView(frame: NSRect(x: 0, y: 0, width: 400, height: 600), configuration: configuration)
+        popup.load(URLRequest(url: context.baseURL.appending(path: "popup/index.html")))
+        _ = await Self.eventually("the popup", limit: .seconds(30)) {
+            ((try? await popup.evaluateJavaScript("document.querySelectorAll('#root *').length")) as? Int ?? 0) > 20
+        }
     }
 }
 }

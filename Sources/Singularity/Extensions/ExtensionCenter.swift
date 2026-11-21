@@ -48,9 +48,12 @@ final class ExtensionCenter: NSObject {
     private(set) var adaptNotes: [String: String] = [:]
 
     /// Builds adapted copies (`CompatAdapter.adapt`); tests replace it to make adapting fail.
-    @ObservationIgnored var adapter: @Sendable (URL, URL, String) throws -> CompatSummary? = { original, into, id in
+    @ObservationIgnored var adapter: @Sendable (URL, URL, String) throws -> CompatSummary? = ExtensionCenter.testAdapter ?? { original, into, id in
         try CompatAdapter.adapt(original: original, into: into, extensionID: id)
     }
+    /// Tests only: the adapter a new `ExtensionCenter` starts with (it adapts at launch, before a
+    /// test could set `adapter`).
+    static var testAdapter: (@Sendable (URL, URL, String) throws -> CompatSummary?)?
     /// The extensions WebKit loads from their adapted copy (`extensions-adapted/<id>/`).
     @ObservationIgnored private var loadsAdapted: Set<String> = []
 
