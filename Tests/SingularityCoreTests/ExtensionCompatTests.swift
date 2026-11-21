@@ -5,7 +5,7 @@ import Testing
 
 /// The source analysis behind `CompatAdapter`: which uses of Chrome APIs WebKit lacks are real code.
 @Suite struct CompatSourceTests {
-    static let lead = "Object(globalThis.__sg||chrome)"
+    static let lead = "Object(globalThis.__sg?.sgCompat&&globalThis.__sg||chrome)"
 
     @Test func rewritesEachListedMember() {
         for (ns, member) in CompatMembers.missing {
@@ -13,7 +13,7 @@ import Testing
             #expect(chrome.text == "\(Self.lead).\(ns).\(member).addListener(f)")
             #expect(chrome.members == ["\(ns).\(member)"])
             let browser = CompatSource.rewrite("browser.\(ns).\(member)")
-            #expect(browser.text == "Object(globalThis.__sg||browser).\(ns).\(member)")
+            #expect(browser.text == "Object(globalThis.__sg?.sgCompat&&globalThis.__sg||browser).\(ns).\(member)")
         }
     }
 
@@ -54,6 +54,26 @@ import Testing
                      "return/x/.test(y)?chrome.storage.managed:0", "o={a:{}}\nchrome.storage.managed"] {
             #expect(CompatSource.rewrite(text).members == ["storage.managed"], "\(text)")
         }
+    }
+
+    @Test func reviewCases() throws {
+        let lead = "Object(globalThis.__sg?.sgCompat&&globalThis.__sg||"
+        #expect(CompatSource.rewrite("self.chrome.runtime.onSuspend").text == lead + "self.chrome).runtime.onSuspend")
+        #expect(CompatSource.rewrite("globalThis.chrome.storage.managed").text == lead + "globalThis.chrome).storage.managed")
+        #expect(CompatSource.rewrite("window?.chrome?.runtime?.onSuspend").text == lead + "window?.chrome)?.runtime?.onSuspend")
+        #expect(CompatSource.rewrite("a.self.chrome.runtime.onSuspend").members.isEmpty)
+        #expect(CompatSource.usedNamespaces("globalThis.chrome.idle.queryState()") == ["idle"])
+        #expect(CompatSource.rewrite("x=i++/2;s=\"/\";chrome.storage.managed.get()").members == ["storage.managed"])
+        #expect(CompatSource.rewrite("x=i--/2;t=\"chrome.runtime.onSuspend\"").members.isEmpty)
+        #expect(CompatSource.rewrite("this.#chrome.storage.managed").members.isEmpty)
+        #expect(CompatSource.rewrite("f(...chrome.storage.managed)").text == "f(..." + lead + "chrome).storage.managed)")
+        #expect(CompatSource.rewrite("\u{FEFF}chrome.runtime.onSuspend").members == ["runtime.onSuspend"])
+        // A page's DOM-named `__sg` (here: anything without `sgCompat`) is never used.
+        let js = try #require(JSContext())
+        js.evaluateScript("var __sg = {}; var chrome = {runtime:{onSuspend:{addListener(){ globalThis.ok = 1 }}}};")
+        js.evaluateScript(CompatSource.rewrite("chrome.runtime.onSuspend.addListener(f)").text.replacingOccurrences(of: "(f)", with: "(0)"))
+        #expect(js.exception == nil)
+        #expect(js.evaluateScript("ok")?.toInt32() == 1)
     }
 
     @Test func divisionIsCode() {
@@ -156,7 +176,7 @@ import Testing
         #expect(background["type"] as? String == "module")
         #expect(try f.read("sg-worker.js") == "import \"/sg-compat.js\";\nimport \"./bg.js\";\n")
         #expect(try f.read("sg-compat.js") == CompatStandIns.script)
-        #expect(try f.read("cs.js") == "Object(globalThis.__sg||chrome).storage.managed.get().then(() => {})")
+        #expect(try f.read("cs.js") == "\(CompatSourceTests.lead).storage.managed.get().then(() => {})")
         #expect(try f.read("main.js") == "window.x = 1")
         #expect(m["permissions"] as? [String] == ["storage"])
     }
@@ -252,10 +272,34 @@ import Testing
         }
     }
 
+    @Test func reviewCases() throws {
+        let unreadable = try Folder(["manifest.json": "{ // a comment\n }", "bg.js": "chrome.storage.managed"])
+        #expect(try unreadable.adapt() == nil)
+        let clash = try Folder(["manifest.json": Self.manifest(background: #"{"service_worker":"bg.js"}"#),
+                                "bg.js": "chrome.storage.managed", "SG-Compat.js": "x"])
+        #expect(throws: CompatAdapter.Failure.nameTaken("sg-compat.js")) { try clash.adapt() }
+        let module = try Folder(["manifest.json": Self.manifest(background: #"{"service_worker":"bg.mjs","type":"module"}"#),
+                                 "bg.mjs": "import './n.mjs'", "n.mjs": "new WebSocket(u)"])
+        #expect(try module.adapt()?.backgroundPage == true)
+        #expect(CompatAdapter.script("a\"b<c>&.js", module: false) == #"<script src="a&quot;b&lt;c&gt;&amp;.js"></script>"#)
+    }
+
     @Test func summaryText() {
         #expect(CompatSummary(standIns: ["a", "b", "c"], backgroundPage: true, recipe: nil).text
                 == "Singularity adapts this extension to run here: stand-ins for 3 Chrome features, background as a page.")
         #expect(CompatSummary(standIns: ["a"], backgroundPage: false, recipe: nil).short == "stand-ins for 1 Chrome feature")
+    }
+
+    @Test func standInsIgnoreANamedElement() throws {
+        // `<div id="__sg">` puts `__sg` on the window's prototype chain, not as its own property.
+        let js = try #require(JSContext())
+        js.evaluateScript("""
+        Object.getPrototypeOf(globalThis).__sg = { element: true };
+        var chrome = { runtime: { id: "x", getManifest() { return {} } } };
+        """)
+        js.evaluateScript(CompatStandIns.script)
+        #expect(js.exception == nil)
+        #expect(js.evaluateScript("__sg.sgCompat === true && typeof chrome.idle === 'object'")?.toBool() == true)
     }
 
     @Test func standInsBehave() throws {

@@ -23,7 +23,7 @@
 
 ## Builder's calls made in this plan
 
-- **Rewrite form:** a use becomes `Object(globalThis.__sg||chrome).<ns>.<member>` (`browser` when written `browser`), not the spec's `(globalThis.__sg ?? chrome)`: a replacement that starts with `(` can join the previous line through ASI (`foo\n(…)` is a call), and one with quotes turns a masking mistake inside a string into a syntax error. Identifier-led and quote-free; same behaviour. `?.` between namespace and member is matched too.
+- **Rewrite form:** a use becomes `Object(globalThis.__sg?.sgCompat&&globalThis.__sg||chrome).<ns>.<member>` (`browser` when written `browser`), not the spec's `(globalThis.__sg ?? chrome)`: a replacement that starts with `(` can join the previous line through ASI (`foo\n(…)` is a call), and one with quotes turns a masking mistake inside a string into a syntax error. Identifier-led and quote-free; same behaviour. `?.` between namespace and member is matched too.
 - **Whole missing namespaces** (`idle`, `management`, `privacy`, `downloads`, `notifications`): a real use triggers the stand-ins file but no rewrite (assignment onto `chrome` works).
 - **`adaptation` is also written when nothing was needed** (with `adaptedFingerprint` nil): "checked with adapter N, needs nothing", so launch doesn't re-scan every extension each time.
 - **Stand-ins in a worker that stays a worker:** a generated entry in the worker file's own folder (`<dir>/sg-worker.js`, so relative `importScripts`/imports and `self.location` resolve as before: `import` for a module worker, `importScripts` for a classic one) loads `sg-compat.js` first, then the original.
@@ -60,8 +60,8 @@
     - `static func importScriptsArguments(_ text: String) -> [String]` (string-literal args of `importScripts(...)` in code).
 
 - [ ] **Step 1: Write the failing tests** in `ExtensionCompatTests.swift` (`@Suite struct CompatSourceTests`):
-  - `rewritesEachListedMember`: for every entry of `CompatMembers.missing`, `rewrite("chrome.\(ns).\(m).addListener(f)")` → text `Object(globalThis.__sg||chrome).\(ns).\(m).addListener(f)`, members `["\(ns).\(m)"]`; same with `browser.` → `Object(globalThis.__sg||browser)`.
-  - `rewritesOptionalChaining`: `chrome.action?.getUserSettings!==void 0` → `Object(globalThis.__sg||chrome).action?.getUserSettings!==void 0`.
+  - `rewritesEachListedMember`: for every entry of `CompatMembers.missing`, `rewrite("chrome.\(ns).\(m).addListener(f)")` → text `Object(globalThis.__sg?.sgCompat&&globalThis.__sg||chrome).\(ns).\(m).addListener(f)`, members `["\(ns).\(m)"]`; same with `browser.` → `Object(globalThis.__sg||browser)`.
+  - `rewritesOptionalChaining`: `chrome.action?.getUserSettings!==void 0` → `Object(globalThis.__sg?.sgCompat&&globalThis.__sg||chrome).action?.getUserSettings!==void 0`.
   - `leavesLongerNamesAlone`: `chrome.runtime.onSuspendX`, `mychrome.runtime.onSuspend`, `x.chrome.runtime.onSuspend`, `chrome.runtime.onMessage`, `chrome.storage.local` → unchanged, members empty.
   - `asiSafe`: `"foo()\nchrome.runtime.onSuspend.addListener(f)"` rewritten text, evaluated in a `JSContext` with `chrome = {runtime:{onSuspend:{addListener(f){globalThis.ok=1}}}}` and `foo = () => 0`, sets `ok` to 1 (no "is not a function").
   - `skipsNonCode`: `'chrome.storage.managed'`, `"chrome.storage.managed"`, `` `chrome.storage.managed ${x}` ``, `// chrome.storage.managed`, `/* chrome.storage.managed */`, `/chrome\.storage\.managed/.test(s)`, `a = b / chrome.x / c` (division, not regex: here `chrome.x` isn't listed; assert mask marks `chrome` as code), `if(a)/x/.test(b);chrome.storage.managed` and `}/x/g;chrome.storage.managed` (regex after `)` and `}`: the use after it is still found) → as stated; `` `${chrome.storage.managed}` `` → rewritten. `quotesStayValid`: rewriting `'chrome.storage.managed'` *as if it were code* (call the splice helper directly) still yields a string that `JSContext` parses.

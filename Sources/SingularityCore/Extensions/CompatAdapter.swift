@@ -56,6 +56,7 @@ public enum CompatAdapter {
         case recipeMismatch(String, expected: Int, found: Int)
         case permissionsChanged
         case unreadableFile(String)
+        case nameTaken(String)
 
         public var errorDescription: String? {
             switch self {
@@ -64,17 +65,19 @@ public enum CompatAdapter {
                 return "This version's code isn't what Singularity's adaptation expects (\(file): \(found) matches, \(expected) expected)."
             case .permissionsChanged: return "Adapting it would change what it asks for."
             case .unreadableFile(let file): return "\(file) can't be read."
+            case .nameTaken(let file): return "It has its own file named \(file), which Singularity's adaptation needs."
             }
         }
     }
 
     /// Adapts `original` into `into` (which must not exist; created only when something is needed).
-    /// Returns nil when the extension needs nothing (then `into` isn't created). On any failure
-    /// `into` is removed.
+    /// Returns nil when the extension needs nothing (then `into` isn't created), and also when its
+    /// manifest isn't JSON this can read (WebKit may still load it, as it did before adapting
+    /// existed). On any failure `into` is removed.
     public static func adapt(original: URL, into: URL, extensionID: String) throws -> CompatSummary? {
         guard let manifestData = try? Data(contentsOf: original.appending(path: "manifest.json")),
               let manifest = try? JSONSerialization.jsonObject(with: manifestData) as? [String: Any] else {
-            throw Failure.unreadableManifest
+            return nil
         }
         let files = try PluginFingerprint.listFiles(folder: original).filter { !$0.path.hasPrefix("_metadata/") && $0.path != "_metadata" }
         let paths = Set(files.map(\.path))
@@ -83,7 +86,7 @@ public enum CompatAdapter {
         var texts: [String: String] = [:]          // every UTF-8 .js file, as written
         var rewritten: [String: String] = [:]      // the ones the rewrite changed
         var used: Set<String> = []
-        for file in files where file.path.lowercased().hasSuffix(".js") {
+        for file in files where file.path.lowercased().hasSuffix(".js") || file.path.lowercased().hasSuffix(".mjs") {
             guard let data = try? Data(contentsOf: file.url) else { throw Failure.unreadableFile(file.path) }
             guard let text = String(data: data, encoding: .utf8) else { continue }
             texts[file.path] = text
@@ -100,6 +103,15 @@ public enum CompatAdapter {
         let recipe = CompatRecipe.all[extensionID]
         guard !used.isEmpty || webSocket || recipe != nil else { return nil }
         let asPage = worker != nil && (webSocket || recipe?.backgroundAsPage == true)
+
+        // The files this adds must not replace the extension's own.
+        var generated = [CompatStandIns.fileName]
+        if let worker {
+            generated.append(directory(of: worker) + (asPage ? backgroundPageName : workerEntryName))
+            if asPage && !isModule { generated.append(importScriptsShimName) }
+        }
+        let taken = Set(paths.map { $0.lowercased() })
+        if let clash = generated.first(where: { taken.contains($0.lowercased()) }) { throw Failure.nameTaken(clash) }
 
         let fm = FileManager.default
         if fm.fileExists(atPath: into.path) { try fm.removeItem(at: into) }
@@ -230,7 +242,9 @@ public enum CompatAdapter {
     }
 
     static func script(_ src: String, module: Bool) -> String {
-        "<script\(module ? " type=\"module\"" : "") src=\"\(src)\"></script>"
+        let escaped = src.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        return "<script\(module ? " type=\"module\"" : "") src=\"\(escaped)\"></script>"
     }
 
     /// The stand-ins' `<script>` right after `<head…>`, else after `<html…>`, else after the doctype,

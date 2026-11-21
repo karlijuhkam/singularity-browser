@@ -172,10 +172,15 @@ final class ExtensionCenter: NSObject {
             break
         }
         let original = folder(of: id), target = adaptedFolder(of: id), stageRoot = paths.extensionInstallDirectory
-        let adapter = self.adapter
+        let adapter = self.adapter, approved = record.fingerprint
         let result = await Task.detached { () -> Result<(CompatSummary, String)?, Error> in
-            Result { try Self.rebuildAdaptation(original: original, target: target, stageRoot: stageRoot, id: id, adapter: adapter) }
+            Result { try Self.rebuildAdaptation(original: original, approvedFingerprint: approved, target: target,
+                                                stageRoot: stageRoot, id: id, adapter: adapter) }
         }.value
+        // The owner may have removed or reinstalled it meanwhile: only the adaptation fields of the
+        // record as it is now change, and only if it is still the original that was adapted.
+        guard let current = records[id], current.fingerprint == approved else { return }
+        record = current
         switch result {
         case .success(nil):
             record.adaptation = CompatAdapter.version
@@ -191,7 +196,8 @@ final class ExtensionCenter: NSObject {
             adaptNotes[id] = nil
         case .failure(let error):
             extensionLog.error("could not adapt \(id, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            if ExtensionRules.afterFailedRebuild(record, adaptedFingerprintNow: adaptedNow) == .adapted {
+            let stillThere = FileManager.default.fileExists(atPath: target.path)
+            if stillThere, ExtensionRules.afterFailedRebuild(record, adaptedFingerprintNow: adaptedNow) == .adapted {
                 loadsAdapted.insert(id)
                 adaptNotes[id] = "Couldn't be adapted by this version of Singularity; the previous adaptation is running."
             } else {
@@ -208,21 +214,32 @@ final class ExtensionCenter: NSObject {
     /// Builds the adapted copy of `original` in a staging folder and swaps it in as `target`
     /// (removing any old copy when none is needed now). Returns the summary and the new copy's
     /// fingerprint, or nil when the extension needs nothing.
-    nonisolated static func rebuildAdaptation(original: URL, target: URL, stageRoot: URL, id: String,
+    nonisolated static func rebuildAdaptation(original: URL, approvedFingerprint: String, target: URL, stageRoot: URL, id: String,
                                               adapter: (URL, URL, String) throws -> CompatSummary?) throws -> (CompatSummary, String)? {
         let fm = FileManager.default
         let stage = stageRoot.appending(path: "adapt-\(UUID().uuidString)", directoryHint: .isDirectory)
         try fm.createDirectory(at: stage, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? fm.removeItem(at: stage) }
         let built = stage.appending(path: "x", directoryHint: .isDirectory)
-        guard let summary = try adapter(original, built, id) else {
+        let summary = try adapter(original, built, id)
+        // What was adapted must be what the owner approved (it was checked before, but read again here).
+        guard try PluginFingerprint.compute(folder: original) == approvedFingerprint else {
+            throw ExtensionCenter.failure("Its files changed while Singularity adapted it.")
+        }
+        guard let summary else {
             if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
             return nil
         }
         let fingerprint = try PluginFingerprint.compute(folder: built)
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if fm.fileExists(atPath: target.path) { try fm.moveItem(at: target, to: stage.appending(path: "old")) }
-        try fm.moveItem(at: built, to: target)
+        let old = stage.appending(path: "old", directoryHint: .isDirectory)
+        if fm.fileExists(atPath: target.path) { try fm.moveItem(at: target, to: old) }
+        do {
+            try fm.moveItem(at: built, to: target)
+        } catch {
+            if fm.fileExists(atPath: old.path) { try? fm.moveItem(at: old, to: target) }
+            throw error
+        }
         return (summary, fingerprint)
     }
 
@@ -657,7 +674,7 @@ final class ExtensionCenter: NSObject {
 
     func checkStoreUpdates() async {
         let installDirectory = paths.extensionInstallDirectory
-        for record in records.values.sorted(by: { $0.id < $1.id }) where record.source == .store && statuses[record.id] == .ready {
+        for record in records.values.sorted(by: { $0.id < $1.id }) where record.source == .store && (statuses[record.id] == .ready || statuses[record.id] == .cannotAdapt) {
             let id = record.id
             guard !downloading.contains(id), pending?.extensionID != id else { continue }
             downloading.insert(id)
@@ -697,15 +714,20 @@ final class ExtensionCenter: NSObject {
             extensionLog.error("update of \(id, privacy: .public) to \(version, privacy: .public) couldn't be adapted: \(reason, privacy: .public)")
             return
         }
+        // It may have been removed while this was adapted: then there is nothing to update.
+        guard let now = records[id] else {
+            try? FileManager.default.removeItem(at: staged.stage)
+            return
+        }
         var update = PendingExtension(extensionID: id, staged: staged, webExtension: webExtension, source: .store,
-                                      replaces: current, fromSpace: nil)
+                                      replaces: now, fromSpace: nil)
         update.adaptation = adaptation
-        if ExtensionRules.widens(current, permissions: Set(webExtension.requestedPermissions.map(\.rawValue)),
+        if ExtensionRules.widens(now, permissions: Set(webExtension.requestedPermissions.map(\.rawValue)),
                                  patterns: Set(webExtension.allRequestedMatchPatterns.map(\.string))) {
             // It asks for more: the owner decides (one sheet at a time; else next time).
             if pending == nil { pending = update } else { try? FileManager.default.removeItem(at: staged.stage) }
         } else {
-            await approve(update, spaces: current.enabledSpaces)
+            await approve(update, spaces: now.enabledSpaces)
             extensionLog.notice("updated \(id, privacy: .public) to \(version, privacy: .public) by itself")
         }
     }
@@ -754,7 +776,10 @@ final class ExtensionCenter: NSObject {
         }
         let target = folder(of: id)
         let adaptedTarget = adaptedFolder(of: id)
+        let old = pending.staged.stage.appending(path: "old", directoryHint: .isDirectory)
+        let oldAdapted = pending.staged.stage.appending(path: "old-adapted", directoryHint: .isDirectory)
         let fm = FileManager.default
+        var installedOriginal = false, installedAdapted = false
         do {
             try fm.createDirectory(at: paths.extensionsDirectory, withIntermediateDirectories: true)
             // Unload the old version first: its folder is about to be replaced.
@@ -762,27 +787,25 @@ final class ExtensionCenter: NSObject {
                 if let context = contexts[spaceID]?[id] { try? controller.unload(context); contexts[spaceID]?[id] = nil }
             }
             extensions[id] = nil
-            let old = pending.staged.stage.appending(path: "old", directoryHint: .isDirectory)
             if fm.fileExists(atPath: target.path) { try fm.moveItem(at: target, to: old) }
             try fm.moveItem(at: pending.staged.root, to: target)
+            installedOriginal = true
             let fingerprint = try await Task.detached { try PluginFingerprint.compute(folder: target) }.value
             // The adapted copy moves into place with it (or an old one goes).
             var adaptedFingerprint: String?
             var summary: CompatSummary?
-            if fm.fileExists(atPath: adaptedTarget.path) {
-                try fm.moveItem(at: adaptedTarget, to: pending.staged.stage.appending(path: "old-adapted", directoryHint: .isDirectory))
-            }
+            if fm.fileExists(atPath: adaptedTarget.path) { try fm.moveItem(at: adaptedTarget, to: oldAdapted) }
             if case .adapted(let built, let builtSummary) = pending.adaptation {
                 try fm.createDirectory(at: paths.extensionsAdaptedDirectory, withIntermediateDirectories: true)
                 try fm.moveItem(at: built, to: adaptedTarget)
+                installedAdapted = true
                 adaptedFingerprint = try await Task.detached { try PluginFingerprint.compute(folder: adaptedTarget) }.value
                 summary = builtSummary
-                loadsAdapted.insert(id)
-            } else {
-                loadsAdapted.remove(id)
             }
             let loaded = pending.webExtension
-            var record = pending.replaces ?? ExtensionRecord(
+            // The record as it is now (Space switches, grants and context ids may have changed while
+            // this waited), else the one it replaces, else a new one.
+            var record = records[id] ?? pending.replaces ?? ExtensionRecord(
                 id: id, name: "", version: "", source: pending.source, fingerprint: "", permissions: [], patterns: [], enabledSpaces: [])
             record.name = loaded.displayName ?? loaded.displayShortName ?? id
             record.version = loaded.displayVersion ?? loaded.version ?? ""
@@ -794,18 +817,25 @@ final class ExtensionCenter: NSObject {
             record.adaptation = CompatAdapter.version
             record.adaptedFingerprint = adaptedFingerprint
             record.adaptationSummary = summary
+            if adaptedFingerprint != nil { loadsAdapted.insert(id) } else { loadsAdapted.remove(id) }
             adaptNotes[id] = nil
             records[id] = record
             statuses[id] = .ready
             save()
             await loadExtension(id)
+            extensionLog.notice("installed extension \(id, privacy: .public)")
         } catch {
+            // Put the previous version back as it was (its record didn't change).
+            if installedAdapted { try? fm.removeItem(at: adaptedTarget) }
+            if fm.fileExists(atPath: oldAdapted.path), !fm.fileExists(atPath: adaptedTarget.path) { try? fm.moveItem(at: oldAdapted, to: adaptedTarget) }
+            if installedOriginal, fm.fileExists(atPath: old.path) { try? fm.removeItem(at: target) }
+            if fm.fileExists(atPath: old.path), !fm.fileExists(atPath: target.path) { try? fm.moveItem(at: old, to: target) }
+            if records[id] != nil, statuses[id] == .ready { await loadExtension(id) }
             showProblem("The extension couldn't be installed", error)
         }
         try? fm.removeItem(at: pending.staged.stage)
         for spaceID in controllers.keys { syncContexts(spaceID) }
         if pending.source == .store { scheduleUpdateChecks() }
-        extensionLog.notice("installed extension \(id, privacy: .public)")
     }
 
     private func save() {
@@ -816,7 +846,7 @@ final class ExtensionCenter: NSObject {
         }
     }
 
-    static func failure(_ text: String) -> NSError {
+    nonisolated static func failure(_ text: String) -> NSError {
         NSError(domain: "dev.roosa.Singularity.extensions", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
     }
 

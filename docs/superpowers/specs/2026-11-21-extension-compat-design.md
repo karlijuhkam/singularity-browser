@@ -236,7 +236,7 @@ generated page's name; the summary's wording; how `importScripts` is followed fo
 
 Overrides the design where they differ. Plan: `docs/superpowers/plans/2026-11-21-extension-compat.md`.
 
-- **Rewrite form:** a use becomes `Object(globalThis.__sg||chrome).<ns>.<member>` (`browser` when written so), not
+- **Rewrite form:** a use becomes `Object(globalThis.__sg?.sgCompat&&globalThis.__sg||chrome).<ns>.<member>` (`browser` when written so), not
   `(globalThis.__sg ?? chrome)`: a replacement starting with `(` can join the previous line through ASI, and one with
   quotes would turn a masking mistake inside a string into a syntax error. `?.` between the parts is matched too.
 - **Whole missing namespaces** (`idle`, `management`, `privacy`, `downloads`, `notifications`): a real use adds the
@@ -259,4 +259,11 @@ Overrides the design where they differ. Plan: `docs/superpowers/plans/2026-11-21
   which the owner signed in, filled and used a passkey.
 - **Test seam:** `ExtensionCenter.testAdapter` (the adapter a new centre starts with; adapting happens at launch) and
   `adapter`.
+- **From the branch review:** `sgCompat` in the rewrite and an own-property check in `sg-compat.js` (a page's
+  `<div id="__sg">` is visible as `window.__sg` in isolated worlds); `self.`/`globalThis.`/`window.chrome`, spread,
+  `i++/x`, `#chrome`, a BOM and `.mjs` files handled; a manifest this can't parse means "needs nothing" (as before);
+  generated names that clash with the extension's own files fail the adaptation; a rebuild checks the original is
+  still the approved one after reading it; `approve` puts the previous version back if a move fails and bases the
+  record on the current one (an automatic update no longer restores a Space switch turned off meanwhile, nor a
+  removed extension); a `.cannotAdapt` store extension still gets update checks.
 - **Not done:** notifications are not shown; no other recipes.

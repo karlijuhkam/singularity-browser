@@ -21,7 +21,8 @@ public enum CompatStandIns {
 (() => {
   "use strict";
   const g = globalThis;
-  if (g.__sg) return;
+  // An own property only: a page's `<div id="__sg">` shows up on the window, but not as its own.
+  if (Object.prototype.hasOwnProperty.call(g, "__sg")) return;
   const real = g.chrome || g.browser;
   if (!real || !real.runtime) return;
   const event = () => {
@@ -116,7 +117,8 @@ public enum CompatStandIns {
     });
   };
   Object.defineProperty(g, "__sg", {
-    value: new Proxy({}, { get: (_, ns) => merge(real[ns], extras[ns]), has: (_, ns) => ns in real || ns in extras }),
+    // `sgCompat` tells the rewritten code this is ours (see CompatSource.replacement).
+    value: new Proxy({}, { get: (_, ns) => (ns === "sgCompat" ? true : merge(real[ns], extras[ns])), has: (_, ns) => ns in real || ns in extras }),
     writable: false, configurable: false, enumerable: false,
   });
 })();

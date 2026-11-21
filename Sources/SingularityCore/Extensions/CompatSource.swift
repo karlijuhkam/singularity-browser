@@ -40,7 +40,7 @@ public enum CompatSource {
     public static func codeMask(_ b: [UInt8]) -> [Bool] {
         var mask = [Bool](repeating: true, count: b.count)
         let n = b.count
-        var i = 0
+        var i = bomLength(b)
         var valueBefore = false          // the last significant token was a value: `/` divides
         var lastWord = ""                // the last name read (for `if (…)` and keywords)
         var parens: [Bool] = []          // per open `(`: opened right after if/while/for/with
@@ -189,6 +189,11 @@ public enum CompatSource {
                 i += 1
                 valueBefore = false
                 lastWord = ""
+            case UInt8(ascii: "+") where i + 1 < n && b[i + 1] == c, UInt8(ascii: "-") where i + 1 < n && b[i + 1] == c:
+                // `i++ / 2`: after a postfix ++/-- a `/` still divides (and after a prefix one
+                // there is a value to come, so whatever was true before stays true enough).
+                i += 2
+                lastWord = ""
             default:
                 i += 1
                 valueBefore = false
@@ -212,7 +217,8 @@ public enum CompatSource {
 
     /// A use of `chrome.<ns>…` / `browser.<ns>…` found in code.
     struct Use {
-        /// Where the root word (`chrome`/`browser`) starts, and its text.
+        /// Where the replaced text starts, and that text: the root word (`chrome`/`browser`), or
+        /// `self.chrome` / `globalThis.chrome` / `window?.chrome`.
         let start: Int
         let root: String
         let ns: String
@@ -225,13 +231,14 @@ public enum CompatSource {
     static func uses(_ b: [UInt8], mask: [Bool]) -> [Use] {
         var out: [Use] = []
         let n = b.count
-        var i = 0
+        var i = bomLength(b)
         while i < n {
             guard mask[i], isIdentifier(b[i]) else { i += 1; continue }
-            let start = i
+            var start = i
             while i < n, isIdentifier(b[i]) { i += 1 }
             let word = String(decoding: b[start..<i], as: UTF8.self)
-            guard word == "chrome" || word == "browser", !afterDot(b, start) else { continue }
+            guard word == "chrome" || word == "browser", let rootStart = rootStart(b, start) else { continue }
+            start = rootStart
             var j = i
             guard let nsStart = access(b, mask, &j) else { continue }
             let ns = String(decoding: b[nsStart..<j], as: UTF8.self)
@@ -240,7 +247,7 @@ public enum CompatSource {
             if let memberStart = access(b, mask, &k) {
                 member = String(decoding: b[memberStart..<k], as: UTF8.self)
             }
-            out.append(Use(start: start, root: word, ns: ns, member: member))
+            out.append(Use(start: start, root: String(decoding: b[start..<i], as: UTF8.self), ns: ns, member: member))
         }
         return out
     }
@@ -263,6 +270,36 @@ public enum CompatSource {
         while j < b.count, [UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r")].contains(b[j]) { j += 1 }
     }
 
+    /// Where the use of a `chrome`/`browser` name at `start` begins: at the name itself when it
+    /// stands alone (also after a spread `...`), at `self`/`globalThis`/`window` for
+    /// `self.chrome` (or `?.`), nil for any other property (`x.chrome`) or a private name (`#chrome`).
+    private static func rootStart(_ b: [UInt8], _ start: Int) -> Int? {
+        var p = start - 1
+        while p >= 0, isSpace(b[p]) { p -= 1 }
+        guard p >= 0 else { return start }
+        if b[p] == UInt8(ascii: "#") { return nil }
+        guard b[p] == UInt8(ascii: ".") else { return start }
+        if p >= 2, b[p - 1] == UInt8(ascii: "."), b[p - 2] == UInt8(ascii: ".") { return start }
+        var q = p - 1
+        if q >= 0, b[q] == UInt8(ascii: "?") { q -= 1 }
+        while q >= 0, isSpace(b[q]) { q -= 1 }
+        let end = q + 1
+        while q >= 0, isIdentifier(b[q]) { q -= 1 }
+        let ownerStart = q + 1
+        guard ownerStart < end, ["self", "globalThis", "window"].contains(String(decoding: b[ownerStart..<end], as: UTF8.self)),
+              rootStart(b, ownerStart) == ownerStart else { return nil }
+        return ownerStart
+    }
+
+    static func isSpace(_ c: UInt8) -> Bool {
+        c == UInt8(ascii: " ") || c == UInt8(ascii: "\t") || c == UInt8(ascii: "\n") || c == UInt8(ascii: "\r")
+    }
+
+    /// A UTF-8 byte order mark at the start is not part of the first name.
+    static func bomLength(_ b: [UInt8]) -> Int {
+        b.count >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF ? 3 : 0
+    }
+
     /// Whether the name at `start` follows a `.` (a property such as `x.chrome`).
     private static func afterDot(_ b: [UInt8], _ start: Int) -> Bool {
         var p = start - 1
@@ -270,10 +307,12 @@ public enum CompatSource {
         return p >= 0 && b[p] == UInt8(ascii: ".")
     }
 
-    /// The replacement for a root word: identifier-led (never joins the previous line through ASI)
-    /// and quote-free (still valid if it ever landed inside a string). Without `sg-compat.js` loaded
-    /// it is the original object, so an injected file behaves as it did.
-    static func replacement(root: String) -> String { "Object(globalThis.__sg||\(root))" }
+    /// The replacement for a root: identifier-led (never joins the previous line through ASI) and
+    /// quote-free (still valid if it ever landed inside a string). Without `sg-compat.js` loaded it
+    /// is the original object, so an injected file behaves as it did. `sgCompat` is asked because a
+    /// page can put a `__sg` on the window through the DOM (`<div id="__sg">`, visible in isolated
+    /// worlds too); only the stand-ins' own `__sg` answers it.
+    static func replacement(root: String) -> String { "Object(globalThis.__sg?.sgCompat&&globalThis.__sg||\(root))" }
 
     /// Replaces the `length` bytes at `atWord` with the replacement for `root` (used by `rewrite`;
     /// open for tests).
@@ -330,7 +369,7 @@ public enum CompatSource {
 
     private static func codeWords(_ b: [UInt8], _ mask: [Bool]) -> [Word] {
         var out: [Word] = []
-        var i = 0
+        var i = bomLength(b)
         let n = b.count
         while i < n {
             guard mask[i], isIdentifier(b[i]) else { i += 1; continue }
