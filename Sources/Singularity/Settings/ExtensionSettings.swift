@@ -37,7 +37,7 @@ struct ExtensionSettings: View {
                         }
                     }
                 }
-                Text("Extensions work as in Safari: most that run in both Chrome and Safari work; ones that need Chrome-only features (1Password's, for one) don't. Each Space runs its own copy.")
+                Text("Extensions work as in Safari. Chrome extensions that need Chrome-only features are adapted to run here where Singularity can (1Password's is). Each Space runs its own copy.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -127,10 +127,18 @@ private struct ExtensionRow: View {
             Text("Paused: its files changed since you installed it. Add it again to use it.").font(.caption).foregroundStyle(.orange)
         case .missing:
             Text("Paused: its folder is gone.").font(.caption).foregroundStyle(.orange)
+        case .cannotAdapt:
+            Text("Paused: couldn't be adapted by this version of Singularity.").font(.caption).foregroundStyle(.orange)
         case .ready, nil:
             if let error = state.extensions.loadErrors[record.id] {
                 Text(verbatim: "Couldn't start: " + PluginText.line(error, max: 200)).font(.caption).foregroundStyle(.red)
             }
+        }
+        if let summary = record.adaptationSummary, record.adaptedFingerprint != nil {
+            Text(verbatim: "Adapted: " + summary.short).font(.caption).foregroundStyle(.secondary)
+        }
+        if let note = state.extensions.adaptNotes[record.id] {
+            Text(verbatim: note).font(.caption).foregroundStyle(.orange)
         }
     }
 }

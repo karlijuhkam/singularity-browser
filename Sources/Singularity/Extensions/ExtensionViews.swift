@@ -29,6 +29,7 @@ struct ExtensionApprovalSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     permissions
+                    adaptation
                     problems
                     spaceSwitches
                 }
@@ -51,7 +52,7 @@ struct ExtensionApprovalSheet: View {
                         dismiss()
                     }
                 }
-                .disabled(installing)
+                .disabled(installing || !pending.canInstall)
             }
             .padding(16)
         }
@@ -113,6 +114,24 @@ struct ExtensionApprovalSheet: View {
             if !ext.optionalPermissions.isEmpty || !ext.optionalPermissionMatchPatterns.isEmpty {
                 Text("It may ask for more later; Singularity will ask you each time.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// How Singularity adapts it (spec 2026-11-21), or why it can't.
+    @ViewBuilder
+    private var adaptation: some View {
+        switch pending.adaptation {
+        case .none:
+            EmptyView()
+        case .adapted(_, let summary):
+            Text(verbatim: summary.text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        case .failed(let reason):
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Singularity can't adapt this extension to run here, so it can't be installed.", systemImage: "exclamationmark.triangle")
+                    .font(.headline)
+                    .foregroundStyle(.orange)
+                Text(verbatim: PluginText.line(reason, max: 300)).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

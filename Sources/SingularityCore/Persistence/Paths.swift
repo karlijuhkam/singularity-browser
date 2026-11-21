@@ -12,6 +12,7 @@ import Foundation
 ///     ├─ plugins-state.json         plugin approvals and per-Space switches
 ///     ├─ .cache/plugin-install/     staging folders while plugins' npm packages install
 ///     ├─ extensions/<id>/           one unpacked browser extension per folder (WebKit loads it)
+///     ├─ extensions-adapted/<id>/   the adapted copy WebKit loads instead, for extensions that need one
 ///     ├─ extensions-state.json      extension approvals and per-Space switches
 ///     ├─ .cache/extension-install/  staging folders while an extension is unpacked and approved
 ///     └─ spaces/<slug>/
@@ -55,6 +56,8 @@ public struct Paths: Sendable {
     /// Installed browser extensions, one unpacked folder per extension id.
     public var extensionsDirectory: URL { root.appending(path: "extensions", directoryHint: .isDirectory) }
     /// Extension approvals and per-Space switches.
+    /// Adapted copies of extensions that need one (`CompatAdapter`), one folder per extension id.
+    public var extensionsAdaptedDirectory: URL { root.appending(path: "extensions-adapted", directoryHint: .isDirectory) }
     public var extensionStateFile: URL { root.appending(path: "extensions-state.json") }
     /// Where an extension is unpacked while the owner looks at it (one folder per install).
     public var extensionInstallDirectory: URL {

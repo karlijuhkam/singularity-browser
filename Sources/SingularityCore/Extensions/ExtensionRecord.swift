@@ -57,6 +57,14 @@ public struct ExtensionRecord: Codable, Equatable, Sendable, Identifiable {
     /// Run-time answers per Space.
     public var grants: [UUID: Grants]
     public var installedAt: Date
+    /// The `CompatAdapter.version` this extension was last checked (and, if needed, adapted) with;
+    /// nil = never checked. With `adaptedFingerprint` nil it needed nothing and loads from its
+    /// original folder.
+    public var adaptation: Int?
+    /// `PluginFingerprint` of `extensions-adapted/<id>/` when an adapted copy was built.
+    public var adaptedFingerprint: String?
+    /// What the adapter did (shown in Settings).
+    public var adaptationSummary: CompatSummary?
 
     public init(id: String, name: String, version: String, source: Source, fingerprint: String,
                 permissions: Set<String>, patterns: Set<String>, enabledSpaces: Set<UUID>,
@@ -90,6 +98,9 @@ public struct ExtensionRecord: Codable, Equatable, Sendable, Identifiable {
         let grantList = (try? c.decodeIfPresent([String: Grants].self, forKey: .grants)) ?? [:]
         grants = Dictionary(uniqueKeysWithValues: grantList.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } })
         installedAt = (try? c.decodeIfPresent(Date.self, forKey: .installedAt)) ?? Date(timeIntervalSince1970: 0)
+        adaptation = try? c.decodeIfPresent(Int.self, forKey: .adaptation)
+        adaptedFingerprint = try? c.decodeIfPresent(String.self, forKey: .adaptedFingerprint)
+        adaptationSummary = try? c.decodeIfPresent(CompatSummary.self, forKey: .adaptationSummary)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -105,10 +116,14 @@ public struct ExtensionRecord: Codable, Equatable, Sendable, Identifiable {
         try c.encode(Dictionary(uniqueKeysWithValues: contextIDs.map { ($0.key.uuidString, $0.value) }), forKey: .contextIDs)
         try c.encode(Dictionary(uniqueKeysWithValues: grants.map { ($0.key.uuidString, $0.value) }), forKey: .grants)
         try c.encode(installedAt, forKey: .installedAt)
+        try c.encodeIfPresent(adaptation, forKey: .adaptation)
+        try c.encodeIfPresent(adaptedFingerprint, forKey: .adaptedFingerprint)
+        try c.encodeIfPresent(adaptationSummary, forKey: .adaptationSummary)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, version, source, fingerprint, permissions, patterns, enabledSpaces, contextIDs, grants, installedAt
+        case adaptation, adaptedFingerprint, adaptationSummary
     }
 }
 
@@ -157,6 +172,32 @@ public enum ExtensionRules {
         case changed
         /// Its folder is gone.
         case missing
+        /// It needs an adapted copy, and neither a new one could be built nor an old one is usable.
+        case cannotAdapt
+    }
+
+    /// What to load at launch (spec 2026-11-21, "When adapting happens").
+    public enum AdaptationStep: Equatable, Sendable {
+        /// The original folder: checked with this adapter and nothing was needed.
+        case original
+        /// The adapted copy, which still matches its recorded fingerprint.
+        case adapted
+        /// Run the adapter again (new adapter version, never checked, or the copy changed or is gone).
+        case rebuild
+    }
+
+    public static func adaptationStep(_ record: ExtensionRecord, adaptedFingerprintNow: String?,
+                                      adapterVersion: Int = CompatAdapter.version) -> AdaptationStep {
+        guard record.adaptation == adapterVersion else { return .rebuild }
+        guard let recorded = record.adaptedFingerprint else { return .original }
+        return adaptedFingerprintNow == recorded ? .adapted : .rebuild
+    }
+
+    /// After a failed rebuild: the old adapted copy if it still matches its fingerprint, else nil
+    /// (the extension is paused, `.cannotAdapt`).
+    public static func afterFailedRebuild(_ record: ExtensionRecord, adaptedFingerprintNow: String?) -> AdaptationStep? {
+        guard let recorded = record.adaptedFingerprint, adaptedFingerprintNow == recorded else { return nil }
+        return .adapted
     }
 
     /// `currentFingerprint` nil = the folder couldn't be fingerprinted (gone, or holds a symlink).
