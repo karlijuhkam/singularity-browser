@@ -231,3 +231,32 @@ it these extensions don't run).
 
 File and type names; exactly how the rewrite recognises a use (as long as the Core tests hold); the
 generated page's name; the summary's wording; how `importScripts` is followed for classic workers.
+
+## As built (2026-11-21)
+
+Overrides the design where they differ. Plan: `docs/superpowers/plans/2026-11-21-extension-compat.md`.
+
+- **Rewrite form:** a use becomes `Object(globalThis.__sg||chrome).<ns>.<member>` (`browser` when written so), not
+  `(globalThis.__sg ?? chrome)`: a replacement starting with `(` can join the previous line through ASI, and one with
+  quotes would turn a masking mistake inside a string into a syntax error. `?.` between the parts is matched too.
+- **Whole missing namespaces** (`idle`, `management`, `privacy`, `downloads`, `notifications`): a real use adds the
+  stand-ins file, no rewrite (they can be assigned onto `chrome`).
+- **`adaptation` is recorded also when nothing was needed** (`adaptedFingerprint` nil), so launch doesn't scan every
+  extension again; any adapter version bump re-checks them all.
+- **Stand-ins for a worker that stays a worker:** `<worker dir>/sg-worker.js` loads `/sg-compat.js` first, then the
+  original (`import` for a module worker, `importScripts` for a classic one), so relative loads resolve as before.
+  The background page is `<worker dir>/sg-background.html`; for a classic worker it lists the literal `importScripts`
+  arguments before the worker and defines a no-op `importScripts`.
+- **MAIN-world content scripts** don't get `sg-compat.js`; every `.html`/`.htm` file gets it right after `<head…>`.
+- **Stand-in answers:** `privacy.services.*.get` → `{value: false, levelOfControl: "not_controllable"}` (`set`/`clear`
+  refuse), `management.setEnabled` and `downloads.download` refuse, `notifications.create` resolves an id and shows
+  nothing, `notifications.getPermissionLevel` → `"granted"`.
+- **Checked with the real 1Password 8.12.46.29** (still what the store serves on 2026-11-21): the masked rewrite finds
+  exactly the uses a plain text search finds (21 in `background/background.js`, 3 in one popup chunk), the same
+  12 members the spike rewrote; the recipe pattern matches once. In a test Space the adapted copy's background loads
+  without a missing-API error and its popup renders; its remaining errors (a match pattern with the test page's port,
+  native messaging refused, core calls before its WASM is ready) are exactly those of the spike's working copy, with
+  which the owner signed in, filled and used a passkey.
+- **Test seam:** `ExtensionCenter.testAdapter` (the adapter a new centre starts with; adapting happens at launch) and
+  `adapter`.
+- **Not done:** notifications are not shown; no other recipes.
