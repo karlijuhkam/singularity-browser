@@ -182,9 +182,14 @@ final class InboxCenter {
             showApprovalTab(entry.id)
             return
         }
+        guard let tabID = entry.tabID else { closePanel(); return }
+        goToTerminal(tabID: tabID, spaceID: entry.spaceID)
+    }
+
+    /// Shows a terminal tab and closes the panel (a card's "Go to terminal", a Running row).
+    func goToTerminal(tabID: UUID, spaceID: UUID) {
         closePanel()
-        guard let tabID = entry.tabID else { return }
-        state?.showTab(tabID, in: entry.spaceID)
+        state?.showTab(tabID, in: spaceID)
         // `showTab` already counts as going there; this clears the entry anyway when the tab is gone.
         wentToTerminal(tabID)
     }

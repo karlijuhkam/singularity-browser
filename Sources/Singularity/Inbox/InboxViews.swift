@@ -122,20 +122,13 @@ enum InboxCardAction {
     case decidePermission(UUID, allow: Bool)
 }
 
-/// The panel's header: "Inbox" and how many more agents are working.
+/// The panel's header: "Inbox". (Working agents are listed in the Running section below.)
 struct InboxHeader: View {
-    let workingCount: Int
-
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text("Inbox")
                 .font(.system(size: 13, weight: .semibold))
             Spacer(minLength: 8)
-            if workingCount > 0 {
-                Text(workingCount == 1 ? "1 more agent working" : "\(workingCount) more agents working")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
@@ -151,21 +144,109 @@ struct InboxListView: View {
 
     var body: some View {
         let entries = center?.inbox.visible ?? []
+        let running = center?.state?.runningAgents ?? []
         VStack(alignment: .leading, spacing: 6) {
-            if entries.isEmpty {
-                Text("Nothing is waiting.")
+            if entries.isEmpty && running.isEmpty {
+                Text("Nothing is running or waiting.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-            } else {
-                ForEach(entries) { entry in
-                    InboxCard(entry: entry, place: InboxPlace(entry, state: center?.state), onAction: onAction)
+            }
+            ForEach(entries) { entry in
+                InboxCard(entry: entry, place: InboxPlace(entry, state: center?.state), onAction: onAction)
+            }
+            if !running.isEmpty {
+                InboxRunningSection(rows: running, state: center?.state) { [weak center] row in
+                    center?.goToTerminal(tabID: row.tabID, spaceID: row.spaceID)
                 }
+                .padding(.top, entries.isEmpty ? 0 : 6)
             }
         }
         .padding(.horizontal, 8)
         .padding(.bottom, 8)
+    }
+}
+
+extension TerminalBoard.State {
+    /// The dot of a terminal in the home and the Running section.
+    var dotColour: Color {
+        switch self {
+        case .waiting: .orange
+        case .working: .accentColor
+        case .done: .green
+        case .idle, .unknown: .secondary
+        }
+    }
+}
+
+/// The inbox panel's "Running" section: agents running in terminals, one row each, newest facts
+/// from `AppState.runningAgents`. A row only goes to its terminal. Titles come from programs:
+/// untrusted, cleaned, drawn verbatim. Like the cards' buttons, a row never takes the keyboard.
+struct InboxRunningSection: View {
+    let rows: [RunningAgents.Row]
+    let state: AppState?
+    let onGo: (RunningAgents.Row) -> Void
+
+    var body: some View {
+        // Rows whose tab or Space has gone meanwhile are skipped.
+        let shown: [(row: RunningAgents.Row, title: String, place: String)] = rows.compactMap { row in
+            guard let space = state?.space(row.spaceID), let tab = space.tab(row.tabID) else { return nil }
+            let place = [space.icon, space.name].compactMap { $0 }.joined(separator: " ")
+            return (row, InboxText.clean(tab.displayTitle, limit: 80), InboxText.clean(place, limit: 40))
+        }
+        if !shown.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: "Running · \(shown.count)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 2)
+                ForEach(shown, id: \.row.tabID) { item in
+                    InboxRunningRow(row: item.row, title: item.title, place: item.place, onGo: onGo)
+                }
+            }
+        }
+    }
+}
+
+private struct InboxRunningRow: View {
+    let row: RunningAgents.Row
+    let title: String
+    let place: String
+    let onGo: (RunningAgents.Row) -> Void
+    @State private var hovering = false
+
+    /// Working is accent, waiting orange, everything else grey.
+    private var dot: Color {
+        switch row.state {
+        case .working, .waiting: row.state.dotColour
+        case .done, .idle, .unknown: .secondary
+        }
+    }
+
+    var body: some View {
+        Button { onGo(row) } label: {
+            HStack(spacing: 6) {
+                Circle().fill(dot).frame(width: 7, height: 7)
+                Text(verbatim: title)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 8)
+                Text(verbatim: place)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .background(hovering ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .onHover { hovering = $0 }
     }
 }
 

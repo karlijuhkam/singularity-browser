@@ -70,5 +70,23 @@ extension AppTests {
         f.state.updateSettings { $0.launchers = [Launcher(name: "Aider", command: "aider --yes")] }
         #expect(f.state.runningAgents.map(\.tabID) == [f.tabs[0]])
     }
+
+    @Test func runningRowGoesToTerminal() throws {
+        let (f, _) = try make(programs: ["claude"])
+        defer { finish(f) }
+        // A second Space is in front.
+        let other = f.state.createSpace(name: "Other", colorHex: "#FF0000", workingDirectory: "~")
+        f.state.selectSpace(other.id)
+        #expect(f.state.selectedSpaceID == other.id)
+        let signal = TerminalSignal.status([StatusRecord(id: "", state: .blocked, kind: .attention, app: "claude-code", message: "Pick one")])
+        f.state.inbox.terminalSignal(signal, tabID: f.tabs[0], spaceID: f.spaceID, foregroundProgram: "claude")
+        #expect(f.state.inbox.inbox.visible.contains { $0.tabID == f.tabs[0] })
+
+        f.state.inbox.goToTerminal(tabID: f.tabs[0], spaceID: f.spaceID)
+
+        #expect(f.state.selectedSpaceID == f.spaceID)
+        #expect(f.state.space(f.spaceID)?.selectedTabID == f.tabs[0])
+        #expect(!f.state.inbox.inbox.visible.contains { $0.tabID == f.tabs[0] })
+    }
 }
 }

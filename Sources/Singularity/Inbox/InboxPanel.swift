@@ -286,7 +286,7 @@ struct InboxPanelContent: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            InboxHeader(workingCount: center?.inbox.workingCount ?? 0)
+            InboxHeader()
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
             ScrollView {
                 InboxListView(center: center, onAction: { [weak center] in center?.perform($0) })

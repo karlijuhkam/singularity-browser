@@ -183,7 +183,7 @@ struct HomeSections: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: Self.symbol(row.state))
-                    .foregroundStyle(Self.colour(row.state))
+                    .foregroundStyle(row.state.dotColour)
                     .frame(width: 16)
                 Text(Self.word(row.state))
                     .foregroundStyle(.secondary)
@@ -224,15 +224,6 @@ struct HomeSections: View {
         case .done: "checkmark.circle"
         case .idle: "circle"
         case .unknown: "circle.dashed"
-        }
-    }
-
-    private static func colour(_ state: TerminalBoard.State) -> Color {
-        switch state {
-        case .waiting: .orange
-        case .working: .accentColor
-        case .done: .green
-        case .idle, .unknown: .secondary
         }
     }
 
