@@ -10,6 +10,23 @@ import Testing
         #expect(defaults == ["claude", "codex"])
     }
 
+    @Test func runnersAreNotAgents() {
+        let npx = RunningAgents.agentNames(launcherCommands: ["npx @google/gemini-cli"])
+        #expect(npx.contains("gemini-cli"))
+        #expect(!npx.contains("npx"))
+        let cd = RunningAgents.agentNames(launcherCommands: ["cd ~/x && claude --resume"])
+        #expect(!cd.contains("cd"))
+        #expect(cd == defaults)
+        let nvm = RunningAgents.agentNames(launcherCommands: ["nvm use 20 && aider"])
+        #expect(nvm.contains("aider"))
+        #expect(!nvm.contains("nvm"))
+        let sudo = RunningAgents.agentNames(launcherCommands: ["sudo env FOO=1 bunx -y opencode"])
+        #expect(sudo == defaults.union(["opencode"]))
+        let pipx = RunningAgents.agentNames(launcherCommands: ["pipx run aider"])
+        #expect(pipx == defaults.union(["aider"]))
+        #expect(RunningAgents.agentNames(launcherCommands: ["npx"]) == defaults)
+    }
+
     @Test func launcherFirstWord() {
         let names = RunningAgents.agentNames(launcherCommands: ["claude --resume", "FOO=1 /opt/bin/Aider --x", "  ", "gemini"])
         #expect(names.contains("aider"))

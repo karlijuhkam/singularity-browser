@@ -27,14 +27,42 @@ public enum RunningAgents {
         }
     }
 
+    /// Runners that start another program by name, and wrappers that only prefix a command.
+    /// A launcher `npx @google/gemini-cli` must name `gemini-cli`, not `npx`: otherwise every
+    /// `npx vite` dev server in any terminal would count as a running agent.
+    private static let wrapperWords: Set<String> = [
+        "npx", "bunx", "pnpx", "uvx", "pipx", "env", "sudo", "nice", "nohup", "time", "exec",
+        "command", "caffeinate",
+    ]
+    /// The runners among them that take a package: their `-…` options and `run` are skipped too.
+    private static let packageRunners: Set<String> = ["npx", "bunx", "pnpx", "uvx", "pipx"]
+
     /// The program names that count as agents: claude and codex always, plus the program each
-    /// launcher command starts (its first word that is not a `NAME=value` assignment).
+    /// launcher command starts. Only the part after the last `&&`, `||` or `;` counts (so
+    /// `cd ~/x && claude` gives `claude`); `NAME=value` assignments and the runner/wrapper
+    /// words above are skipped, because they are generic and would match unrelated programs.
     public static func agentNames(launcherCommands: [String]) -> Set<String> {
         var names: Set<String> = ["claude", "codex"]
         for command in launcherCommands {
-            let words = command.split(whereSeparator: { $0.isWhitespace })
-            guard let word = words.first(where: { !isAssignment(String($0)) }) else { continue }
-            let name = (String(word) as NSString).lastPathComponent.lowercased()
+            var tail = Substring(command)
+            for separator in ["&&", "||", ";"] {
+                while let range = tail.range(of: separator) { tail = tail[range.upperBound...] }
+            }
+            var skippingRunnerOptions = false
+            var found: String?
+            for word in tail.split(whereSeparator: { $0.isWhitespace }).map(String.init) {
+                if isAssignment(word) { continue }
+                let lowered = word.lowercased()
+                if wrapperWords.contains(lowered) {
+                    skippingRunnerOptions = packageRunners.contains(lowered)
+                    continue
+                }
+                if skippingRunnerOptions && (word.hasPrefix("-") || lowered == "run") { continue }
+                found = word
+                break
+            }
+            guard let found else { continue }
+            let name = (found as NSString).lastPathComponent.lowercased()
             if !name.isEmpty { names.insert(name) }
         }
         return names

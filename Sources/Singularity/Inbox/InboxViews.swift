@@ -77,7 +77,7 @@ struct RunningCountBadge: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 4)
                 .frame(minWidth: 15, minHeight: 15)
-                .background(count.anyWorking ? Color.accentColor : Color.secondary.opacity(0.55), in: Capsule())
+                .background(count.anyWorking ? Color.accentColor : Color(nsColor: .systemGray), in: Capsule())  // solid: white 9 pt text stays readable in light and dark
                 .fixedSize()
                 .accessibilityLabel("\(count.count) running")
         }
