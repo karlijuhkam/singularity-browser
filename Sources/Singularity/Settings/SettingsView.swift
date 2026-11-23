@@ -165,6 +165,14 @@ private struct TerminalSettings: View {
                 Text("~/Developer › claude")
                     .font(Font(state.terminalFont))
             }
+            Picker("Option key", selection: settingBinding(state, \.terminalOptionKey)) {
+                ForEach(TerminalOptionKey.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            Text("Meta is what Option shortcuts in terminal programs need, such as Claude Code's Option+P and Option+T or the shell's Option+B and Option+F. As Meta, Option can't type the characters your keyboard layout puts behind it, such as @. Option+arrows and Option+Backspace move and delete by word in every mode.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Toggle("Close the tab when the shell exits normally", isOn: settingBinding(state, \.closeTerminalOnExit))
             Text("Off: the tab stays open and Return starts a new shell. Terminals always use your login shell.")
                 .font(.caption)

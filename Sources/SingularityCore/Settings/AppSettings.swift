@@ -28,6 +28,38 @@ public enum SearchEngine: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// What the Option key does in a terminal tab. Every macOS terminal (Terminal.app, iTerm2,
+/// Ghostty, kitty, Alacritty, Warp) lets Option type what the keyboard layout puts behind it by
+/// default, and offers Meta as a choice; iTerm2, Ghostty and kitty also per side.
+public enum TerminalOptionKey: String, Codable, CaseIterable, Sendable {
+    /// Option types the layout's characters (@ is Option+2 on the Estonian layout).
+    case typesCharacters
+    /// Option is Meta (Option+x sends Esc x): Claude Code's Option+P / Option+T, the shell's
+    /// Option+B / Option+F. Characters behind Option can't be typed.
+    case meta
+    /// The left Option is Meta, the right one types characters.
+    case leftMeta
+
+    public var title: String {
+        switch self {
+        case .typesCharacters: return "Types characters (@, {, |…)"
+        case .meta: return "Meta key"
+        case .leftMeta: return "Left is Meta, right types characters"
+        }
+    }
+
+    /// Whether Option acts as Meta for a key pressed with the given Option keys held. Keys that
+    /// type nothing (arrows, Backspace, Return, Esc, Tab) keep Option as Meta in every mode: the
+    /// terminal view does that by itself.
+    public func isMeta(leftOptionDown: Bool, rightOptionDown: Bool) -> Bool {
+        switch self {
+        case .typesCharacters: return false
+        case .meta: return true
+        case .leftMeta: return leftOptionDown
+        }
+    }
+}
+
 /// App-wide preferences, stored in `~/Singularity/settings.json`.
 /// Every field has a default, and a file missing a field (older or hand-edited) still loads.
 public struct AppSettings: Codable, Equatable, Sendable {
@@ -39,6 +71,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var terminalFontSize: Double = 13
     /// `exit` (or Ctrl-D) at the prompt closes the terminal tab.
     public var closeTerminalOnExit: Bool = true
+    /// What Option does in a terminal tab (Settings → Terminal).
+    public var terminalOptionKey: TerminalOptionKey = .typesCharacters
     /// Run terminal tabs through the owner's installed herdr-core (`hc`), so shells outlive the
     /// app (see `HerdrCore`). Off by default; falls back to the built-in terminal when `hc` is missing.
     public var terminalUsesHerdrCore: Bool = false
@@ -71,6 +105,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         terminalFontName = (try? container.decodeIfPresent(String.self, forKey: .terminalFontName)) ?? nil
         terminalFontSize = (try? container.decodeIfPresent(Double.self, forKey: .terminalFontSize)) ?? defaults.terminalFontSize
         closeTerminalOnExit = (try? container.decodeIfPresent(Bool.self, forKey: .closeTerminalOnExit)) ?? defaults.closeTerminalOnExit
+        terminalOptionKey = (try? container.decodeIfPresent(TerminalOptionKey.self, forKey: .terminalOptionKey)) ?? defaults.terminalOptionKey
         terminalUsesHerdrCore = (try? container.decodeIfPresent(Bool.self, forKey: .terminalUsesHerdrCore)) ?? defaults.terminalUsesHerdrCore
         agentApprovalTimeoutSeconds = (try? container.decodeIfPresent(Int.self, forKey: .agentApprovalTimeoutSeconds))
             ?? defaults.agentApprovalTimeoutSeconds

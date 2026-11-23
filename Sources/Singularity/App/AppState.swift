@@ -218,6 +218,7 @@ final class AppState {
 
         let loadedSettings = store.loadSettings()
         settings = loadedSettings
+        SingularityTerminalView.optionKey = loadedSettings.terminalOptionKey
         self.updates = AppUpdates(availability: updateAvailability, checksAutomatically: loadedSettings.checksForUpdates)
         let loaded = store.load()
         spaces = loaded.spaces
@@ -2117,6 +2118,9 @@ final class AppState {
         scheduleSave()
         if settings.terminalFontName != before.terminalFontName || settings.terminalFontSize != before.terminalFontSize {
             terminals.applyFont(terminalFont)
+        }
+        if settings.terminalOptionKey != before.terminalOptionKey {
+            SingularityTerminalView.optionKey = settings.terminalOptionKey
         }
         if settings.checksForUpdates != before.checksForUpdates {
             updates.setChecksAutomatically(settings.checksForUpdates)

@@ -61,3 +61,27 @@ import Testing
         }
     }
 }
+
+@Suite struct TerminalOptionKeyTests {
+    @Test func eachModeDecidesMetaFromTheOptionKeysHeld() {
+        #expect(!TerminalOptionKey.typesCharacters.isMeta(leftOptionDown: true, rightOptionDown: false))
+        #expect(!TerminalOptionKey.typesCharacters.isMeta(leftOptionDown: false, rightOptionDown: true))
+        #expect(TerminalOptionKey.meta.isMeta(leftOptionDown: true, rightOptionDown: false))
+        #expect(TerminalOptionKey.meta.isMeta(leftOptionDown: false, rightOptionDown: true))
+        #expect(TerminalOptionKey.leftMeta.isMeta(leftOptionDown: true, rightOptionDown: false))
+        #expect(!TerminalOptionKey.leftMeta.isMeta(leftOptionDown: false, rightOptionDown: true))
+    }
+
+    @Test func typesCharactersByDefaultAndSurvivesARoundTrip() throws {
+        #expect(AppSettings().terminalOptionKey == .typesCharacters)
+        let old = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        #expect(old.terminalOptionKey == .typesCharacters)
+        let junk = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"terminalOptionKey":"sideways","terminalFontSize":15}"#.utf8))
+        #expect(junk.terminalOptionKey == .typesCharacters)
+        #expect(junk.terminalFontSize == 15)
+        var settings = AppSettings()
+        settings.terminalOptionKey = .leftMeta
+        let back = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(back.terminalOptionKey == .leftMeta)
+    }
+}

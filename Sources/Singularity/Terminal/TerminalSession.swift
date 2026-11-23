@@ -527,22 +527,25 @@ final class SingularityTerminalView: LocalProcessTerminalView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        useOptionForTyping()
+        applyOptionKey(leftDown: false, rightDown: false)
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
-        useOptionForTyping()
+        applyOptionKey(leftDown: false, rightDown: false)
     }
 
-    /// SwiftTerm makes Option the Meta key by default (Option+x sends Esc x), so the characters a
-    /// keyboard layout puts behind Option never arrive: on the Estonian layout that is @ (Option+2),
-    /// £, $, {, }, [, ], | and more. So Option goes to the layout, as in Terminal.app and iTerm2's
-    /// "Normal" setting, and stays Meta only on keys that type nothing (arrows, Backspace, Return,
-    /// Esc, Tab, Delete, function keys): Option+Left still moves a word back and Option+Backspace
-    /// still deletes one.
-    private func useOptionForTyping() {
-        optionAsMetaKey = false
+    /// What Option does in every terminal (Settings → Terminal → Option key); `AppState` sets it.
+    /// SwiftTerm's own default made Option Meta, so the characters a keyboard layout puts behind
+    /// Option never arrived (on the Estonian layout @ is Option+2).
+    static var optionKey: TerminalOptionKey = .typesCharacters
+
+    /// SwiftTerm has one switch for both Option keys, so for "left is Meta" it is set again before
+    /// every key press, from which Option keys are held (the key monitor below). Keys that type
+    /// nothing (arrows, Backspace, Return, Esc, Tab) keep Option as Meta in every mode, so
+    /// Option+Left still moves a word back and Option+Backspace still deletes one.
+    fileprivate func applyOptionKey(leftDown: Bool, rightDown: Bool) {
+        optionAsMetaKey = Self.optionKey.isMeta(leftOptionDown: leftDown, rightOptionDown: rightDown)
         optionAsMetaKeyForFunctionalKeys = true
     }
 
@@ -592,6 +595,16 @@ final class SingularityTerminalView: LocalProcessTerminalView {
     static func watchKeys() { _ = keyMonitor }
 
     private static let keyMonitor: Any? = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        // Which Option keys are held: the device-dependent bits of the modifier flags
+        // (NX_DEVICELALTKEYMASK 0x20, NX_DEVICERALTKEYMASK 0x40 in IOKit's IOLLEvent.h).
+        let raw = event.modifierFlags.rawValue
+        let leftOption = raw & 0x20 != 0
+        let rightOption = raw & 0x40 != 0
+        let target = event.window
+        MainActor.assumeIsolated {
+            (target?.firstResponder as? SingularityTerminalView)?
+                .applyOptionKey(leftDown: leftOption, rightDown: rightOption)
+        }
         // The monitor sees keys before the menus do: ⌘-shortcuts (⌘1…9, ⌘T, Show Inbox) are
         // commands to the app, not typing in the terminal.
         guard !event.modifierFlags.contains(.command) else { return event }
