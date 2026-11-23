@@ -525,6 +525,27 @@ final class SingularityTerminalView: LocalProcessTerminalView {
     /// from its I/O thread.
     private nonisolated let bellPending = OSAllocatedUnfairLock(initialState: false)
 
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        useOptionForTyping()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        useOptionForTyping()
+    }
+
+    /// SwiftTerm makes Option the Meta key by default (Option+x sends Esc x), so the characters a
+    /// keyboard layout puts behind Option never arrive: on the Estonian layout that is @ (Option+2),
+    /// £, $, {, }, [, ], | and more. So Option goes to the layout, as in Terminal.app and iTerm2's
+    /// "Normal" setting, and stays Meta only on keys that type nothing (arrows, Backspace, Return,
+    /// Esc, Tab, Delete, function keys): Option+Left still moves a word back and Option+Backspace
+    /// still deletes one.
+    private func useOptionForTyping() {
+        optionAsMetaKey = false
+        optionAsMetaKeyForFunctionalKeys = true
+    }
+
     /// SwiftTerm calls this on its I/O thread, for every BEL. Its own handling (sound or flash,
     /// debounced) goes on as before; we add one hop to the main actor per burst of bells.
     override nonisolated func bell(source: Terminal) {

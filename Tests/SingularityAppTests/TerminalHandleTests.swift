@@ -21,6 +21,15 @@ extension AppTests {
         }
     }
 
+    /// Option types what the keyboard layout puts behind it (@ is Option+2 on the Estonian
+    /// layout); it stays Meta only on keys that type nothing (Option+Left, Option+Backspace).
+    @Test func optionTypesTheLayoutsCharacters() {
+        MainRunLoopGuard.start
+        let view = SingularityTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 400))
+        #expect(view.optionAsMetaKey == false)
+        #expect(view.optionAsMetaKeyForFunctionalKeys == true)
+    }
+
     @Test func rowsIncludeScrollbackAndEndWithTheLastLine() throws {
         let view = makeView()
         feedNumberedLines(view, count: 300)
