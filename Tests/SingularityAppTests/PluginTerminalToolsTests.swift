@@ -9,7 +9,7 @@ import SingularityCore
 /// only recorded. The paste runs the real order (`TerminalPaste.run`); `beforePaste` stands in for
 /// the wait for the shell, `beforeReturn` for the pause before Return, so a test can change the
 /// terminal at either point.
-@MainActor fileprivate final class FakeTerminal: TerminalHandle {
+@MainActor final class FakeTerminal: TerminalHandle {
     var isRunning = true
     var foregroundProgram: String? = "claude"
     var foregroundGroupID: pid_t? = 500

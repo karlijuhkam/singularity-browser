@@ -11,9 +11,11 @@ struct SpaceRail: View {
         VStack(spacing: 10) {
             InboxRailButton()
 
+            let running = state.runningAgentCounts // once per body, not per Space
             ForEach(state.spaces) { space in
                 SpaceDot(space: space, isSelected: space.id == state.shownSpace(in: windowID)?.id,
-                         waiting: state.inbox.inbox.needsYouCount(spaceID: space.id))
+                         waiting: state.inbox.inbox.needsYouCount(spaceID: space.id),
+                         running: running[space.id])
                     .onTapGesture { state.userSelectSpace(space.id) }
                     .contextMenu {
                         Button("Edit Space…") { state.showSpaceEditor(spaceID: space.id) }
@@ -55,6 +57,8 @@ private struct SpaceDot: View {
     let isSelected: Bool
     /// The Space's inbox entries that need the owner to react (not "done").
     let waiting: Int
+    /// Coding agents running in the Space's terminals; nil when none.
+    let running: RunningAgents.SpaceCount?
 
     var body: some View {
         let colour = Color(hex: space.colorHex)
@@ -71,7 +75,17 @@ private struct SpaceDot: View {
                     .offset(x: 2, y: -1)
                     .allowsHitTesting(false)
             }
+            .overlay(alignment: .bottomTrailing) {
+                RunningCountBadge(count: running)
+                    .offset(x: 2, y: 1)
+                    .allowsHitTesting(false)
+            }
             .contentShape(Circle())
-            .help(space.name)
+            .help(helpText)
+    }
+
+    private var helpText: String {
+        guard let running, running.count > 0 else { return space.name }
+        return "\(space.name) · \(running.count) \(running.count == 1 ? "agent" : "agents") running"
     }
 }

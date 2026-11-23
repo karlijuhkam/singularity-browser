@@ -1076,6 +1076,21 @@ final class AppState {
     /// The launchers as they are used (Settings holds them as typed: `Launcher.clean`).
     var launchers: [Launcher] { Launcher.clean(settings.launchers) }
 
+    /// Terminals with a coding agent in front, Spaces in order (`RunningAgents`). Only sessions that
+    /// already exist are asked (`terminalHandle`), so this never starts a shell. The board is not
+    /// observed itself, so `boardRevision` is read first: the rail redraws when a state changes.
+    var runningAgents: [RunningAgents.Row] {
+        _ = inbox.boardRevision
+        return RunningAgents.rows(
+            spaces: spaces,
+            names: RunningAgents.agentNames(launcherCommands: launchers.map(\.command)),
+            program: { self.terminalHandle($0)?.foregroundProgram },
+            state: { self.inbox.board.row($0)?.state })
+    }
+
+    /// The numbers on the Space rail's circles.
+    var runningAgentCounts: [UUID: RunningAgents.SpaceCount] { RunningAgents.counts(runningAgents) }
+
     /// The command a launcher wants typed into a tab's first shell. Taken (and forgotten) by the
     /// terminal session when it starts that shell, so it is typed once: never after a restart of
     /// the app or the shell, and never when a herdr-core tab finds its shell again. In memory only.

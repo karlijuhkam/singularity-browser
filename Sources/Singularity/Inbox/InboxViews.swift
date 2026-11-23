@@ -65,6 +65,25 @@ struct InboxCountBadge: View {
     }
 }
 
+/// Small count of running agents on a Space circle; nothing when there are none. Accent-coloured
+/// while one of them is working, grey otherwise. Used by SpaceDot.
+struct RunningCountBadge: View {
+    let count: RunningAgents.SpaceCount?
+
+    var body: some View {
+        if let count {
+            Text(verbatim: count.count > 99 ? "99+" : String(count.count))
+                .font(.system(size: 9, weight: .bold).monospacedDigit())
+                .foregroundStyle(.white)
+                .padding(.horizontal, 4)
+                .frame(minWidth: 15, minHeight: 15)
+                .background(count.anyWorking ? Color.accentColor : Color.secondary.opacity(0.55), in: Capsule())
+                .fixedSize()
+                .accessibilityLabel("\(count.count) running")
+        }
+    }
+}
+
 /// An invisible AppKit view behind the tray button; hands itself to `onView` so the panel can be
 /// placed beside it. It never takes a click (hitTest returns nil), the button above it does.
 private struct InboxAnchor: NSViewRepresentable {
